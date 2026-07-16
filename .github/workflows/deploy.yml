@@ -20,7 +20,8 @@ jobs:
           node-version: 24
           cache: npm
 
-      - run: npm ci
+      # 不用 npm ci：mac 上生成的 lock 会缺少 linux 平台的 wasm 可选依赖（npm 已知问题）
+      - run: npm install --no-audit --no-fund
 
       - run: npm run build
 
