@@ -1,0 +1,179 @@
+import { type ReactNode, useState } from "react"
+import { Link, useLocation } from "react-router-dom"
+import {
+  ChartLineUp,
+  FunnelSimple,
+  Sparkle,
+  Star,
+  Sun,
+  Moon,
+  MagnifyingGlass,
+  Bell,
+  List,
+  X,
+} from "@phosphor-icons/react"
+import { Logo } from "@/components/layout/logo"
+import { useTheme } from "@/lib/theme"
+import { cn } from "@/lib/utils"
+import { Input } from "@/components/ui/input"
+import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
+
+const NAV_ITEMS = [
+  { to: "/app", label: "大盘", icon: ChartLineUp, end: true },
+  { to: "/app/screener", label: "选股", icon: FunnelSimple },
+  { to: "/app/strategy", label: "策略工坊", icon: Sparkle },
+  { to: "/app/watchlist", label: "自选", icon: Star },
+]
+
+export function AppShell({ children }: { children: ReactNode }) {
+  const location = useLocation()
+  const { theme, toggle } = useTheme()
+  const [mobileOpen, setMobileOpen] = useState(false)
+
+  const isActive = (to: string, end?: boolean) =>
+    end ? location.pathname === to : location.pathname.startsWith(to)
+
+  return (
+    <div className="flex min-h-[100dvh] bg-background">
+      {/* Sidebar - desktop */}
+      <aside className="hidden lg:flex w-56 shrink-0 flex-col border-r border-border bg-sidebar">
+        <div className="flex h-16 items-center px-5">
+          <Link to="/">
+            <Logo />
+          </Link>
+        </div>
+        <nav className="flex-1 space-y-1 px-3 py-2">
+          {NAV_ITEMS.map((item) => {
+            const active = isActive(item.to, item.end)
+            return (
+              <Link
+                key={item.to}
+                to={item.to}
+                className={cn(
+                  "flex items-center gap-2.5 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                  active
+                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                    : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground",
+                )}
+              >
+                <item.icon weight={active ? "fill" : "regular"} className="size-4.5 shrink-0" />
+                {item.label}
+              </Link>
+            )
+          })}
+        </nav>
+        <div className="border-t border-border p-3">
+          <div className="flex items-center gap-2.5 rounded-md px-2 py-2">
+            <Avatar className="size-7">
+              <AvatarFallback className="bg-primary/15 text-primary text-xs font-medium">
+                陆
+              </AvatarFallback>
+            </Avatar>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-xs font-medium text-foreground">陆晓岚</p>
+              <p className="truncate text-[11px] text-muted-foreground">专业版</p>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      {/* Mobile sidebar */}
+      {mobileOpen && (
+        <div className="fixed inset-0 z-50 lg:hidden">
+          <div
+            className="absolute inset-0 bg-background/80 backdrop-blur-sm"
+            onClick={() => setMobileOpen(false)}
+          />
+          <aside className="absolute inset-y-0 left-0 w-64 border-r border-border bg-sidebar p-3">
+            <div className="mb-4 flex h-10 items-center justify-between px-2">
+              <Logo />
+              <button onClick={() => setMobileOpen(false)} aria-label="关闭菜单">
+                <X className="size-5 text-muted-foreground" />
+              </button>
+            </div>
+            <nav className="space-y-1">
+              {NAV_ITEMS.map((item) => {
+                const active = isActive(item.to, item.end)
+                return (
+                  <Link
+                    key={item.to}
+                    to={item.to}
+                    onClick={() => setMobileOpen(false)}
+                    className={cn(
+                      "flex items-center gap-2.5 rounded-md px-3 py-2.5 text-sm font-medium",
+                      active
+                        ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                        : "text-muted-foreground",
+                    )}
+                  >
+                    <item.icon weight={active ? "fill" : "regular"} className="size-4.5" />
+                    {item.label}
+                  </Link>
+                )
+              })}
+            </nav>
+          </aside>
+        </div>
+      )}
+
+      {/* Main column */}
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="flex h-16 shrink-0 items-center gap-3 border-b border-border px-4 lg:px-6">
+          <button
+            className="lg:hidden"
+            onClick={() => setMobileOpen(true)}
+            aria-label="打开菜单"
+          >
+            <List className="size-5.5 text-foreground" />
+          </button>
+          <div className="relative w-full max-w-sm">
+            <MagnifyingGlass className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              placeholder="搜索股票代码 / 名称"
+              className="h-9 bg-muted/60 pl-8 border-transparent focus-visible:bg-background"
+            />
+          </div>
+          <div className="ml-auto flex items-center gap-1.5">
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <button
+                    className="flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+                    aria-label="通知"
+                  >
+                    <Bell className="size-4.5" />
+                  </button>
+                }
+              />
+              <TooltipContent>通知</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <button
+                    onClick={toggle}
+                    className="flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+                    aria-label="切换主题"
+                  >
+                    {theme === "dark" ? (
+                      <Sun className="size-4.5" />
+                    ) : (
+                      <Moon className="size-4.5" />
+                    )}
+                  </button>
+                }
+              />
+              <TooltipContent>切换{theme === "dark" ? "浅色" : "深色"}模式</TooltipContent>
+            </Tooltip>
+          </div>
+        </header>
+        <main className="min-w-0 flex-1 overflow-y-auto">{children}</main>
+      </div>
+    </div>
+  )
+}
