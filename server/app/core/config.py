@@ -17,10 +17,11 @@ class Settings(BaseSettings):
     # Data provider: "auto" | "seed" | "akshare" | "tencent"
     provider: str = "auto"
 
-    # AI provider: "auto" | "rule" | "claude"
+    # AI provider: "auto" | "rule" | "deepseek"
     ai_provider: str = "auto"
-    anthropic_api_key: str = ""
-    anthropic_model: str = "claude-opus-4-8"
+    deepseek_api_key: str = ""
+    deepseek_model: str = "deepseek-chat"
+    deepseek_base_url: str = "https://api.deepseek.com"
 
     # Collector: only run inside A-share trading sessions
     collect_interval_seconds: int = 60

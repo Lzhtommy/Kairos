@@ -1,7 +1,7 @@
-# Optional: real A-share data source + Claude AI. Install on the production host
-# where outbound access to the data endpoints / Anthropic API is available:
+# Optional: real A-share data source (AkShare/EastMoney). Install on the
+# production host where outbound access to the data endpoints is available:
 #   pip install -r requirements-data.txt
-# The app auto-detects these; without them it runs on the seed / rule-based providers.
+# The app auto-detects these; without them it runs on the tencent / seed providers.
+# (AI strategy generation uses DeepSeek over httpx — no extra package needed.)
 akshare==1.18.64
 pandas==2.2.3
-anthropic==0.42.0

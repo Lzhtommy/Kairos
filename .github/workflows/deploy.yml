@@ -54,6 +54,6 @@ jobs:
           ssh -i ~/.ssh/id_ed25519 "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" \
             "cd /opt/kairos && \
              JWT_SECRET='${{ secrets.JWT_SECRET }}' \
-             ANTHROPIC_API_KEY='${{ secrets.ANTHROPIC_API_KEY }}' \
+             DEEPSEEK_API_KEY='${{ secrets.DEEPSEEK_API_KEY }}' \
              docker compose up -d --build && \
              docker image prune -f"

@@ -77,7 +77,7 @@ ssh-keygen -t ed25519 -f kairos-deploy -N "" -C "kairos-deploy"
 | `SERVER_USER` | `deploy` | 是 |
 | `SSH_PRIVATE_KEY` | `kairos-deploy` 私钥文件的完整内容 | 是 |
 | `JWT_SECRET` | 随机长字符串（后端签发 token 用） | 建议 |
-| `ANTHROPIC_API_KEY` | Claude API Key（不填则用内置规则解析器生成策略） | 可选 |
+| `DEEPSEEK_API_KEY` | DeepSeek API Key（不填则用内置规则解析器生成策略） | 可选 |
 
 配置完成后，推送到 main 即自动部署（前端 + 后端）；也可以在 Actions 页面手动触发（workflow_dispatch）。
 

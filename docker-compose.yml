@@ -5,7 +5,7 @@ services:
     build:
       context: ./server
       args:
-        # Install the live A-share (AkShare) + Claude extras in production.
+        # Install the live A-share (AkShare) extras in production.
         WITH_DATA: "true"
     restart: unless-stopped
     ports:
@@ -16,7 +16,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       PROVIDER: ${PROVIDER:-auto}
       AI_PROVIDER: ${AI_PROVIDER:-auto}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
     volumes:
       - kairos-data:/app/data

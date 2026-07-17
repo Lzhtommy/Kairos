@@ -1,8 +1,10 @@
 """Natural-language → strategy DSL.
 
-Two backends, selected by settings.ai_provider ("auto" | "rule" | "claude"):
+Two backends, selected by settings.ai_provider ("auto" | "rule" | "deepseek"):
 - rule: deterministic keyword parser — no network / API key needed (MVP default).
-- claude: Anthropic API with the factor whitelist + DSL schema as structured output.
+- deepseek: DeepSeek chat API (mainland-reachable) with the factor whitelist +
+  JSON output mode. Chosen over Anthropic because the production ECS sits in
+  mainland China, where the Anthropic API is geo-blocked.
 
 Both return {"dsl", "explanation", "code"}. The DSL is always validated before use.
 """
@@ -12,6 +14,8 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
+
+import httpx
 
 from app.core.config import settings
 from app.services.dsl import FACTORS, validate_dsl
@@ -150,61 +154,36 @@ def _render_explanation(dsl: dict[str, Any]) -> str:
     return "根据你的描述，我生成了以下选股逻辑：" + "；".join(descs) + "。代码见右侧面板，可点击「运行回测」查看历史表现。"
 
 
-def _claude(text: str) -> dict[str, Any] | None:
-    if not settings.anthropic_api_key:
+def _deepseek(text: str) -> dict[str, Any] | None:
+    if not settings.deepseek_api_key:
         return None
     try:
-        import anthropic
-
-        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
         factor_doc = "\n".join(f"- {k}: {v[0]} ({v[1]})" for k, v in FACTORS.items())
-        tool = {
-            "name": "emit_strategy",
-            "description": "输出结构化选股策略 DSL",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "filters": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "factor": {"type": "string"},
-                                "op": {"type": "string"},
-                                "value": {},
-                                "min": {"type": "number"},
-                                "max": {"type": "number"},
-                                "ref": {"type": "string"},
-                            },
-                            "required": ["factor", "op"],
-                        },
-                    },
-                    "explanation": {"type": "string"},
-                },
-                "required": ["filters", "explanation"],
-            },
-        }
-        msg = client.messages.create(
-            model=settings.anthropic_model,
-            max_tokens=1024,
-            tools=[tool],
-            tool_choice={"type": "tool", "name": "emit_strategy"},
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        "你是 A 股量化选股助手。只能使用以下白名单因子构造 DSL：\n"
-                        f"{factor_doc}\n"
-                        "算子: 数值型 lt/lte/gt/gte/eq/between，类别型(industry) eq/in；"
-                        "数值因子可用 ref=industry_median 表示行业中位数。\n"
-                        f"用户需求：{text}"
-                    ),
-                }
-            ],
+        prompt = (
+            "你是 A 股量化选股助手。把用户需求转成选股 DSL，"
+            "以 JSON 输出：{\"filters\": [...], \"explanation\": \"一句话解释\"}。\n"
+            "每个 filter 形如 {\"factor\": ..., \"op\": ..., \"value\": ...}，"
+            "between 用 min/max 代替 value，行业中位数比较用 {\"factor\": ..., \"op\": ..., \"ref\": \"industry_median\"}。\n"
+            "只能使用以下白名单因子：\n"
+            f"{factor_doc}\n"
+            "算子: 数值型 lt/lte/gt/gte/eq/between，类别型(industry) eq/in。\n"
+            "注意单位：市值/成交额单位为亿，换手率/涨跌幅/ROE 为百分数数值，股息率为小数(3% → 0.03)。\n"
+            f"用户需求：{text}"
         )
-        payload = next((b.input for b in msg.content if b.type == "tool_use"), None)
-        if not payload:
-            return None
+        r = httpx.post(
+            f"{settings.deepseek_base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {settings.deepseek_api_key}"},
+            json={
+                "model": settings.deepseek_model,
+                "messages": [{"role": "user", "content": prompt}],
+                "response_format": {"type": "json_object"},
+                "max_tokens": 1024,
+                "temperature": 0,
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        payload = json.loads(r.json()["choices"][0]["message"]["content"])
         dsl = {
             "universe": {"exclude": ["ST", "停牌"], "market": ["SH", "SZ"]},
             "filters": payload["filters"],
@@ -221,8 +200,8 @@ def generate(text: str) -> dict[str, Any]:
     """NL → {dsl, explanation, code}. Always returns a valid, validated DSL."""
     use = settings.ai_provider.lower()
     result = None
-    if use in ("auto", "claude"):
-        result = _claude(text)
+    if use in ("auto", "deepseek"):
+        result = _deepseek(text)
 
     if result is None:
         dsl = validate_dsl(rule_based(text))

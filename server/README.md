@@ -9,10 +9,10 @@ A 股智能选股平台的后端。MVP 形态：**SQLite 单库 + 每分钟采�
 | 能力 | 生产实现 | 内置回退（默认） |
 |---|---|---|
 | 行情数据 | `AkShareProvider`（东财）/ `TencentProvider`（腾讯+新浪，零额外依赖） | `SeedProvider`（确定性合成数据） |
-| AI 生成策略 | Claude API（结构化输出） | 规则解析器（中文关键词 → DSL） |
+| AI 生成策略 | DeepSeek API（JSON 输出，国内直连） | 规则解析器（中文关键词 → DSL） |
 | 数据库 | MySQL（改 `DATABASE_URL`） | SQLite（默认） |
 
-`PROVIDER=auto` 依次探测 AkShare（东财）→ Tencent（腾讯/新浪），都不可用则回退到 seed；也可用 `PROVIDER=tencent` 强制指定（东财被防火墙/风控拦截的网络推荐，如公司内网）。`TencentProvider` 只依赖核心的 httpx，不需要装 `requirements-data.txt`。`AI_PROVIDER=auto` 有 `ANTHROPIC_API_KEY` 用 Claude，否则用规则解析器。
+`PROVIDER=auto` 依次探测 AkShare（东财）→ Tencent（腾讯/新浪），都不可用则回退到 seed；也可用 `PROVIDER=tencent` 强制指定（东财被防火墙/风控拦截的网络推荐，如公司内网）。`TencentProvider` 只依赖核心的 httpx，不需要装 `requirements-data.txt`。`AI_PROVIDER=auto` 有 `DEEPSEEK_API_KEY` 用 DeepSeek，否则用规则解析器（Anthropic API 从大陆服务器无法直连，故选 DeepSeek）。
 
 ## 本地运行
 
@@ -20,7 +20,7 @@ A 股智能选股平台的后端。MVP 形态：**SQLite 单库 + 每分钟采�
 cd server
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt          # 核心依赖
-# 可选：真实数据 + Claude（需要能访问对应服务的网络）
+# 可选：AkShare 真实数据（需要能访问东财的网络；AI 用 DeepSeek 走 httpx 无需额外包）
 # pip install -r requirements-data.txt
 
 cp .env.example .env                      # 按需修改
@@ -51,7 +51,7 @@ alembic upgrade head
 ```bash
 # 精简镜像（seed / 规则模式）
 docker build -t kairos-api ./server
-# 生产镜像（含真实数据 + Claude）
+# 生产镜像（含 AkShare 真实数据）
 docker build --build-arg WITH_DATA=true -t kairos-api ./server
 docker run -p 8000:8000 -v kairos-data:/app/data kairos-api
 ```
