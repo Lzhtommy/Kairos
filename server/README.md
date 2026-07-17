@@ -8,11 +8,11 @@ A 股智能选股平台的后端。MVP 形态：**SQLite 单库 + 每分钟采�
 
 | 能力 | 生产实现 | 内置回退（默认） |
 |---|---|---|
-| 行情数据 | `AkShareProvider`（真实 A 股） | `SeedProvider`（确定性合成数据） |
+| 行情数据 | `AkShareProvider`（东财）/ `TencentProvider`（腾讯+新浪，零额外依赖） | `SeedProvider`（确定性合成数据） |
 | AI 生成策略 | Claude API（结构化输出） | 规则解析器（中文关键词 → DSL） |
 | 数据库 | MySQL（改 `DATABASE_URL`） | SQLite（默认） |
 
-`PROVIDER=auto` 会先探测 AkShare 是否可用，不可用则自动回退到 seed；`AI_PROVIDER=auto` 有 `ANTHROPIC_API_KEY` 用 Claude，否则用规则解析器。
+`PROVIDER=auto` 依次探测 AkShare（东财）→ Tencent（腾讯/新浪），都不可用则回退到 seed；也可用 `PROVIDER=tencent` 强制指定（东财被防火墙/风控拦截的网络推荐，如公司内网）。`TencentProvider` 只依赖核心的 httpx，不需要装 `requirements-data.txt`。`AI_PROVIDER=auto` 有 `ANTHROPIC_API_KEY` 用 Claude，否则用规则解析器。
 
 ## 本地运行
 
@@ -64,7 +64,7 @@ docker run -p 8000:8000 -v kairos-data:/app/data kairos-api
 app/
   core/        配置、数据库、鉴权
   models/      SQLAlchemy 模型（用户/行情/策略/自选）
-  providers/   DataProvider 抽象 + seed / akshare 实现 + 工厂
+  providers/   DataProvider 抽象 + seed / akshare / tencent 实现 + 工厂
   services/    dsl(校验+执行) / strategy_ai(NL→DSL) / screener / backtest / market
   api/         路由：auth / quotes / screener / strategies / watchlist / backtests
   jobs/        采集脚本

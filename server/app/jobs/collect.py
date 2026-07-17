@@ -1,14 +1,15 @@
 """Data collector: seeds reference data once, refreshes quotes/indices each tick.
 
-Runs every `collect_interval_seconds` via APScheduler (see main.py). With the
-live AkShare provider it only collects during A-share trading sessions; with the
-seed provider it always refreshes so the demo keeps moving.
+Runs every `collect_interval_seconds` via APScheduler (see main.py). With a
+live provider (akshare/tencent) it only collects during A-share trading
+sessions; with the seed provider it always refreshes so the demo keeps moving.
 """
 
 from __future__ import annotations
 
 import logging
 from datetime import datetime, time, timezone
+from time import sleep
 
 from sqlalchemy import func, select
 
@@ -95,21 +96,32 @@ def bootstrap(db) -> None:
 
     if db.execute(select(func.count()).select_from(Kline)).scalar() == 0:
         codes = [m.code for m in provider.get_universe()]
-        for code in codes:
-            for c in provider.get_kline(code, "1d", 250):
+        failed = 0
+        for i, code in enumerate(codes, 1):
+            sleep(0.05)  # pace the burst — thousands of rapid calls trip provider rate limits
+            try:
+                candles = provider.get_kline(code, "1d", 250)
+            except Exception as exc:  # noqa: BLE001 — one bad ticker must not kill startup
+                logger.warning("Kline fetch failed for %s: %s", code, exc)
+                failed += 1
+                continue
+            for c in candles:
                 db.add(
                     Kline(
                         code=code, period="1d", ts=c.ts,
                         open=c.open, high=c.high, low=c.low, close=c.close, volume=c.volume,
                     )
                 )
+            if i % 200 == 0:
+                db.commit()  # bound the transaction; keep partial progress on crash
+                logger.info("Seeded K-lines: %d/%d", i, len(codes))
         db.commit()
-        logger.info("Seeded K-lines for %d stocks", len(codes))
+        logger.info("Seeded K-lines for %d stocks (%d failed)", len(codes) - failed, failed)
 
 
-def collect_once() -> None:
+def collect_once(force: bool = False) -> None:
     provider = get_provider()
-    if provider.name == "akshare" and not in_trading_session():
+    if not force and provider.name != "seed" and not in_trading_session():
         logger.debug("Outside trading session; skipping collection")
         return
     db = SessionLocal()
@@ -128,4 +140,6 @@ def run_bootstrap_and_first_collect() -> None:
         bootstrap(db)
     finally:
         db.close()
-    collect_once()
+    # Force the first collection even off-hours so a fresh deploy serves the
+    # latest close instead of empty dashboards until the next trading session.
+    collect_once(force=True)

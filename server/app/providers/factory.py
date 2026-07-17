@@ -18,10 +18,25 @@ def _try_akshare() -> DataProvider | None:
         provider = AkShareProvider()
         # Quick connectivity probe — one small call.
         provider.get_indices()
-        logger.info("Using AkShareProvider (live A-share data)")
+        logger.info("Using AkShareProvider (live A-share data via EastMoney)")
         return provider
     except Exception as exc:  # noqa: BLE001
-        logger.warning("AkShare unavailable (%s); falling back to SeedProvider", exc)
+        logger.warning("AkShare unavailable (%s)", exc)
+        return None
+
+
+def _try_tencent() -> DataProvider | None:
+    try:
+        from app.providers.tencent_provider import TencentProvider
+
+        provider = TencentProvider()
+        # Quick connectivity probe — one small call.
+        if not provider.get_indices():
+            raise RuntimeError("empty index response")
+        logger.info("Using TencentProvider (live A-share data via Tencent/Sina)")
+        return provider
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Tencent/Sina unavailable (%s)", exc)
         return None
 
 
@@ -35,8 +50,10 @@ def get_provider() -> DataProvider:
         _provider = SeedProvider()
     elif choice == "akshare":
         _provider = _try_akshare() or SeedProvider()
+    elif choice == "tencent":
+        _provider = _try_tencent() or SeedProvider()
     else:  # auto
-        _provider = _try_akshare() or SeedProvider()
+        _provider = _try_akshare() or _try_tencent() or SeedProvider()
 
     logger.info("Data provider resolved to: %s", _provider.name)
     return _provider

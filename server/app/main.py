@@ -10,6 +10,7 @@ from app.core.config import settings
 from app.core.db import Base, engine
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logging.getLogger("httpx").setLevel(logging.WARNING)  # per-request lines drown the collector logs
 logger = logging.getLogger("kairos")
 
 _scheduler: BackgroundScheduler | None = None

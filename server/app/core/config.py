@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 60 * 24 * 7
 
-    # Data provider: "auto" | "seed" | "akshare"
+    # Data provider: "auto" | "seed" | "akshare" | "tencent"
     provider: str = "auto"
 
     # AI provider: "auto" | "rule" | "claude"

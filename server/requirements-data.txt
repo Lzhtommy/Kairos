@@ -2,6 +2,6 @@
 # where outbound access to the data endpoints / Anthropic API is available:
 #   pip install -r requirements-data.txt
 # The app auto-detects these; without them it runs on the seed / rule-based providers.
-akshare==1.15.20
+akshare==1.18.64
 pandas==2.2.3
 anthropic==0.42.0
