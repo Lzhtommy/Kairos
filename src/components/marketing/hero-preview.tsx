@@ -7,6 +7,15 @@ export function HeroPreview() {
   const rows = stocks.slice(0, 5)
   const idx = indices[0]
 
+  // 首次加载 API 数据未到达时渲染占位，避免整页崩溃
+  if (!idx) {
+    return (
+      <div className="relative rounded-2xl border border-white/10 bg-card/80 p-1.5 shadow-2xl shadow-black/20 backdrop-blur">
+        <div className="h-[280px] animate-pulse rounded-xl border border-border/60 bg-background" />
+      </div>
+    )
+  }
+
   return (
     <div className="relative rounded-2xl border border-white/10 bg-card/80 p-1.5 shadow-2xl shadow-black/20 backdrop-blur">
       <div className="rounded-xl border border-border/60 bg-background p-4">
