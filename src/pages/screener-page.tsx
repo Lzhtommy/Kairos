@@ -1,7 +1,9 @@
-import { useMemo, useState } from "react"
+import { useState } from "react"
+import { useQuery } from "@tanstack/react-query"
 import { Sparkle, ArrowCounterClockwise } from "@phosphor-icons/react"
-import { useLiveQuotes } from "@/lib/use-live-quotes"
-import { INDUSTRIES, STRATEGIES } from "@/lib/mock-data"
+import { INDUSTRIES } from "@/lib/mock-data"
+import { runScreener } from "@/api/market"
+import { fetchStrategies, fetchStrategyHits } from "@/api/strategies"
 import { QuoteTable } from "@/components/market/quote-table"
 import { Link } from "react-router-dom"
 import { buttonVariants } from "@/components/ui/button"
@@ -18,26 +20,42 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 
 export function ScreenerPage() {
-  const { stocks } = useLiveQuotes()
   const [mode, setMode] = useState<"classic" | "strategy">("classic")
   const [industry, setIndustry] = useState<string>("all")
   const [peRange, setPeRange] = useState([0, 60])
   const [minRoe, setMinRoe] = useState([0])
-  const [activeStrategy, setActiveStrategy] = useState<string | null>(STRATEGIES[0].id)
+  const [activeStrategy, setActiveStrategy] = useState<string | null>(null)
 
-  const filtered = useMemo(() => {
-    if (mode === "strategy") {
-      if (!activeStrategy) return stocks
-      // 演示用：策略结果按股票代码哈希稳定抽样
-      return stocks.filter((s) => s.code.charCodeAt(4) % 2 === (activeStrategy === "st-2" ? 1 : 0))
-    }
-    return stocks.filter((s) => {
-      if (industry !== "all" && s.industry !== industry) return false
-      if (s.pe === null || s.pe < peRange[0] || s.pe > peRange[1]) return false
-      if (s.roe < minRoe[0]) return false
-      return true
-    })
-  }, [stocks, mode, industry, peRange, minRoe, activeStrategy])
+  const classicQ = useQuery({
+    queryKey: ["screener", industry, peRange, minRoe],
+    queryFn: () =>
+      runScreener({
+        industry,
+        peMin: peRange[0],
+        peMax: peRange[1],
+        roeMin: minRoe[0],
+        pageSize: 200,
+      }),
+    enabled: mode === "classic",
+    refetchInterval: 60_000,
+  })
+
+  const strategiesQ = useQuery({
+    queryKey: ["strategies"],
+    queryFn: fetchStrategies,
+    enabled: mode === "strategy",
+  })
+
+  const effectiveStrategy = activeStrategy ?? strategiesQ.data?.[0]?.id ?? null
+
+  const hitsQ = useQuery({
+    queryKey: ["strategyHits", effectiveStrategy],
+    queryFn: () => fetchStrategyHits(effectiveStrategy!),
+    enabled: mode === "strategy" && !!effectiveStrategy,
+  })
+
+  const filtered = mode === "classic" ? classicQ.data?.items ?? [] : hitsQ.data?.items ?? []
+  const strategies = strategiesQ.data ?? []
 
   return (
     <div className="mx-auto max-w-[1600px] space-y-5 px-4 py-6 lg:px-6">
@@ -129,23 +147,28 @@ export function ScreenerPage() {
           ) : (
             <div className="space-y-2">
               <p className="px-1 text-sm font-medium text-foreground">我的策略</p>
-              {STRATEGIES.map((s) => (
+              {strategies.length === 0 && (
+                <p className="px-1 text-xs text-muted-foreground">
+                  还没有策略，去策略工坊用 AI 生成一个吧
+                </p>
+              )}
+              {strategies.map((s) => (
                 <button
                   key={s.id}
                   onClick={() => setActiveStrategy(s.id)}
                   className={cn(
                     "w-full rounded-lg border p-3 text-left transition-colors",
-                    activeStrategy === s.id
+                    effectiveStrategy === s.id
                       ? "border-primary/40 bg-accent"
                       : "border-border hover:bg-muted/50",
                   )}
                 >
                   <div className="flex items-center gap-1.5">
                     <Sparkle
-                      weight={activeStrategy === s.id ? "fill" : "regular"}
+                      weight={effectiveStrategy === s.id ? "fill" : "regular"}
                       className={cn(
                         "size-3.5",
-                        activeStrategy === s.id ? "text-primary" : "text-muted-foreground",
+                        effectiveStrategy === s.id ? "text-primary" : "text-muted-foreground",
                       )}
                     />
                     <span className="text-sm font-medium text-foreground">{s.name}</span>
@@ -200,4 +223,3 @@ export function ScreenerPage() {
     </div>
   )
 }
-

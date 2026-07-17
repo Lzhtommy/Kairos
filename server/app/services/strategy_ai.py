@@ -1,0 +1,234 @@
+"""Natural-language → strategy DSL.
+
+Two backends, selected by settings.ai_provider ("auto" | "rule" | "claude"):
+- rule: deterministic keyword parser — no network / API key needed (MVP default).
+- claude: Anthropic API with the factor whitelist + DSL schema as structured output.
+
+Both return {"dsl", "explanation", "code"}. The DSL is always validated before use.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from typing import Any
+
+from app.core.config import settings
+from app.services.dsl import FACTORS, validate_dsl
+
+# ---- factor / operator lexicons (Chinese) -------------------------------------------------
+
+_FACTOR_KEYWORDS: list[tuple[str, str]] = [
+    ("市盈率", "pe"), ("pe", "pe"), ("PE", "pe"),
+    ("市净率", "pb"), ("pb", "pb"), ("PB", "pb"),
+    ("净资产收益率", "roe"), ("roe", "roe"), ("ROE", "roe"),
+    ("换手率", "turnover_rate"),
+    ("成交额", "turnover"), ("成交量", "turnover"),
+    ("总市值", "market_cap"), ("市值", "market_cap"),
+    ("涨跌幅", "change_pct"), ("涨幅", "change_pct"),
+    ("股息率", "dividend_yield"), ("股息", "dividend_yield"), ("分红", "dividend_yield"),
+    ("股价", "price"), ("价格", "price"), ("最新价", "price"),
+]
+
+_GTE = ["不低于", "不少于", "大于等于", "高于", "大于", "超过", "以上", "多于"]
+_LTE = ["不高于", "不超过", "小于等于", "低于", "小于", "以下", "少于"]
+
+_INDUSTRIES = ["白酒", "银行", "新能源", "半导体", "医药", "军工", "汽车", "家电", "食品饮料", "券商"]
+
+
+def _find_factor(clause: str) -> str | None:
+    for kw, factor in _FACTOR_KEYWORDS:
+        if kw in clause:
+            return factor
+    return None
+
+
+def _find_number(clause: str) -> float | None:
+    m = re.search(r"(\d+(?:\.\d+)?)", clause)
+    return float(m.group(1)) if m else None
+
+
+def _parse_clause(clause: str) -> dict[str, Any] | None:
+    # industry match
+    for ind in _INDUSTRIES:
+        if ind in clause:
+            return {"factor": "industry", "op": "eq", "value": ind}
+
+    factor = _find_factor(clause)
+    if factor is None:
+        return None
+
+    # industry-median reference (e.g. "PE 低于行业中位数")
+    if "行业中位数" in clause or "行业中值" in clause:
+        op = "lt"
+        if any(k in clause for k in _GTE):
+            op = "gt"
+        return {"factor": factor, "op": op, "ref": "industry_median"}
+
+    num = _find_number(clause)
+    if num is None:
+        return None
+
+    is_pct = "%" in clause or "％" in clause
+    if factor == "dividend_yield" and is_pct:
+        num = num / 100.0  # dividend stored as fraction
+
+    if any(k in clause for k in _GTE):
+        op = "gte"
+    elif any(k in clause for k in _LTE):
+        op = "lte"
+    else:
+        op = "gte"
+    return {"factor": factor, "op": op, "value": num}
+
+
+def _split_clauses(text: str) -> list[str]:
+    return [c for c in re.split(r"[，,。；;、\n]|并且|而且|且|同时", text) if c.strip()]
+
+
+def rule_based(text: str) -> dict[str, Any]:
+    filters = []
+    for clause in _split_clauses(text):
+        parsed = _parse_clause(clause)
+        if parsed:
+            filters.append(parsed)
+
+    if not filters:
+        # sensible default so the feature always produces something usable
+        filters = [
+            {"factor": "pe", "op": "lte", "value": 30},
+            {"factor": "roe", "op": "gte", "value": 10},
+        ]
+
+    dsl = {
+        "universe": {"exclude": ["ST", "停牌"], "market": ["SH", "SZ"]},
+        "filters": filters,
+        "rebalance": "monthly_first_trading_day",
+        "cost": {"side": "both", "rate": 0.0005},
+    }
+    return dsl
+
+
+def _render_code(dsl: dict[str, Any]) -> str:
+    lines = ["def screen(stock):", '    """由自然语言描述生成的选股策略"""', "    return ("]
+    parts = []
+    for f in dsl["filters"]:
+        label = FACTORS[f["factor"]][0]
+        if f["factor"] == "industry":
+            parts.append(f'stock.industry == "{f["value"]}"  # {label}')
+        elif "ref" in f:
+            parts.append(f'stock.{f["factor"]} {_op_sym(f["op"])} industry_median(stock)  # {label}')
+        elif f["op"] == "between":
+            parts.append(f'{f["min"]} <= stock.{f["factor"]} <= {f["max"]}  # {label}')
+        else:
+            parts.append(f'stock.{f["factor"]} {_op_sym(f["op"])} {f["value"]}  # {label}')
+    lines.append("        " + "\n        and ".join(parts))
+    lines.append("    )")
+    lines.append("")
+    lines.append(f"# 调仓频率: {dsl['rebalance']}")
+    lines.append(f"# 费率: 双边 {dsl['cost']['rate'] * 100:.3f}%")
+    return "\n".join(lines)
+
+
+def _op_sym(op: str) -> str:
+    return {"lt": "<", "lte": "<=", "gt": ">", "gte": ">=", "eq": "=="}.get(op, "==")
+
+
+def _render_explanation(dsl: dict[str, Any]) -> str:
+    descs = []
+    for f in dsl["filters"]:
+        label = FACTORS[f["factor"]][0]
+        if f["factor"] == "industry":
+            descs.append(f"限定行业为「{f['value']}」")
+        elif "ref" in f:
+            descs.append(f"{label} {'高于' if f['op'].startswith('g') else '低于'}行业中位数")
+        elif f["op"] == "between":
+            descs.append(f"{label} 介于 {f['min']}~{f['max']}")
+        else:
+            word = "不低于" if f["op"].startswith("g") else "不高于"
+            descs.append(f"{label} {word} {f['value']}")
+    return "根据你的描述，我生成了以下选股逻辑：" + "；".join(descs) + "。代码见右侧面板，可点击「运行回测」查看历史表现。"
+
+
+def _claude(text: str) -> dict[str, Any] | None:
+    if not settings.anthropic_api_key:
+        return None
+    try:
+        import anthropic
+
+        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        factor_doc = "\n".join(f"- {k}: {v[0]} ({v[1]})" for k, v in FACTORS.items())
+        tool = {
+            "name": "emit_strategy",
+            "description": "输出结构化选股策略 DSL",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "filters": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "factor": {"type": "string"},
+                                "op": {"type": "string"},
+                                "value": {},
+                                "min": {"type": "number"},
+                                "max": {"type": "number"},
+                                "ref": {"type": "string"},
+                            },
+                            "required": ["factor", "op"],
+                        },
+                    },
+                    "explanation": {"type": "string"},
+                },
+                "required": ["filters", "explanation"],
+            },
+        }
+        msg = client.messages.create(
+            model=settings.anthropic_model,
+            max_tokens=1024,
+            tools=[tool],
+            tool_choice={"type": "tool", "name": "emit_strategy"},
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        "你是 A 股量化选股助手。只能使用以下白名单因子构造 DSL：\n"
+                        f"{factor_doc}\n"
+                        "算子: 数值型 lt/lte/gt/gte/eq/between，类别型(industry) eq/in；"
+                        "数值因子可用 ref=industry_median 表示行业中位数。\n"
+                        f"用户需求：{text}"
+                    ),
+                }
+            ],
+        )
+        payload = next((b.input for b in msg.content if b.type == "tool_use"), None)
+        if not payload:
+            return None
+        dsl = {
+            "universe": {"exclude": ["ST", "停牌"], "market": ["SH", "SZ"]},
+            "filters": payload["filters"],
+            "rebalance": "monthly_first_trading_day",
+            "cost": {"side": "both", "rate": 0.0005},
+        }
+        dsl = validate_dsl(dsl)
+        return {"dsl": dsl, "explanation": payload.get("explanation", "")}
+    except Exception:  # noqa: BLE001 — any failure → fall back to rule-based
+        return None
+
+
+def generate(text: str) -> dict[str, Any]:
+    """NL → {dsl, explanation, code}. Always returns a valid, validated DSL."""
+    use = settings.ai_provider.lower()
+    result = None
+    if use in ("auto", "claude"):
+        result = _claude(text)
+
+    if result is None:
+        dsl = validate_dsl(rule_based(text))
+        explanation = _render_explanation(dsl)
+    else:
+        dsl = result["dsl"]
+        explanation = result["explanation"] or _render_explanation(dsl)
+
+    return {"dsl": dsl, "explanation": explanation, "code": _render_code(dsl)}

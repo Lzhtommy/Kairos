@@ -1,0 +1,131 @@
+"""Data collector: seeds reference data once, refreshes quotes/indices each tick.
+
+Runs every `collect_interval_seconds` via APScheduler (see main.py). With the
+live AkShare provider it only collects during A-share trading sessions; with the
+seed provider it always refreshes so the demo keeps moving.
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import datetime, time, timezone
+
+from sqlalchemy import func, select
+
+from app.core.db import SessionLocal
+from app.models.market import Fundamental, IndexQuote, Kline, Quote, StockInfo
+from app.providers.factory import get_provider
+
+logger = logging.getLogger("kairos.collector")
+
+# China Standard Time = UTC+8; trading sessions 09:30–11:30 and 13:00–15:00.
+_CST_OFFSET_HOURS = 8
+
+
+def in_trading_session(now_utc: datetime | None = None) -> bool:
+    now = now_utc or datetime.now(timezone.utc)
+    cst_hour = (now.hour + _CST_OFFSET_HOURS) % 24
+    t = time(cst_hour, now.minute)
+    if now.weekday() >= 5:  # Sat/Sun
+        return False
+    return (time(9, 30) <= t <= time(11, 30)) or (time(13, 0) <= t <= time(15, 0))
+
+
+def _refresh_quotes(db) -> int:
+    provider = get_provider()
+    quotes = provider.get_quotes()
+    fund_map = {f.code: f for f in db.execute(select(Fundamental)).scalars().all()}
+    for q in quotes:
+        roe = q.roe or (fund_map[q.code].roe if q.code in fund_map else 0.0)
+        db.merge(
+            Quote(
+                code=q.code,
+                ts=q.ts or datetime.now(timezone.utc),
+                price=q.price,
+                prev_close=q.prev_close,
+                open=q.open,
+                high=q.high,
+                low=q.low,
+                volume=q.volume,
+                turnover=q.turnover,
+                turnover_rate=q.turnover_rate,
+                pe=q.pe,
+                pb=q.pb,
+                market_cap=q.market_cap,
+                roe=roe,
+            )
+        )
+    for idx in provider.get_indices():
+        db.merge(
+            IndexQuote(
+                code=idx.code,
+                name=idx.name,
+                ts=datetime.now(timezone.utc),
+                price=idx.price,
+                change=idx.change,
+                change_pct=idx.change_pct,
+            )
+        )
+    db.commit()
+    return len(quotes)
+
+
+def bootstrap(db) -> None:
+    """Populate reference data (universe, klines, fundamentals) if empty."""
+    provider = get_provider()
+
+    if db.execute(select(func.count()).select_from(StockInfo)).scalar() == 0:
+        for meta in provider.get_universe():
+            db.merge(
+                StockInfo(code=meta.code, name=meta.name, market=meta.market, industry=meta.industry)
+            )
+        db.commit()
+        logger.info("Seeded stock universe")
+
+    if db.execute(select(func.count()).select_from(Fundamental)).scalar() == 0:
+        for f in provider.get_fundamentals():
+            db.merge(
+                Fundamental(
+                    code=f.code, pe=f.pe, pb=f.pb, roe=f.roe,
+                    market_cap=f.market_cap, dividend_yield=f.dividend_yield,
+                )
+            )
+        db.commit()
+        logger.info("Seeded fundamentals")
+
+    if db.execute(select(func.count()).select_from(Kline)).scalar() == 0:
+        codes = [m.code for m in provider.get_universe()]
+        for code in codes:
+            for c in provider.get_kline(code, "1d", 250):
+                db.add(
+                    Kline(
+                        code=code, period="1d", ts=c.ts,
+                        open=c.open, high=c.high, low=c.low, close=c.close, volume=c.volume,
+                    )
+                )
+        db.commit()
+        logger.info("Seeded K-lines for %d stocks", len(codes))
+
+
+def collect_once() -> None:
+    provider = get_provider()
+    if provider.name == "akshare" and not in_trading_session():
+        logger.debug("Outside trading session; skipping collection")
+        return
+    db = SessionLocal()
+    try:
+        n = _refresh_quotes(db)
+        logger.info("Collected %d quotes", n)
+    except Exception as exc:  # noqa: BLE001 — keep the scheduler alive
+        logger.warning("Collection failed: %s", exc)
+    finally:
+        db.close()
+
+
+def run_bootstrap_and_first_collect() -> None:
+    db = SessionLocal()
+    try:
+        bootstrap(db)
+    finally:
+        db.close()
+    collect_once()

@@ -32,8 +32,28 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "${{ secrets.SERVER_HOST }}" >> ~/.ssh/known_hosts
 
-      - name: Rsync dist to server
+      - name: Rsync frontend dist to server
         run: |
           rsync -az --delete \
             -e "ssh -i ~/.ssh/id_ed25519" \
             dist/ "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:/var/www/kairos/"
+
+      - name: Rsync backend to server
+        run: |
+          # --delete keeps the tree clean, but never touch the runtime data dir
+          # (SQLite lives on a docker volume, not here, so this is just belt-and-suspenders).
+          rsync -az --delete --exclude 'data/' --exclude '.venv/' --exclude '__pycache__/' \
+            -e "ssh -i ~/.ssh/id_ed25519" \
+            server/ "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:/opt/kairos/server/"
+          rsync -az \
+            -e "ssh -i ~/.ssh/id_ed25519" \
+            docker-compose.yml "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:/opt/kairos/docker-compose.yml"
+
+      - name: Rebuild & restart backend
+        run: |
+          ssh -i ~/.ssh/id_ed25519 "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" \
+            "cd /opt/kairos && \
+             JWT_SECRET='${{ secrets.JWT_SECRET }}' \
+             ANTHROPIC_API_KEY='${{ secrets.ANTHROPIC_API_KEY }}' \
+             docker compose up -d --build && \
+             docker image prune -f"

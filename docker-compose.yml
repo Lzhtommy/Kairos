@@ -1,0 +1,25 @@
+# MVP backend. The frontend keeps deploying as static files via host Nginx,
+# which reverse-proxies /api/ to this container (see deploy/nginx-kairos.conf).
+services:
+  api:
+    build:
+      context: ./server
+      args:
+        # Install the live A-share (AkShare) + Claude extras in production.
+        WITH_DATA: "true"
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      # SQLite lives on the named volume so it survives redeploys.
+      DATABASE_URL: sqlite:///./data/kairos.db
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      PROVIDER: ${PROVIDER:-auto}
+      AI_PROVIDER: ${AI_PROVIDER:-auto}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+    volumes:
+      - kairos-data:/app/data
+
+volumes:
+  kairos-data:

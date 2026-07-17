@@ -7,20 +7,37 @@ import {
   getSortedRowModel,
   useReactTable,
 } from "@tanstack/react-table"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { CaretUpDown, CaretUp, CaretDown, Star } from "@phosphor-icons/react"
 import type { Stock } from "@/lib/mock-data"
 import { changePct } from "@/lib/use-live-quotes"
+import { fetchWatchlist, addToWatchlist, removeFromWatchlist } from "@/api/watchlist"
 import { ChangeBadge, PriceCell, Sparkline } from "@/components/market/price-change"
 import { cn } from "@/lib/utils"
 
 function StarToggle({ code }: { code: string }) {
-  const [active, setActive] = useState(false)
+  const qc = useQueryClient()
+  const { data } = useQuery({
+    queryKey: ["watchlist"],
+    queryFn: fetchWatchlist,
+    staleTime: 30_000,
+  })
+  const active = data?.codes.includes(code) ?? false
+
+  const mutation = useMutation({
+    mutationFn: () => (active ? removeFromWatchlist(code) : addToWatchlist(code)),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["watchlist"] })
+    },
+  })
+
   return (
     <button
       onClick={(e) => {
         e.stopPropagation()
-        setActive((v) => !v)
+        mutation.mutate()
       }}
+      disabled={mutation.isPending}
       aria-label={active ? "移出自选" : "加入自选"}
       className="flex size-6 items-center justify-center rounded text-muted-foreground hover:text-primary"
     >
