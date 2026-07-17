@@ -499,5 +499,3 @@ GET  /backtests/{id}        → { status, metrics, curveUrl }
 - **目标数据分层**：MySQL（业务）+ 时序库（行情）+ Redis（实时/缓存）+ 对象存储（报告）+ MQ（解耦），按需逐步引入。
 - **AI 是护城河**：以 DSL 为中心的「自然语言 → 可校验可回测策略」闭环，配合沙箱保证安全。
 - **基础设施平滑演进**：从现有单 ECS + Nginx 静态，过渡到 Nginx 反代 + 容器化 FastAPI + SQLite，再到 ACK + MySQL 全托管。
-</content>
-</invoke>

@@ -1,6 +1,31 @@
 # 部署说明
 
-架构：推送到 `main` 分支 → GitHub Actions 构建 → rsync 到阿里云 ECS → Nginx 托管静态文件。
+架构：推送到 `main` 分支 → GitHub Actions 构建前端 + 同步后端 → 阿里云 ECS：
+Nginx 托管前端静态文件并把 `/api/` 反代到本机 Docker 中的 FastAPI 后端。
+
+```
+浏览器 ──▶ Nginx :80
+             ├── /            → /var/www/kairos（前端 dist，SPA 回退）
+             └── /api/        → 127.0.0.1:8000（FastAPI 容器）
+                                  └── SQLite（docker 卷 kairos-data）+ 每分钟采集
+```
+
+后端以 Docker Compose 运行，SQLite 数据落在命名卷 `kairos-data` 上（重新部署不丢数据）。
+迁移到 MySQL 只需改后端的 `DATABASE_URL`（见 `server/README.md`）。
+
+## 服务器额外前置：安装 Docker
+
+除下方的 nginx/rsync 外，后端需要 Docker 与 compose 插件：
+
+```bash
+# Ubuntu/Debian
+curl -fsSL https://get.docker.com | sh
+# 部署用户加入 docker 组（免 sudo）
+usermod -aG docker deploy
+mkdir -p /opt/kairos && chown -R deploy:deploy /opt/kairos
+```
+
+后端首次会自动建表并 bootstrap 行情数据；无需手动初始化数据库。
 
 ## 服务器一次性初始化（以 Ubuntu/Debian 为例，root 登录后执行）
 
@@ -44,15 +69,17 @@ ssh-keygen -t ed25519 -f kairos-deploy -N "" -C "kairos-deploy"
 
 ## GitHub 仓库 Secrets
 
-仓库 Settings → Secrets and variables → Actions → New repository secret，添加三个：
+仓库 Settings → Secrets and variables → Actions → New repository secret：
 
-| Secret 名 | 值 |
-|---|---|
-| `SERVER_HOST` | ECS 公网 IP |
-| `SERVER_USER` | `deploy` |
-| `SSH_PRIVATE_KEY` | `kairos-deploy` 私钥文件的完整内容 |
+| Secret 名 | 值 | 必填 |
+|---|---|---|
+| `SERVER_HOST` | ECS 公网 IP | 是 |
+| `SERVER_USER` | `deploy` | 是 |
+| `SSH_PRIVATE_KEY` | `kairos-deploy` 私钥文件的完整内容 | 是 |
+| `JWT_SECRET` | 随机长字符串（后端签发 token 用） | 建议 |
+| `ANTHROPIC_API_KEY` | Claude API Key（不填则用内置规则解析器生成策略） | 可选 |
 
-配置完成后，推送到 main 即自动部署；也可以在 Actions 页面手动触发（workflow_dispatch）。
+配置完成后，推送到 main 即自动部署（前端 + 后端）；也可以在 Actions 页面手动触发（workflow_dispatch）。
 
 ## 验证
 

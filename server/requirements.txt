@@ -1,0 +1,12 @@
+# Core runtime — installs cleanly anywhere, app runs fully on built-in providers.
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+sqlalchemy==2.0.36
+alembic==1.14.0
+pydantic==2.10.4
+pydantic-settings==2.7.0
+python-jose[cryptography]==3.3.0
+bcrypt==4.2.1
+python-multipart==0.0.20
+apscheduler==3.11.0
+httpx==0.28.1

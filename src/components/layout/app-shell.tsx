@@ -12,8 +12,10 @@ import {
   List,
   X,
 } from "@phosphor-icons/react"
+import { SignOut } from "@phosphor-icons/react"
 import { Logo } from "@/components/layout/logo"
 import { useTheme } from "@/lib/theme"
+import { useAuth } from "@/lib/auth"
 import { cn } from "@/lib/utils"
 import { Input } from "@/components/ui/input"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
@@ -33,7 +35,9 @@ const NAV_ITEMS = [
 export function AppShell({ children }: { children: ReactNode }) {
   const location = useLocation()
   const { theme, toggle } = useTheme()
+  const { user, logout } = useAuth()
   const [mobileOpen, setMobileOpen] = useState(false)
+  const initial = user?.nickname?.[0] ?? "K"
 
   const isActive = (to: string, end?: boolean) =>
     end ? location.pathname === to : location.pathname.startsWith(to)
@@ -71,13 +75,29 @@ export function AppShell({ children }: { children: ReactNode }) {
           <div className="flex items-center gap-2.5 rounded-md px-2 py-2">
             <Avatar className="size-7">
               <AvatarFallback className="bg-primary/15 text-primary text-xs font-medium">
-                陆
+                {initial}
               </AvatarFallback>
             </Avatar>
             <div className="min-w-0 flex-1">
-              <p className="truncate text-xs font-medium text-foreground">陆晓岚</p>
-              <p className="truncate text-[11px] text-muted-foreground">专业版</p>
+              <p className="truncate text-xs font-medium text-foreground">
+                {user?.nickname ?? "未登录"}
+              </p>
+              <p className="truncate text-[11px] text-muted-foreground">{user?.tier ?? ""}</p>
             </div>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <button
+                    onClick={logout}
+                    className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+                    aria-label="退出登录"
+                  >
+                    <SignOut className="size-4" />
+                  </button>
+                }
+              />
+              <TooltipContent>退出登录</TooltipContent>
+            </Tooltip>
           </div>
         </div>
       </aside>
