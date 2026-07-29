@@ -1,6 +1,6 @@
 import { useState } from "react"
-import { useQuery } from "@tanstack/react-query"
-import { Sparkle, ArrowCounterClockwise } from "@phosphor-icons/react"
+import { keepPreviousData, useQuery } from "@tanstack/react-query"
+import { Sparkle, ArrowCounterClockwise, CircleNotch } from "@phosphor-icons/react"
 import { INDUSTRIES } from "@/lib/mock-data"
 import { fetchIndustries, runScreener } from "@/api/market"
 import { fetchStrategies, fetchStrategyHits } from "@/api/strategies"
@@ -39,6 +39,7 @@ export function ScreenerPage() {
       }),
     enabled: mode === "classic",
     refetchInterval: 60_000,
+    placeholderData: keepPreviousData, // 改筛选条件时保留旧列表，避免闪空
   })
 
   const industriesQ = useQuery({
@@ -61,12 +62,16 @@ export function ScreenerPage() {
     queryKey: ["strategyHits", effectiveStrategy],
     queryFn: () => fetchStrategyHits(effectiveStrategy!),
     enabled: mode === "strategy" && !!effectiveStrategy,
+    placeholderData: keepPreviousData,
   })
 
   const filtered = mode === "classic" ? classicQ.data?.items ?? [] : hitsQ.data?.items ?? []
   const total =
     (mode === "classic" ? classicQ.data?.total : hitsQ.data?.total) ?? filtered.length
   const strategies = strategiesQ.data ?? []
+  // 只在首次加载或筛选条件变化（展示的是旧数据占位）时亮加载态，60s 后台轮询不打扰
+  const activeQ = mode === "classic" ? classicQ : hitsQ
+  const loading = activeQ.isLoading || (activeQ.isFetching && activeQ.isPlaceholderData)
 
   return (
     <div className="mx-auto max-w-[1600px] space-y-5 px-4 py-6 lg:px-6">
@@ -133,7 +138,7 @@ export function ScreenerPage() {
                 </div>
                 <Slider
                   value={peRange}
-                  onValueChange={(v) => setPeRange(v as number[])}
+                  onValueChange={(v) => setPeRange(Array.isArray(v) ? v : [v])}
                   min={0}
                   max={60}
                   step={1}
@@ -149,7 +154,8 @@ export function ScreenerPage() {
                 </div>
                 <Slider
                   value={minRoe}
-                  onValueChange={(v) => setMinRoe(v as number[])}
+                  // 单滑块时 base-ui 回传裸数字，不归一化的话 minRoe[0] 会变 undefined
+                  onValueChange={(v) => setMinRoe(Array.isArray(v) ? v : [v])}
                   min={0}
                   max={30}
                   step={1}
@@ -217,11 +223,17 @@ export function ScreenerPage() {
         </aside>
 
         <div className="min-w-0 space-y-3">
-          <p className="text-sm text-muted-foreground">
+          <p className="flex items-center gap-2 text-sm text-muted-foreground">
             共 <span className="font-mono font-medium text-foreground">{total}</span> 只符合条件
+            {loading && <CircleNotch className="size-3.5 animate-spin" />}
           </p>
           {filtered.length > 0 && (
-            <div className="rounded-lg border border-border">
+            <div
+              className={cn(
+                "rounded-lg border border-border transition-opacity",
+                loading && "pointer-events-none opacity-50",
+              )}
+            >
               {/* key 让筛选条件 / 策略变化时分页回到第一页 */}
               <QuoteTable
                 key={
@@ -233,7 +245,13 @@ export function ScreenerPage() {
               />
             </div>
           )}
-          {filtered.length === 0 && (
+          {filtered.length === 0 && loading && (
+            <div className="flex items-center justify-center gap-2 rounded-lg border border-dashed border-border py-14">
+              <CircleNotch className="size-4 animate-spin text-muted-foreground" />
+              <p className="text-sm text-muted-foreground">筛选中…</p>
+            </div>
+          )}
+          {filtered.length === 0 && !loading && (
             <div className="rounded-lg border border-dashed border-border py-14 text-center">
               <p className="text-sm text-muted-foreground">没有符合条件的股票，试着放宽筛选范围</p>
             </div>
