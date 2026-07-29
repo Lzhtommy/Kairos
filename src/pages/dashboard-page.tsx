@@ -64,7 +64,8 @@ export function DashboardPage() {
         </div>
         {data.length > 0 ? (
           <div className="rounded-lg border border-border">
-            <QuoteTable data={data} />
+            {/* key 让换 tab 时分页/排序回到初始状态 */}
+            <QuoteTable key={tab} data={data} />
           </div>
         ) : (
           <div className="rounded-lg border border-dashed border-border py-14 text-center">

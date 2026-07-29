@@ -34,7 +34,8 @@ export function ScreenerPage() {
         peMin: peRange[0],
         peMax: peRange[1],
         roeMin: minRoe[0],
-        pageSize: 200,
+        // 拉全量命中，翻页交给 QuoteTable 客户端分页（全市场也就 ~5500 只）
+        pageSize: 10_000,
       }),
     enabled: mode === "classic",
     refetchInterval: 60_000,
@@ -55,6 +56,8 @@ export function ScreenerPage() {
   })
 
   const filtered = mode === "classic" ? classicQ.data?.items ?? [] : hitsQ.data?.items ?? []
+  const total =
+    (mode === "classic" ? classicQ.data?.total : hitsQ.data?.total) ?? filtered.length
   const strategies = strategiesQ.data ?? []
 
   return (
@@ -206,11 +209,19 @@ export function ScreenerPage() {
 
         <div className="min-w-0 space-y-3">
           <p className="text-sm text-muted-foreground">
-            共 <span className="font-mono font-medium text-foreground">{filtered.length}</span> 只符合条件
+            共 <span className="font-mono font-medium text-foreground">{total}</span> 只符合条件
           </p>
           {filtered.length > 0 && (
             <div className="rounded-lg border border-border">
-              <QuoteTable data={filtered} />
+              {/* key 让筛选条件 / 策略变化时分页回到第一页 */}
+              <QuoteTable
+                key={
+                  mode === "classic"
+                    ? `classic-${industry}-${peRange.join()}-${minRoe[0]}`
+                    : `strategy-${effectiveStrategy}`
+                }
+                data={filtered}
+              />
             </div>
           )}
           {filtered.length === 0 && (
