@@ -1,9 +1,9 @@
-import { useLiveQuotes, changePct } from "@/lib/use-live-quotes"
+import { useShowcaseQuotes, changePct } from "@/lib/use-live-quotes"
 import { ChangeBadge, PriceCell, Sparkline } from "@/components/market/price-change"
 import { Sparkle } from "@phosphor-icons/react"
 
 export function HeroPreview() {
-  const { stocks, indices } = useLiveQuotes(2600)
+  const { stocks, indices } = useShowcaseQuotes(5)
   const rows = stocks.slice(0, 5)
   const idx = indices[0]
 

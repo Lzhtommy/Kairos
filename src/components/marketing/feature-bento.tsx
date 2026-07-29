@@ -1,4 +1,4 @@
-import { useLiveQuotes, changePct } from "@/lib/use-live-quotes"
+import { useShowcaseQuotes, changePct } from "@/lib/use-live-quotes"
 import { ChangeBadge, PriceCell, Sparkline } from "@/components/market/price-change"
 import { CodeBlock } from "@/components/strategy/code-block"
 import { FunnelSimple, Sparkle } from "@phosphor-icons/react"
@@ -8,7 +8,7 @@ const SNIPPET = `def screen(stock):
     return pe_ok and stock.roe >= 0.12`
 
 export function FeatureBento() {
-  const { stocks } = useLiveQuotes(3000)
+  const { stocks } = useShowcaseQuotes(6)
   const rows = stocks.slice(2, 6)
 
   return (

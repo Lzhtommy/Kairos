@@ -60,6 +60,10 @@ export function Sparkline({
   changePct?: number
   className?: string
 }) {
+  // 退市/停牌股可能只有 0~1 根 K 线，画不出折线
+  if (!data || data.length < 2) {
+    return <svg width={72} height={24} className={className} aria-hidden />
+  }
   const dir = direction(changePct ?? data[data.length - 1] - data[0])
   const min = Math.min(...data)
   const max = Math.max(...data)
