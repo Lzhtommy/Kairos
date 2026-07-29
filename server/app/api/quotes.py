@@ -18,6 +18,22 @@ def indices(db: Session = Depends(get_db)):
     return index_dicts(db)
 
 
+@router.get("/industries")
+def industries(db: Session = Depends(get_db)):
+    """行业列表（按成分股数量降序），供选股页下拉与策略 prompt 使用。"""
+    from sqlalchemy import func, select
+
+    from app.models.market import StockInfo
+
+    rows = db.execute(
+        select(StockInfo.industry, func.count())
+        .where(StockInfo.industry != "—")
+        .group_by(StockInfo.industry)
+        .order_by(func.count().desc())
+    ).all()
+    return [r[0] for r in rows]
+
+
 @router.get("/quotes/ranking")
 def ranking(
     type: str = Query(default="gainers"),

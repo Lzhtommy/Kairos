@@ -28,6 +28,7 @@ class QuoteData:
     pb: float
     market_cap: float
     roe: float
+    dividend_yield: float = 0.0  # percent, as quoted (3.9 = 3.9%)
     ts: datetime | None = None
 
 
@@ -64,7 +65,7 @@ class FundamentalData:
 class DataProvider(Protocol):
     name: str
 
-    def get_universe(self) -> list[StockMeta]: ...
+    def get_universe(self, refresh: bool = False) -> list[StockMeta]: ...
 
     def get_quotes(self, codes: list[str] | None = None) -> list[QuoteData]: ...
 

@@ -77,9 +77,10 @@ class TencentProvider:
                 time.sleep(1 + attempt * 2)
         raise last  # type: ignore[misc]
 
-    def get_universe(self) -> list[StockMeta]:
-        if self._universe_cache:
+    def get_universe(self, refresh: bool = False) -> list[StockMeta]:
+        if self._universe_cache and not refresh:
             return self._universe_cache
+        industry = self._industry_map()
         out: list[StockMeta] = []
         page = 1
         while True:
@@ -91,18 +92,60 @@ class TencentProvider:
             rows = r.json() or []
             for row in rows:
                 symbol = str(row["symbol"])  # e.g. sh600519
+                code = str(row["code"])
                 out.append(
                     StockMeta(
-                        code=str(row["code"]),
+                        code=code,
                         name=str(row["name"]),
                         market=symbol[:2].upper(),
-                        industry="—",
+                        industry=industry.get(code, "—"),
                     )
                 )
             if len(rows) < _UNIVERSE_PAGE:
                 break
             page += 1
         self._universe_cache = out
+        return out
+
+    def _industry_map(self) -> dict[str, str]:
+        """code → 申万二级行业名，via tencent 板块接口（约 124 个板块，一次全量遍历）。
+
+        行业分类失败不致命 —— 缺失的股票保持 "—"，下次 refresh 再补。
+        """
+        out: dict[str, str] = {}
+        try:
+            boards = self._get(
+                "https://web.ifzq.gtimg.cn/appstock/app/mktHs/rank",
+                params={"l": 300, "p": 1, "t": "01/averatio", "o": 0},
+            ).json()["data"]
+        except Exception:  # noqa: BLE001
+            return out
+        for b in boards:
+            name = str(b["bd_name"]).rstrip("Ⅱ")  # 申万二级的 Ⅱ 后缀对用户是噪音
+            board_code = str(b["bd_code"]).removeprefix("pt")
+            offset = 0
+            try:
+                while True:
+                    r = self._get(
+                        "https://proxy.finance.qq.com/cgi/cgi-bin/rank/hs/getBoardRankList",
+                        params={
+                            "board_code": board_code,
+                            "sort_type": "PriceRatio",
+                            "direct": "down",
+                            "offset": offset,
+                            "count": 200,
+                        },
+                    )
+                    data = r.json()["data"]
+                    rows = data.get("rank_list") or []
+                    for s in rows:
+                        out[str(s["code"])[2:]] = name  # sz300359 → 300359
+                    offset += len(rows)
+                    if not rows or offset >= int(data.get("total", 0)):
+                        break
+                    time.sleep(0.05)
+            except Exception:  # noqa: BLE001 — one bad board must not kill the sweep
+                continue
         return out
 
     def _fetch_quote_fields(self, symbols: list[str]) -> dict[str, list[str]]:
@@ -127,7 +170,7 @@ class TencentProvider:
         for f in fields.values():
             # Full-quote layout: 3 price, 4 prev_close, 5 open, 33 high, 34 low,
             # 36 volume(手), 37 turnover(万元), 38 turnover_rate, 39 PE(TTM),
-            # 45 total market cap(亿), 46 PB.
+            # 45 total market cap(亿), 46 PB, 64 dividend yield(%), 65 ROE(%).
             try:
                 price = float(f[3])
                 if price == 0:  # suspended / untraded
@@ -146,7 +189,8 @@ class TencentProvider:
                         pe=_f(f[39]) or None,
                         pb=_f(f[46]),
                         market_cap=round(_f(f[45]), 2),
-                        roe=0.0,  # not in quote; enriched by fundamentals
+                        roe=_f(f[65]),
+                        dividend_yield=_f(f[64]),
                         ts=now,
                     )
                 )
@@ -210,7 +254,7 @@ class TencentProvider:
         return out
 
     def get_fundamentals(self, codes: list[str] | None = None) -> list[FundamentalData]:
-        # Quote payload carries pe/pb/market_cap; roe/dividend need extra calls (skipped in MVP).
+        # Quote payload carries pe/pb/market_cap/roe/dividend — no extra calls needed.
         out: list[FundamentalData] = []
         for q in self.get_quotes(codes):
             out.append(
@@ -220,7 +264,8 @@ class TencentProvider:
                     pb=q.pb,
                     roe=q.roe,
                     market_cap=q.market_cap,
-                    dividend_yield=0.0,
+                    # DSL 里股息率约定为小数（0.03 = 3%），行情给的是百分数
+                    dividend_yield=round(q.dividend_yield / 100, 4),
                 )
             )
         return out

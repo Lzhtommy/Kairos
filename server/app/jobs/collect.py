@@ -119,6 +119,42 @@ def bootstrap(db) -> None:
         logger.info("Seeded K-lines for %d stocks (%d failed)", len(codes) - failed, failed)
 
 
+def refresh_reference() -> None:
+    """Refresh slow-moving reference data: industry classification + fundamentals
+    (roe / dividend_yield). Runs in the scheduler right after startup and daily —
+    bootstrap only seeds empty tables, so existing DBs rely on this to heal the
+    placeholder "—" / 0.0 values."""
+    provider = get_provider()
+    if provider.name == "seed":
+        return
+    db = SessionLocal()
+    try:
+        metas = provider.get_universe(refresh=True)
+        n_ind = 0
+        for meta in metas:
+            if meta.industry == "—":
+                continue
+            info = db.get(StockInfo, meta.code)
+            if info is None:
+                db.add(StockInfo(code=meta.code, name=meta.name, market=meta.market, industry=meta.industry))
+            elif info.industry != meta.industry:
+                info.industry = meta.industry
+            n_ind += 1
+        for f in provider.get_fundamentals():
+            db.merge(
+                Fundamental(
+                    code=f.code, pe=f.pe, pb=f.pb, roe=f.roe,
+                    market_cap=f.market_cap, dividend_yield=f.dividend_yield,
+                )
+            )
+        db.commit()
+        logger.info("Reference refresh: industry for %d stocks, fundamentals updated", n_ind)
+    except Exception as exc:  # noqa: BLE001 — keep the scheduler alive
+        logger.warning("Reference refresh failed: %s", exc)
+    finally:
+        db.close()
+
+
 def collect_once(force: bool = False) -> None:
     provider = get_provider()
     if not force and provider.name != "seed" and not in_trading_session():

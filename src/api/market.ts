@@ -10,6 +10,10 @@ export function fetchIndices(): Promise<IndexQuote[]> {
   return api<IndexQuote[]>("/indices")
 }
 
+export function fetchIndustries(): Promise<string[]> {
+  return api<string[]>("/industries")
+}
+
 export function fetchRanking(type: "gainers" | "active", limit = 30): Promise<Stock[]> {
   return api<Stock[]>(`/quotes/ranking?type=${type}&limit=${limit}`)
 }

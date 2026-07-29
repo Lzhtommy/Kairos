@@ -112,7 +112,15 @@ async def chat(
     body: ChatIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)
 ):
     """SSE stream: incremental explanation, then a final payload with dsl + code."""
-    result = strategy_ai.generate(body.text)
+    from app.models.market import StockInfo
+
+    industries = [
+        r[0]
+        for r in db.execute(
+            select(StockInfo.industry).where(StockInfo.industry != "—").distinct()
+        ).all()
+    ]
+    result = strategy_ai.generate(body.text, industries=industries or None)
 
     async def event_stream():
         explanation = result["explanation"]

@@ -1,5 +1,6 @@
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI
@@ -21,7 +22,7 @@ async def lifespan(_app: FastAPI):
     # Create tables (Alembic manages migrations in prod; create_all is a safe no-op if current).
     Base.metadata.create_all(bind=engine)
 
-    from app.jobs.collect import collect_once, run_bootstrap_and_first_collect
+    from app.jobs.collect import collect_once, refresh_reference, run_bootstrap_and_first_collect
 
     run_bootstrap_and_first_collect()
 
@@ -35,6 +36,17 @@ async def lifespan(_app: FastAPI):
             id="collect",
             max_instances=1,
             coalesce=True,
+        )
+        # Slow-moving reference data (industry / roe / dividend). next_run_time=now
+        # runs it right after startup in a worker thread so boot isn't blocked.
+        _scheduler.add_job(
+            refresh_reference,
+            "interval",
+            hours=24,
+            id="reference",
+            max_instances=1,
+            coalesce=True,
+            next_run_time=datetime.now(timezone.utc),
         )
         _scheduler.start()
         logger.info("Collector scheduled every %ds", settings.collect_interval_seconds)

@@ -39,7 +39,7 @@ class AkShareProvider:
         # 东财实时行情快照（全 A 股）
         return self._ak.stock_zh_a_spot_em()
 
-    def get_universe(self) -> list[StockMeta]:
+    def get_universe(self, refresh: bool = False) -> list[StockMeta]:
         df = self._spot()
         out: list[StockMeta] = []
         for _, r in df.iterrows():

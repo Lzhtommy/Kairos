@@ -37,7 +37,24 @@ _FACTOR_KEYWORDS: list[tuple[str, str]] = [
 _GTE = ["不低于", "不少于", "大于等于", "高于", "大于", "超过", "以上", "多于"]
 _LTE = ["不高于", "不超过", "小于等于", "低于", "小于", "以下", "少于"]
 
-_INDUSTRIES = ["白酒", "银行", "新能源", "半导体", "医药", "军工", "汽车", "家电", "食品饮料", "券商"]
+# 口语行业词 → 申万二级行业名（stock_info.industry 的实际取值，来自腾讯板块分类）。
+# 规则解析兜底用；DeepSeek 路径直接在 prompt 里给出全量行业列表，由模型自己映射。
+_INDUSTRY_ALIASES: dict[str, list[str]] = {
+    "白酒": ["白酒"],
+    "银行": ["国有大型银行", "股份制银行", "城商行", "农商行"],
+    "新能源": ["电池", "光伏设备", "风电设备", "能源金属"],
+    "半导体": ["半导体"],
+    "医药": ["化学制药", "生物制品", "中药", "医药商业", "医疗服务"],
+    "军工": ["航天装备", "航空装备", "地面兵装", "军工电子", "航海装备"],
+    "汽车": ["乘用车", "商用车", "汽车零部件", "汽车服务"],
+    "家电": ["白色家电", "黑色家电", "小家电", "厨卫电器", "家电零部件"],
+    "食品饮料": ["食品加工", "休闲食品", "饮料乳品", "调味发酵品", "非白酒"],
+    "券商": ["证券"],
+    "证券": ["证券"],
+    "保险": ["保险"],
+    "房地产": ["房地产开发", "房地产服务"],
+    "地产": ["房地产开发", "房地产服务"],
+}
 
 
 def _find_factor(clause: str) -> str | None:
@@ -54,9 +71,11 @@ def _find_number(clause: str) -> float | None:
 
 def _parse_clause(clause: str) -> dict[str, Any] | None:
     # industry match
-    for ind in _INDUSTRIES:
-        if ind in clause:
-            return {"factor": "industry", "op": "eq", "value": ind}
+    for kw, boards in _INDUSTRY_ALIASES.items():
+        if kw in clause:
+            if len(boards) == 1:
+                return {"factor": "industry", "op": "eq", "value": boards[0]}
+            return {"factor": "industry", "op": "in", "value": boards}
 
     factor = _find_factor(clause)
     if factor is None:
@@ -119,7 +138,11 @@ def _render_code(dsl: dict[str, Any]) -> str:
     for f in dsl["filters"]:
         label = FACTORS[f["factor"]][0]
         if f["factor"] == "industry":
-            parts.append(f'stock.industry == "{f["value"]}"  # {label}')
+            if f["op"] == "in":
+                opts = ", ".join(f'"{v}"' for v in f["value"])
+                parts.append(f"stock.industry in ({opts})  # {label}")
+            else:
+                parts.append(f'stock.industry == "{f["value"]}"  # {label}')
         elif "ref" in f:
             parts.append(f'stock.{f["factor"]} {_op_sym(f["op"])} industry_median(stock)  # {label}')
         elif f["op"] == "between":
@@ -143,7 +166,8 @@ def _render_explanation(dsl: dict[str, Any]) -> str:
     for f in dsl["filters"]:
         label = FACTORS[f["factor"]][0]
         if f["factor"] == "industry":
-            descs.append(f"限定行业为「{f['value']}」")
+            names = "、".join(f["value"]) if f["op"] == "in" else f["value"]
+            descs.append(f"限定行业为「{names}」")
         elif "ref" in f:
             descs.append(f"{label} {'高于' if f['op'].startswith('g') else '低于'}行业中位数")
         elif f["op"] == "between":
@@ -154,11 +178,18 @@ def _render_explanation(dsl: dict[str, Any]) -> str:
     return "根据你的描述，我生成了以下选股逻辑：" + "；".join(descs) + "。代码见右侧面板，可点击「运行回测」查看历史表现。"
 
 
-def _deepseek(text: str) -> dict[str, Any] | None:
+def _deepseek(text: str, industries: list[str] | None = None) -> dict[str, Any] | None:
     if not settings.deepseek_api_key:
         return None
     try:
         factor_doc = "\n".join(f"- {k}: {v[0]} ({v[1]})" for k, v in FACTORS.items())
+        industry_doc = (
+            "industry 的合法取值（申万二级行业名，必须精确使用，"
+            "口语行业词映射到一个或多个取值，如\"银行股\" → in [\"国有大型银行\",\"股份制银行\",\"城商行\",\"农商行\"]）：\n"
+            + "、".join(industries) + "\n"
+            if industries
+            else ""
+        )
         prompt = (
             "你是 A 股量化选股助手。把用户需求转成选股 DSL，"
             "以 JSON 输出：{\"filters\": [...], \"explanation\": \"一句话解释\"}。\n"
@@ -167,6 +198,7 @@ def _deepseek(text: str) -> dict[str, Any] | None:
             "只能使用以下白名单因子：\n"
             f"{factor_doc}\n"
             "算子: 数值型 lt/lte/gt/gte/eq/between，类别型(industry) eq/in。\n"
+            f"{industry_doc}"
             "注意单位：市值/成交额单位为亿，换手率/涨跌幅/ROE 为百分数数值，股息率为小数(3% → 0.03)。\n"
             f"用户需求：{text}"
         )
@@ -196,12 +228,12 @@ def _deepseek(text: str) -> dict[str, Any] | None:
         return None
 
 
-def generate(text: str) -> dict[str, Any]:
+def generate(text: str, industries: list[str] | None = None) -> dict[str, Any]:
     """NL → {dsl, explanation, code}. Always returns a valid, validated DSL."""
     use = settings.ai_provider.lower()
     result = None
     if use in ("auto", "deepseek"):
-        result = _deepseek(text)
+        result = _deepseek(text, industries)
 
     if result is None:
         dsl = validate_dsl(rule_based(text))

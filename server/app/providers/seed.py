@@ -71,7 +71,7 @@ class SeedProvider:
 
     name = "seed"
 
-    def get_universe(self) -> list[StockMeta]:
+    def get_universe(self, refresh: bool = False) -> list[StockMeta]:
         return [StockMeta(code=c, name=n, market=m, industry=ind) for c, n, m, ind, *_ in RAW]
 
     def _base_quote(self, row, i: int) -> QuoteData:

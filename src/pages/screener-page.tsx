@@ -2,7 +2,7 @@ import { useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { Sparkle, ArrowCounterClockwise } from "@phosphor-icons/react"
 import { INDUSTRIES } from "@/lib/mock-data"
-import { runScreener } from "@/api/market"
+import { fetchIndustries, runScreener } from "@/api/market"
 import { fetchStrategies, fetchStrategyHits } from "@/api/strategies"
 import { QuoteTable } from "@/components/market/quote-table"
 import { Link } from "react-router-dom"
@@ -40,6 +40,14 @@ export function ScreenerPage() {
     enabled: mode === "classic",
     refetchInterval: 60_000,
   })
+
+  const industriesQ = useQuery({
+    queryKey: ["industries"],
+    queryFn: fetchIndustries,
+    staleTime: 24 * 60 * 60 * 1000, // 行业分类一天刷一次，会话内不重复拉
+    enabled: mode === "classic",
+  })
+  const industries = industriesQ.data?.length ? industriesQ.data : INDUSTRIES
 
   const strategiesQ = useQuery({
     queryKey: ["strategies"],
@@ -104,9 +112,10 @@ export function ScreenerPage() {
                       {(value: string) => (value === "all" ? "全部行业" : value)}
                     </SelectValue>
                   </SelectTrigger>
-                  <SelectContent>
+                  {/* 124 个行业选项时 alignItemWithTrigger 的对齐测量会卡死渲染进程，改普通下拉定位 */}
+                  <SelectContent alignItemWithTrigger={false} className="max-h-72">
                     <SelectItem value="all">全部行业</SelectItem>
-                    {INDUSTRIES.map((ind) => (
+                    {industries.map((ind) => (
                       <SelectItem key={ind} value={ind}>
                         {ind}
                       </SelectItem>
