@@ -36,7 +36,12 @@ def change_pct(price: float, prev_close: float) -> float:
 
 
 def stock_dicts(db: Session, codes: list[str] | None = None) -> list[dict[str, Any]]:
-    """Frontend `Stock` shape (camelCase) for /quotes, /screener, /watchlist."""
+    """Frontend `Stock` shape (camelCase) for /quotes, /screener, /watchlist.
+
+    codes=None → 全市场；codes=[] → 空结果（零命中的策略不能退化成全市场）。
+    """
+    if codes is not None and not codes:
+        return []
     info = {s.code: s for s in db.execute(select(StockInfo)).scalars().all()}
     stmt = select(Quote)
     if codes:
@@ -71,6 +76,8 @@ def stock_dicts(db: Session, codes: list[str] | None = None) -> list[dict[str, A
 
 def factor_rows(db: Session, codes: list[str] | None = None) -> list[dict[str, Any]]:
     """Rows carrying every whitelisted factor value — input to the DSL engine."""
+    if codes is not None and not codes:
+        return []
     info = {s.code: s for s in db.execute(select(StockInfo)).scalars().all()}
     funds = {f.code: f for f in db.execute(select(Fundamental)).scalars().all()}
     stmt = select(Quote)
