@@ -132,14 +132,14 @@ def refresh_reference() -> None:
         metas = provider.get_universe(refresh=True)
         n_ind = 0
         for meta in metas:
-            if meta.industry == "—":
-                continue
             info = db.get(StockInfo, meta.code)
             if info is None:
+                # 新上市股票即使还没行业分类也要入库，否则前端只能显示裸代码
                 db.add(StockInfo(code=meta.code, name=meta.name, market=meta.market, industry=meta.industry))
-            elif info.industry != meta.industry:
+            elif meta.industry != "—" and info.industry != meta.industry:
                 info.industry = meta.industry
-            n_ind += 1
+            if meta.industry != "—":
+                n_ind += 1
         for f in provider.get_fundamentals():
             db.merge(
                 Fundamental(
@@ -148,7 +148,33 @@ def refresh_reference() -> None:
                 )
             )
         db.commit()
-        logger.info("Reference refresh: industry for %d stocks, fundamentals updated", n_ind)
+
+        # 给 bootstrap 之后新上市的股票回补日 K（没有 K 线的股票会让回测缺数据）。
+        # 每轮最多补 300 只，既覆盖日常新增，又不至于在数据大面积缺失时打爆限流。
+        have_kline = {
+            r[0] for r in db.execute(select(Kline.code).where(Kline.period == "1d").distinct())
+        }
+        missing = [m.code for m in metas if m.code not in have_kline][:300]
+        backfilled = 0
+        for code in missing:
+            sleep(0.05)
+            try:
+                candles = provider.get_kline(code, "1d", 250)
+            except Exception:  # noqa: BLE001 — one bad ticker must not kill the job
+                continue
+            for c in candles:
+                db.add(
+                    Kline(
+                        code=code, period="1d", ts=c.ts,
+                        open=c.open, high=c.high, low=c.low, close=c.close, volume=c.volume,
+                    )
+                )
+            backfilled += 1
+        db.commit()
+        logger.info(
+            "Reference refresh: industry for %d stocks, fundamentals updated, klines backfilled for %d new stocks",
+            n_ind, backfilled,
+        )
     except Exception as exc:  # noqa: BLE001 — keep the scheduler alive
         logger.warning("Reference refresh failed: %s", exc)
     finally:

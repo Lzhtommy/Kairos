@@ -36,22 +36,27 @@ def _closes_by_code(db: Session, codes: list[str]) -> dict[str, list[tuple[datet
     return out
 
 
+def _empty_result(hit_count: int = 0) -> dict[str, Any]:
+    return {
+        "metrics": {"annualizedReturn": 0.0, "maxDrawdown": 0.0, "sharpe": 0.0,
+                    "winRate": 0.0, "hitCount": hit_count},
+        "curve": [],
+    }
+
+
 def run(db: Session, dsl: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
     rows = factor_rows(db)
     passing = execute(dsl, rows)
-    codes = [r["code"] for r in passing]
-    hit_count = len(codes)
+    hit_count = len(passing)
 
+    series = _closes_by_code(db, [r["code"] for r in passing])
+    # 新上市 / 数据缺口的股票没有 K 线，跳过（此前 close_map[c] 直接 KeyError）
+    codes = [r["code"] for r in passing if series.get(r["code"])]
     if not codes:
-        return {
-            "metrics": {"annualizedReturn": 0.0, "maxDrawdown": 0.0, "sharpe": 0.0,
-                        "winRate": 0.0, "hitCount": 0},
-            "curve": [],
-        }
+        return _empty_result(hit_count)
 
-    series = _closes_by_code(db, codes)
-    # common trading calendar = dates present for the first constituent
-    calendar = [ts for ts, _ in series.get(codes[0], [])]
+    # common trading calendar = dates of the constituent with the longest history
+    calendar = [ts for ts, _ in max(series.values(), key=len)]
     close_map = {c: {ts: v for ts, v in s} for c, s in series.items()}
 
     rate = float(params.get("cost", {}).get("rate", dsl.get("cost", {}).get("rate", 0.0005)))
