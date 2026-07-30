@@ -30,6 +30,9 @@ class QuoteData:
     roe: float
     dividend_yield: float = 0.0  # percent, as quoted (3.9 = 3.9%)
     ts: datetime | None = None
+    # 交易所行情时间戳（CST，naive）。用于判断行情属于哪个交易日——
+    # 节假日/停牌时腾讯返回的是旧数据，靠它避免合成错误的日 K。
+    exchange_ts: datetime | None = None
 
 
 @dataclass

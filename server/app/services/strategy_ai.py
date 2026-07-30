@@ -109,14 +109,30 @@ def _split_clauses(text: str) -> list[str]:
     return [c for c in re.split(r"[，,。；;、\n]|并且|而且|且|同时", text) if c.strip()]
 
 
+def _parse_technical(text: str) -> list[dict[str, Any]]:
+    """技术形态的关键词兜底（主路径是 DeepSeek，按 prompt 生成参数化条件）。"""
+    tech: list[dict[str, Any]] = []
+    if "死叉" in text:
+        tech.append({"type": "ma_cross", "fast": 3, "slow": 7, "direction": "death"})
+    elif "金叉" in text:
+        tech.append({"type": "ma_cross", "fast": 3, "slow": 7, "direction": "golden"})
+    if any(k in text for k in ("双线向上", "均线向上", "均线上翘", "均线同步向上")):
+        tech.append({"type": "ma_rising", "windows": [3, 7]})
+    if any(k in text for k in ("趋势平滑", "平滑上行", "稳步上行", "长期趋势向上")):
+        tech.append({"type": "ma_trend", "window": 60, "lookback": 120,
+                     "max_down_days": 10, "min_gain_pct": 1.5})
+    return tech
+
+
 def rule_based(text: str) -> dict[str, Any]:
     filters = []
     for clause in _split_clauses(text):
         parsed = _parse_clause(clause)
         if parsed:
             filters.append(parsed)
+    technical = _parse_technical(text)
 
-    if not filters:
+    if not filters and not technical:
         # sensible default so the feature always produces something usable
         filters = [
             {"factor": "pe", "op": "lte", "value": 30},
@@ -126,10 +142,33 @@ def rule_based(text: str) -> dict[str, Any]:
     dsl = {
         "universe": {"exclude": ["ST", "停牌"], "market": ["SH", "SZ"]},
         "filters": filters,
+        "technical": technical,
         "rebalance": "monthly_first_trading_day",
         "cost": {"side": "both", "rate": 0.0005},
     }
     return dsl
+
+
+def _tech_desc(t: dict[str, Any]) -> str:
+    if t["type"] == "ma_trend":
+        return (
+            f"MA{t['window']} 近{t['lookback']}日平滑上行"
+            f"（回调≤{t['max_down_days']}天且累计涨幅≥{t['min_gain_pct']}%）"
+        )
+    if t["type"] == "ma_distance":
+        return f"MA{t['fast']} 偏离 MA{t['base']} 在 {t['min_pct']}%~{t['max_pct']}% 之间"
+    if t["type"] == "ma_rising":
+        names = "、".join(f"MA{w}" for w in t["windows"])
+        return f"{names} 同步上翘"
+    if t["type"] == "ma_cross":
+        word = "死叉" if t.get("direction") == "death" else "金叉"
+        return f"MA{t['fast']} 刚{word} MA{t['slow']}（首日）"
+    return t["type"]
+
+
+def _tech_call(t: dict[str, Any]) -> str:
+    args = ", ".join(f"{k}={v!r}" for k, v in t.items() if k != "type")
+    return f"{t['type']}(stock, {args})"
 
 
 def _render_code(dsl: dict[str, Any]) -> str:
@@ -149,6 +188,8 @@ def _render_code(dsl: dict[str, Any]) -> str:
             parts.append(f'{f["min"]} <= stock.{f["factor"]} <= {f["max"]}  # {label}')
         else:
             parts.append(f'stock.{f["factor"]} {_op_sym(f["op"])} {f["value"]}  # {label}')
+    for t in dsl.get("technical", []):
+        parts.append(f"{_tech_call(t)}  # {_tech_desc(t)}")
     lines.append("        " + "\n        and ".join(parts))
     lines.append("    )")
     lines.append("")
@@ -175,6 +216,8 @@ def _render_explanation(dsl: dict[str, Any]) -> str:
         else:
             word = "不低于" if f["op"].startswith("g") else "不高于"
             descs.append(f"{label} {word} {f['value']}")
+    for t in dsl.get("technical", []):
+        descs.append(_tech_desc(t))
     return "根据你的描述，我生成了以下选股逻辑：" + "；".join(descs) + "。代码见右侧面板，可点击「运行回测」查看历史表现。"
 
 
@@ -192,13 +235,24 @@ def _deepseek(text: str, industries: list[str] | None = None) -> dict[str, Any] 
         )
         prompt = (
             "你是 A 股量化选股助手。把用户需求转成选股 DSL，"
-            "以 JSON 输出：{\"filters\": [...], \"explanation\": \"一句话解释\"}。\n"
+            "以 JSON 输出：{\"filters\": [...], \"technical\": [...], \"explanation\": \"一句话解释\"}"
+            "（filters/technical 用不到的可为空数组，但不能都为空）。\n"
             "每个 filter 形如 {\"factor\": ..., \"op\": ..., \"value\": ...}，"
             "between 用 min/max 代替 value，行业中位数比较用 {\"factor\": ..., \"op\": ..., \"ref\": \"industry_median\"}。\n"
             "只能使用以下白名单因子：\n"
             f"{factor_doc}\n"
             "算子: 数值型 lt/lte/gt/gte/eq/between，类别型(industry) eq/in。\n"
             f"{industry_doc}"
+            "涉及均线/K线形态时用 technical 数组，只有以下 4 种类型（参数可调）：\n"
+            "- {\"type\":\"ma_trend\",\"window\":60,\"lookback\":120,\"max_down_days\":10,\"min_gain_pct\":1.5}"
+            " → MA{window} 在最近 lookback 个交易日平滑上行：逐日滚动算 MA，"
+            "下行天数≤max_down_days 且 MA 首尾累计涨幅≥min_gain_pct(%)\n"
+            "- {\"type\":\"ma_distance\",\"fast\":3,\"base\":60,\"min_pct\":-8,\"max_pct\":12}"
+            " → MA{fast} 相对 MA{base} 的偏离百分比在 [min_pct, max_pct] 区间内\n"
+            "- {\"type\":\"ma_rising\",\"windows\":[3,7]}"
+            " → windows 里每条均线今日值都高于昨日值（同步上翘）\n"
+            "- {\"type\":\"ma_cross\",\"fast\":3,\"slow\":7,\"direction\":\"golden\"}"
+            " → MA{fast} 今日刚上穿 MA{slow}（金叉首日；death 为死叉）\n"
             "注意单位：市值/成交额单位为亿，换手率/涨跌幅/ROE 为百分数数值，股息率为小数(3% → 0.03)。\n"
             f"用户需求：{text}"
         )
@@ -218,7 +272,8 @@ def _deepseek(text: str, industries: list[str] | None = None) -> dict[str, Any] 
         payload = json.loads(r.json()["choices"][0]["message"]["content"])
         dsl = {
             "universe": {"exclude": ["ST", "停牌"], "market": ["SH", "SZ"]},
-            "filters": payload["filters"],
+            "filters": payload.get("filters", []),
+            "technical": payload.get("technical", []),
             "rebalance": "monthly_first_trading_day",
             "cost": {"side": "both", "rate": 0.0005},
         }

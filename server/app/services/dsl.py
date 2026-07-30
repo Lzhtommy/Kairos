@@ -10,6 +10,9 @@ from __future__ import annotations
 from statistics import median
 from typing import Any
 
+from app.services.technical import INT_PARAMS as TECH_INT_PARAMS
+from app.services.technical import SPECS as TECH_SPECS
+
 # factor key -> (human label, kind)  kind: "num" | "cat"
 FACTORS: dict[str, tuple[str, str]] = {
     "pe": ("市盈率", "num"),
@@ -38,9 +41,9 @@ def validate_dsl(dsl: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(dsl, dict):
         raise DSLError("DSL 必须是对象")
 
-    filters = dsl.get("filters", [])
-    if not isinstance(filters, list) or not filters:
-        raise DSLError("filters 不能为空")
+    filters = dsl.get("filters", []) or []
+    if not isinstance(filters, list):
+        raise DSLError("filters 必须是数组")
 
     norm_filters = []
     for i, f in enumerate(filters):
@@ -84,6 +87,10 @@ def validate_dsl(dsl: dict[str, Any]) -> dict[str, Any]:
                 entry["value"] = val
         norm_filters.append(entry)
 
+    norm_tech = _validate_technical(dsl.get("technical", []) or [])
+    if not norm_filters and not norm_tech:
+        raise DSLError("filters 与 technical 不能同时为空")
+
     universe = dsl.get("universe", {}) or {}
     cost = dsl.get("cost", {}) or {}
     return {
@@ -92,12 +99,49 @@ def validate_dsl(dsl: dict[str, Any]) -> dict[str, Any]:
             "market": list(universe.get("market", ["SH", "SZ"])),
         },
         "filters": norm_filters,
+        "technical": norm_tech,
         "rebalance": dsl.get("rebalance", "monthly_first_trading_day"),
         "cost": {
             "side": cost.get("side", "both"),
             "rate": float(cost.get("rate", 0.0005)),
         },
     }
+
+
+def _validate_technical(entries: Any) -> list[dict[str, Any]]:
+    """校验 K 线技术条件：类型走白名单，数值参数夹到 SPECS 的安全范围。"""
+    if not isinstance(entries, list):
+        raise DSLError("technical 必须是数组")
+    out: list[dict[str, Any]] = []
+    for i, t in enumerate(entries):
+        if not isinstance(t, dict):
+            raise DSLError(f"technical[{i}] 必须是对象")
+        typ = t.get("type")
+        if typ not in TECH_SPECS:
+            raise DSLError(f"未知技术条件类型: {typ}（可用: {', '.join(TECH_SPECS)}）")
+        entry: dict[str, Any] = {"type": typ}
+        for param, (default, lo, hi) in TECH_SPECS[typ].items():
+            raw = t.get(param, default)
+            if not _is_num(raw):
+                raise DSLError(f"technical[{i}].{param} 需要数值")
+            val = min(max(float(raw), lo), hi)
+            entry[param] = int(val) if param in TECH_INT_PARAMS else val
+        if typ == "ma_rising":
+            ws = t.get("windows", [3, 7])
+            if not isinstance(ws, list) or not ws or not all(_is_num(w) for w in ws):
+                raise DSLError(f"technical[{i}].windows 需要非空数值数组")
+            entry["windows"] = sorted({int(min(max(w, 1), 120)) for w in ws})
+        if typ == "ma_cross":
+            direction = t.get("direction", "golden")
+            if direction not in ("golden", "death"):
+                raise DSLError(f"technical[{i}].direction 只能是 golden 或 death")
+            entry["direction"] = direction
+            if entry["fast"] >= entry["slow"]:
+                raise DSLError(f"technical[{i}] 要求 fast < slow")
+        if typ == "ma_distance" and entry["min_pct"] > entry["max_pct"]:
+            raise DSLError(f"technical[{i}] 要求 min_pct ≤ max_pct")
+        out.append(entry)
+    return out
 
 
 def _is_num(v: Any) -> bool:
@@ -128,6 +172,9 @@ def execute(dsl: dict[str, Any], rows: list[dict[str, Any]]) -> list[dict[str, A
     # market universe filter
     markets = set(dsl["universe"]["market"])
     rows = [r for r in rows if r.get("market") in markets]
+    # exclude 里带 "ST" 时剔除 ST/*ST（此前这条约定从未真正生效）
+    if any("ST" in e for e in dsl["universe"]["exclude"]):
+        rows = [r for r in rows if "ST" not in r.get("name", "")]
 
     # precompute industry medians for any ref-based numeric filter
     medians: dict[str, dict[str, float]] = {}

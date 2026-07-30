@@ -168,13 +168,18 @@ class TencentProvider:
         now = datetime.now(timezone.utc)
         out: list[QuoteData] = []
         for f in fields.values():
-            # Full-quote layout: 3 price, 4 prev_close, 5 open, 33 high, 34 low,
-            # 36 volume(手), 37 turnover(万元), 38 turnover_rate, 39 PE(TTM),
-            # 45 total market cap(亿), 46 PB, 64 dividend yield(%), 65 ROE(%).
+            # Full-quote layout: 3 price, 4 prev_close, 5 open, 30 quote time
+            # (yyyymmddHHMMSS), 33 high, 34 low, 36 volume(手), 37 turnover(万元),
+            # 38 turnover_rate, 39 PE(TTM), 45 total market cap(亿), 46 PB,
+            # 64 dividend yield(%), 65 ROE(%).
             try:
                 price = float(f[3])
                 if price == 0:  # suspended / untraded
                     continue
+                try:
+                    exchange_ts = datetime.strptime(f[30], "%Y%m%d%H%M%S")
+                except ValueError:
+                    exchange_ts = None
                 out.append(
                     QuoteData(
                         code=str(f[2]),
@@ -192,6 +197,7 @@ class TencentProvider:
                         roe=_f(f[65]),
                         dividend_yield=_f(f[64]),
                         ts=now,
+                        exchange_ts=exchange_ts,
                     )
                 )
             except (ValueError, IndexError):

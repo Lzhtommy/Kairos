@@ -275,10 +275,20 @@ alerts(id, user_id, type, target, condition json, enabled)
     { "factor": "roe_min_3y", "op": "gte", "value": 0.12 }
   ],
   "rebalance": "monthly_first_trading_day",
-  "cost": { "side": "both", "rate": 0.0005 }
+  "cost": { "side": "both", "rate": 0.0005 },
+  "technical": [
+    { "type": "ma_trend", "window": 60, "lookback": 120, "max_down_days": 10, "min_gain_pct": 1.5 },
+    { "type": "ma_distance", "fast": 3, "base": 60, "min_pct": -8, "max_pct": 12 },
+    { "type": "ma_rising", "windows": [3, 7] },
+    { "type": "ma_cross", "fast": 3, "slow": 7, "direction": "golden" }
+  ]
 }
 ```
 > 与现有 `GENERATED_CODE`（`def screen(stock): ...`）等价，但机器可校验、可回测、可增量编辑。代码视图由 DSL 渲染而来。
+>
+> `technical` 为 K 线技术形态层（`app/services/technical.py`）：类型白名单 + 参数夹紧，
+> 执行时标量 filters 先筛、技术条件只对入围股票取日 K 计算（`strategy_exec.run_dsl`）。
+> 当日日 K 由行情采集实时合成（`collect._upsert_today_bars`），保证均线算到最新交易日。
 
 ### 6.3 行情 / 时序数据
 

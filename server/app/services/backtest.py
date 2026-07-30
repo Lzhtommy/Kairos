@@ -18,8 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.market import Kline
-from app.services.dsl import execute
-from app.services.market import factor_rows
+from app.services.strategy_exec import run_dsl
 
 TRADING_DAYS = 252
 
@@ -45,8 +44,7 @@ def _empty_result(hit_count: int = 0) -> dict[str, Any]:
 
 
 def run(db: Session, dsl: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
-    rows = factor_rows(db)
-    passing = execute(dsl, rows)
+    passing = run_dsl(db, dsl)
     hit_count = len(passing)
 
     series = _closes_by_code(db, [r["code"] for r in passing])

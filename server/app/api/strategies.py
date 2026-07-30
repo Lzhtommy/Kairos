@@ -12,8 +12,9 @@ from app.models.strategy import Strategy
 from app.models.user import User
 from app.schemas import ChatIn, StrategyIn
 from app.services import strategy_ai
-from app.services.dsl import execute, validate_dsl
-from app.services.market import factor_rows, stock_dicts
+from app.services.dsl import validate_dsl
+from app.services.market import stock_dicts
+from app.services.strategy_exec import run_dsl
 
 router = APIRouter(prefix="/strategies", tags=["strategies"])
 
@@ -53,7 +54,7 @@ def create_strategy(
     dsl = validate_dsl(body.dsl) if body.dsl else {}
     hit_count = 0
     if dsl:
-        hit_count = len(execute(dsl, factor_rows(db)))
+        hit_count = len(run_dsl(db, dsl))
     s = Strategy(
         user_id=user.id,
         name=body.name,
@@ -79,7 +80,7 @@ def update_strategy(
     s.tags = body.tags
     if body.dsl:
         s.dsl = validate_dsl(body.dsl)
-        s.hit_count = len(execute(s.dsl, factor_rows(db)))
+        s.hit_count = len(run_dsl(db, s.dsl))
     s.code = body.code
     db.commit()
     db.refresh(s)
@@ -98,7 +99,7 @@ def strategy_hits(sid: int, db: Session = Depends(get_db), user: User = Depends(
     s = _get_owned(db, sid, user)
     if not s.dsl:
         return {"total": 0, "items": []}
-    matched = execute(s.dsl, factor_rows(db))
+    matched = run_dsl(db, s.dsl)
     codes = [r["code"] for r in matched]
     # keep hit_count fresh
     if s.hit_count != len(codes):

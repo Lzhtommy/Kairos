@@ -8,10 +8,10 @@ sessions; with the seed provider it always refreshes so the demo keeps moving.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from time import sleep
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from app.core.db import SessionLocal
 from app.models.market import Fundamental, IndexQuote, Kline, Quote, StockInfo
@@ -67,8 +67,31 @@ def _refresh_quotes(db) -> int:
                 change_pct=idx.change_pct,
             )
         )
+    _upsert_today_bars(db, quotes)
     db.commit()
     return len(quotes)
+
+
+def _upsert_today_bars(db, quotes) -> None:
+    """把当日行情合成/覆盖为当日日 K bar，让 K 线保持到最新交易日。
+
+    日 K 只在 bootstrap 时批量拉过一次，之后全靠这里逐分钟刷新当日 bar
+    （收盘后最后一次刷新即当日收盘 bar）。只处理交易所时间戳落在今天的
+    行情——节假日/停牌时腾讯返回旧数据，不会被误写成今天的 bar。
+    """
+    cst_today = (datetime.now(timezone.utc) + timedelta(hours=8)).date()
+    todays = [q for q in quotes if q.exchange_ts and q.exchange_ts.date() == cst_today]
+    if not todays:
+        return
+    day_start = datetime(cst_today.year, cst_today.month, cst_today.day)
+    db.execute(delete(Kline).where(Kline.period == "1d", Kline.ts == day_start))
+    for q in todays:
+        db.add(
+            Kline(
+                code=q.code, period="1d", ts=day_start,
+                open=q.open, high=q.high, low=q.low, close=q.price, volume=q.volume,
+            )
+        )
 
 
 def bootstrap(db) -> None:
