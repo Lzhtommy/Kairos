@@ -194,14 +194,70 @@ def refresh_reference() -> None:
                 )
             backfilled += 1
         db.commit()
+
+        repaired = _repair_kline_gaps(db, provider)
         logger.info(
-            "Reference refresh: industry for %d stocks, fundamentals updated, klines backfilled for %d new stocks",
-            n_ind, backfilled,
+            "Reference refresh: industry for %d stocks, fundamentals updated, "
+            "klines backfilled for %d new stocks, gaps repaired for %d stocks",
+            n_ind, backfilled, repaired,
         )
     except Exception as exc:  # noqa: BLE001 — keep the scheduler alive
         logger.warning("Reference refresh failed: %s", exc)
     finally:
         db.close()
+
+
+def _repair_kline_gaps(db, provider, window: int = 40, cap: int = 6000) -> int:
+    """按数据源的真实交易日历检测并回补日 K 缺口。
+
+    当日合成 bar 只覆盖"今天"——服务停摆几天、或历史上日 K 从未随日更新
+    的欠账，会在中间留洞，均线会静默跨洞算错。这里用一只常年不停牌的
+    参照股（贵州茅台）拿到真实交易日序列，逐股找出缺失日期再从数据源补。
+    长期停牌股会反复被扫到但补不回来（数据源本来就没有），量小、无害。
+    """
+    try:
+        ref = provider.get_kline("600519", "1d", window + 20)
+    except Exception:  # noqa: BLE001
+        return 0
+    truth = {c.ts for c in ref[-window:]}
+    if not truth:
+        return 0
+    window_start = min(truth)
+
+    have: dict[str, set] = {}
+    for code, ts in db.execute(
+        select(Kline.code, Kline.ts).where(Kline.period == "1d", Kline.ts >= window_start)
+    ):
+        have.setdefault(code, set()).add(ts)
+
+    repaired = 0
+    for code, dates in have.items():
+        if repaired >= cap:
+            logger.warning("Kline gap repair capped at %d stocks; continuing next run", cap)
+            break
+        first = min(dates)  # 窗口中段上市的新股，只要求上市之后的日期
+        missing = {d for d in truth if d > first and d not in dates}
+        if not missing:
+            continue
+        sleep(0.05)
+        try:
+            candles = provider.get_kline(code, "1d", window + 20)
+        except Exception:  # noqa: BLE001
+            continue
+        for c in candles:
+            if c.ts in missing:
+                db.add(
+                    Kline(
+                        code=code, period="1d", ts=c.ts,
+                        open=c.open, high=c.high, low=c.low, close=c.close, volume=c.volume,
+                    )
+                )
+        repaired += 1
+        if repaired % 500 == 0:
+            db.commit()
+            logger.info("Kline gap repair progress: %d", repaired)
+    db.commit()
+    return repaired
 
 
 def collect_once(force: bool = False) -> None:

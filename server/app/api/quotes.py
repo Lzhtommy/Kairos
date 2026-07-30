@@ -58,12 +58,14 @@ def kline(code: str, period: str = "1d", limit: int = 250, db: Session = Depends
 
     from app.models.market import Kline
 
+    # 取最新的 limit 根再转回升序——升序 limit 会随着表增长永远卡在最老的数据
     rows = db.execute(
         select(Kline)
         .where(Kline.code == code, Kline.period == period)
-        .order_by(Kline.ts.asc())
+        .order_by(Kline.ts.desc())
         .limit(limit)
     ).scalars().all()
+    rows.reverse()
     return [
         {
             "t": k.ts.strftime("%Y-%m-%d"),
