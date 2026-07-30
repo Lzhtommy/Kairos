@@ -8,6 +8,7 @@ import {
   FloppyDisk,
   Plus,
   Robot,
+  Trash,
 } from "@phosphor-icons/react"
 import { CodeBlock } from "@/components/strategy/code-block"
 import { Button } from "@/components/ui/button"
@@ -17,6 +18,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   fetchStrategies,
   createStrategy,
+  deleteStrategy,
   chatStrategy,
   type Strategy,
 } from "@/api/strategies"
@@ -167,6 +169,24 @@ export function StrategyBuilderPage() {
     }
   }
 
+  function confirmDelete(s: Strategy) {
+    toast(`确定删除策略「${s.name}」？`, {
+      action: { label: "删除", onClick: () => void doDelete(s) },
+    })
+  }
+
+  async function doDelete(s: Strategy) {
+    try {
+      await deleteStrategy(s.id)
+      qc.invalidateQueries({ queryKey: ["strategies"] })
+      qc.removeQueries({ queryKey: ["strategyHits", s.id] })
+      if (savedId === s.id) setSavedId(null) // 当前载入的被删了，退回未保存草稿
+      toast.success(`已删除「${s.name}」`)
+    } catch {
+      toast.error("删除失败，请重试")
+    }
+  }
+
   function loadStrategy(s: Strategy) {
     setDraftDsl(s.dsl)
     setDraftCode(s.code)
@@ -208,21 +228,29 @@ export function StrategyBuilderPage() {
             <p className="px-2.5 py-2 text-xs text-muted-foreground">还没有策略</p>
           )}
           {strategies.map((s) => (
-            <button
+            <div
               key={s.id}
-              onClick={() => loadStrategy(s)}
               className={cn(
-                "w-full rounded-md px-2.5 py-2 text-left transition-colors",
+                "group relative rounded-md transition-colors",
                 savedId === s.id
                   ? "bg-accent text-accent-foreground"
                   : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
               )}
             >
-              <p className="truncate text-sm font-medium">{s.name}</p>
-              <p className="mt-0.5 truncate text-xs opacity-70">
-                {s.createdAt} · 命中 {s.hitCount}
-              </p>
-            </button>
+              <button onClick={() => loadStrategy(s)} className="w-full px-2.5 py-2 text-left">
+                <p className="truncate pr-5 text-sm font-medium">{s.name}</p>
+                <p className="mt-0.5 truncate text-xs opacity-70">
+                  {s.createdAt} · 命中 {s.hitCount}
+                </p>
+              </button>
+              <button
+                onClick={() => confirmDelete(s)}
+                aria-label={`删除策略 ${s.name}`}
+                className="absolute right-1.5 top-2 hidden size-6 items-center justify-center rounded text-muted-foreground hover:text-destructive group-hover:flex"
+              >
+                <Trash className="size-3.5" />
+              </button>
+            </div>
           ))}
         </div>
       </aside>
