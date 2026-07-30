@@ -35,6 +35,11 @@ import { cn } from "@/lib/utils"
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100]
 
+/** 雪球个股页，格式 SH600519 / SZ000001 / BJ920000，北交所也支持。 */
+function stockDetailUrl(s: Stock) {
+  return `https://xueqiu.com/S/${s.market}${s.code}`
+}
+
 function StarToggle({ code }: { code: string }) {
   const qc = useQueryClient()
   const { data } = useQuery({
@@ -230,7 +235,9 @@ export function QuoteTable({
           {table.getRowModel().rows.map((row) => (
             <tr
               key={row.id}
-              className="group border-b border-border/60 transition-colors hover:bg-muted/50"
+              onClick={() => window.open(stockDetailUrl(row.original), "_blank", "noopener")}
+              title={`在雪球查看 ${row.original.name}`}
+              className="group cursor-pointer border-b border-border/60 transition-colors hover:bg-muted/50"
             >
               {row.getVisibleCells().map((cell) => (
                 <td key={cell.id} className={cn("px-3", dense ? "py-1.5" : "py-2.5")}>
