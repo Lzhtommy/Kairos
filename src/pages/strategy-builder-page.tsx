@@ -78,17 +78,16 @@ export function StrategyBuilderPage() {
     const text = input.trim()
     if (!text || thinking) return
     setInput("")
-    setLastPrompt(text)
-    setSavedId(null)
-    setBacktest(null)
     setMessages((m) => [...m, { role: "user", text }])
     setThinking(true)
 
+    // 本轮之前的会话作为上下文；当前草稿 DSL 一并带上，支持"把 PE 收紧到 20"式增量修改
+    const history = messages.slice(-12).map((m) => ({ role: m.role, content: m.text }))
     const assistantIndex = messages.length + 1
     setMessages((m) => [...m, { role: "assistant", text: "" }])
 
     try {
-      await chatStrategy(text, (ev) => {
+      await chatStrategy({ text, history, currentDsl: draftDsl }, (ev) => {
         if (ev.type === "text") {
           setMessages((m) => {
             const next = [...m]
@@ -96,13 +95,18 @@ export function StrategyBuilderPage() {
             if (cur) next[assistantIndex] = { ...cur, text: cur.text + ev.delta }
             return next
           })
-        } else if (ev.type === "done") {
-          setDraftDsl(ev.dsl)
-          setDraftCode(ev.code)
+        } else if (ev.type === "done" && ev.dsl && ev.code) {
+          // 只有产出策略的回合才更新右侧面板；纯闲聊不动当前草稿
+          const { dsl, code } = ev
+          setDraftDsl(dsl)
+          setDraftCode(code)
+          setLastPrompt(text)
+          setSavedId(null)
+          setBacktest(null)
           setMessages((m) => {
             const next = [...m]
             const cur = next[assistantIndex]
-            if (cur) next[assistantIndex] = { ...cur, code: ev.code }
+            if (cur) next[assistantIndex] = { ...cur, code }
             return next
           })
         }

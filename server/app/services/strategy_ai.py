@@ -221,40 +221,60 @@ def _render_explanation(dsl: dict[str, Any]) -> str:
     return "根据你的描述，我生成了以下选股逻辑：" + "；".join(descs) + "。代码见右侧面板，可点击「运行回测」查看历史表现。"
 
 
+def _spec_doc(industries: list[str] | None = None) -> str:
+    """DSL 规格说明（因子白名单 / 算子 / 行业取值 / technical 类型 / 单位），单发与多轮共用。"""
+    factor_doc = "\n".join(f"- {k}: {v[0]} ({v[1]})" for k, v in FACTORS.items())
+    industry_doc = (
+        "industry 的合法取值（申万二级行业名，必须精确使用，"
+        "口语行业词映射到一个或多个取值，如\"银行股\" → in [\"国有大型银行\",\"股份制银行\",\"城商行\",\"农商行\"]）：\n"
+        + "、".join(industries) + "\n"
+        if industries
+        else ""
+    )
+    return (
+        "每个 filter 形如 {\"factor\": ..., \"op\": ..., \"value\": ...}，"
+        "between 用 min/max 代替 value，行业中位数比较用 {\"factor\": ..., \"op\": ..., \"ref\": \"industry_median\"}。\n"
+        "只能使用以下白名单因子：\n"
+        f"{factor_doc}\n"
+        "算子: 数值型 lt/lte/gt/gte/eq/between，类别型(industry) eq/in。\n"
+        f"{industry_doc}"
+        "涉及均线/K线形态时用 technical 数组，只有以下 4 种类型（参数可调）：\n"
+        "- {\"type\":\"ma_trend\",\"window\":60,\"lookback\":120,\"max_down_days\":10,\"min_gain_pct\":1.5}"
+        " → MA{window} 在最近 lookback 个交易日平滑上行：逐日滚动算 MA，"
+        "下行天数≤max_down_days 且 MA 首尾累计涨幅≥min_gain_pct(%)\n"
+        "- {\"type\":\"ma_distance\",\"fast\":3,\"base\":60,\"min_pct\":-8,\"max_pct\":12}"
+        " → MA{fast} 相对 MA{base} 的偏离百分比在 [min_pct, max_pct] 区间内\n"
+        "- {\"type\":\"ma_rising\",\"windows\":[3,7]}"
+        " → windows 里每条均线今日值都高于昨日值（同步上翘）\n"
+        "- {\"type\":\"ma_cross\",\"fast\":3,\"slow\":7,\"direction\":\"golden\"}"
+        " → MA{fast} 今日刚上穿 MA{slow}（金叉首日；death 为死叉）\n"
+        "注意单位：市值/成交额单位为亿，换手率/涨跌幅/ROE 为百分数数值，股息率为小数(3% → 0.03)。\n"
+    )
+
+
+def _build_dsl(payload: dict[str, Any]) -> dict[str, Any]:
+    """模型输出的 {filters, technical} → 完整 DSL（带 universe/调仓/费率默认值）并校验。"""
+    return validate_dsl(
+        {
+            "universe": {"exclude": ["ST", "停牌"], "market": ["SH", "SZ"]},
+            "filters": payload.get("filters", []),
+            "technical": payload.get("technical", []),
+            "rebalance": "monthly_first_trading_day",
+            "cost": {"side": "both", "rate": 0.0005},
+        }
+    )
+
+
 def _deepseek(text: str, industries: list[str] | None = None) -> dict[str, Any] | None:
     if not settings.deepseek_api_key:
         return None
     try:
-        factor_doc = "\n".join(f"- {k}: {v[0]} ({v[1]})" for k, v in FACTORS.items())
-        industry_doc = (
-            "industry 的合法取值（申万二级行业名，必须精确使用，"
-            "口语行业词映射到一个或多个取值，如\"银行股\" → in [\"国有大型银行\",\"股份制银行\",\"城商行\",\"农商行\"]）：\n"
-            + "、".join(industries) + "\n"
-            if industries
-            else ""
-        )
         prompt = (
             "你是 A 股量化选股助手。把用户需求转成选股 DSL，"
             "以 JSON 输出：{\"filters\": [...], \"technical\": [...], \"explanation\": \"一句话解释\"}"
             "（filters/technical 用不到的可为空数组，但不能都为空）。\n"
-            "每个 filter 形如 {\"factor\": ..., \"op\": ..., \"value\": ...}，"
-            "between 用 min/max 代替 value，行业中位数比较用 {\"factor\": ..., \"op\": ..., \"ref\": \"industry_median\"}。\n"
-            "只能使用以下白名单因子：\n"
-            f"{factor_doc}\n"
-            "算子: 数值型 lt/lte/gt/gte/eq/between，类别型(industry) eq/in。\n"
-            f"{industry_doc}"
-            "涉及均线/K线形态时用 technical 数组，只有以下 4 种类型（参数可调）：\n"
-            "- {\"type\":\"ma_trend\",\"window\":60,\"lookback\":120,\"max_down_days\":10,\"min_gain_pct\":1.5}"
-            " → MA{window} 在最近 lookback 个交易日平滑上行：逐日滚动算 MA，"
-            "下行天数≤max_down_days 且 MA 首尾累计涨幅≥min_gain_pct(%)\n"
-            "- {\"type\":\"ma_distance\",\"fast\":3,\"base\":60,\"min_pct\":-8,\"max_pct\":12}"
-            " → MA{fast} 相对 MA{base} 的偏离百分比在 [min_pct, max_pct] 区间内\n"
-            "- {\"type\":\"ma_rising\",\"windows\":[3,7]}"
-            " → windows 里每条均线今日值都高于昨日值（同步上翘）\n"
-            "- {\"type\":\"ma_cross\",\"fast\":3,\"slow\":7,\"direction\":\"golden\"}"
-            " → MA{fast} 今日刚上穿 MA{slow}（金叉首日；death 为死叉）\n"
-            "注意单位：市值/成交额单位为亿，换手率/涨跌幅/ROE 为百分数数值，股息率为小数(3% → 0.03)。\n"
-            f"用户需求：{text}"
+            + _spec_doc(industries)
+            + f"用户需求：{text}"
         )
         r = httpx.post(
             f"{settings.deepseek_base_url}/chat/completions",
@@ -270,17 +290,98 @@ def _deepseek(text: str, industries: list[str] | None = None) -> dict[str, Any] 
         )
         r.raise_for_status()
         payload = json.loads(r.json()["choices"][0]["message"]["content"])
-        dsl = {
-            "universe": {"exclude": ["ST", "停牌"], "market": ["SH", "SZ"]},
-            "filters": payload.get("filters", []),
-            "technical": payload.get("technical", []),
-            "rebalance": "monthly_first_trading_day",
-            "cost": {"side": "both", "rate": 0.0005},
-        }
-        dsl = validate_dsl(dsl)
+        dsl = _build_dsl(payload)
         return {"dsl": dsl, "explanation": payload.get("explanation", "")}
     except Exception:  # noqa: BLE001 — any failure → fall back to rule-based
         return None
+
+
+_MARK_START, _MARK_END = "<DSL>", "</DSL>"
+
+
+async def chat_stream(
+    text: str,
+    history: list[dict[str, str]] | None = None,
+    current_dsl: dict[str, Any] | None = None,
+    industries: list[str] | None = None,
+):
+    """真流式多轮对话。逐个 yield {"type": "text", "delta": ...}，
+    最后 yield {"type": "done", ["dsl": ..., "code": ...]}（纯闲聊时无 dsl/code）。
+
+    协议：模型自由输出中文回复直接透传；本轮涉及策略生成/修改时，模型在结尾追加
+    <DSL>{"filters": [...], "technical": [...]}</DSL>，该块不透传，校验后放进 done 事件。
+    任何网络/解析异常向上抛，由路由层降级到规则解析。
+    """
+    sys_prompt = (
+        "你是 Kairos 平台的 A 股选股策略助手，与用户多轮对话，帮他们把想法变成可回测的选股策略。\n"
+        "回复规则：\n"
+        "1. 始终用简短自然的中文对话。问候、闲聊或与选股无关的问题直接回答即可，不要生成策略。\n"
+        "2. 当用户提出或修改选股条件时：先用一两句话说明策略逻辑，"
+        "然后另起一行输出 <DSL>{\"filters\": [...], \"technical\": [...]}</DSL>。"
+        "<DSL> 块内是严格 JSON；除该块外不要输出任何代码块或 JSON。\n"
+        "3. 修改类请求（如\"把 PE 收紧到 20\"）要在【当前策略】基础上输出完整的新 DSL，而不是只给改动部分。\n"
+        + _spec_doc(industries)
+        + "【当前策略】："
+        + (json.dumps(current_dsl, ensure_ascii=False) if current_dsl else "（无）")
+    )
+    messages: list[dict[str, str]] = [{"role": "system", "content": sys_prompt}]
+    for h in (history or [])[-12:]:
+        if h.get("role") in ("user", "assistant") and h.get("content"):
+            messages.append({"role": h["role"], "content": h["content"][:2000]})
+    messages.append({"role": "user", "content": text})
+
+    pending = ""  # 已收到但还没透传的文本（留尾巴防止 <DSL> 标记被切成两半）
+    dsl_raw: str | None = None  # 进入 <DSL> 块后累积的 JSON 原文
+    async with httpx.AsyncClient(timeout=httpx.Timeout(60, connect=10)) as client:
+        async with client.stream(
+            "POST",
+            f"{settings.deepseek_base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {settings.deepseek_api_key}"},
+            json={
+                "model": settings.deepseek_model,
+                "messages": messages,
+                "max_tokens": 1200,
+                "temperature": 0.3,
+                "stream": True,
+            },
+        ) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                delta = json.loads(data)["choices"][0]["delta"].get("content") or ""
+                if not delta:
+                    continue
+                if dsl_raw is not None:
+                    dsl_raw += delta
+                    continue
+                pending += delta
+                idx = pending.find(_MARK_START)
+                if idx != -1:
+                    head = pending[:idx].rstrip()
+                    if head:
+                        yield {"type": "text", "delta": head}
+                    dsl_raw = pending[idx + len(_MARK_START):]
+                    pending = ""
+                elif len(pending) > len(_MARK_START):
+                    flush, pending = pending[: -len(_MARK_START)], pending[-len(_MARK_START):]
+                    yield {"type": "text", "delta": flush}
+
+    if pending:
+        yield {"type": "text", "delta": pending}
+    if dsl_raw is not None:
+        try:
+            end = dsl_raw.find(_MARK_END)
+            payload = json.loads(dsl_raw[:end] if end != -1 else dsl_raw)
+            dsl = _build_dsl(payload)
+            yield {"type": "done", "dsl": dsl, "code": _render_code(dsl)}
+            return
+        except Exception:  # noqa: BLE001 — 模型产出不合法 DSL，提示用户重试而非中断
+            yield {"type": "text", "delta": "\n\n（这组条件我没能生成有效策略，麻烦把条件说得再具体一点）"}
+    yield {"type": "done"}
 
 
 def generate(text: str, industries: list[str] | None = None) -> dict[str, Any]:

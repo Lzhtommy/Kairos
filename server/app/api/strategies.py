@@ -1,11 +1,13 @@
 import asyncio
 import json
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.db import get_db
 from app.core.security import get_current_user
 from app.models.strategy import Strategy
@@ -17,6 +19,7 @@ from app.services.market import stock_dicts
 from app.services.strategy_exec import run_dsl
 
 router = APIRouter(prefix="/strategies", tags=["strategies"])
+logger = logging.getLogger("kairos.strategies")
 
 
 def _public(s: Strategy) -> dict:
@@ -112,7 +115,8 @@ def strategy_hits(sid: int, db: Session = Depends(get_db), user: User = Depends(
 async def chat(
     body: ChatIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)
 ):
-    """SSE stream: incremental explanation, then a final payload with dsl + code."""
+    """SSE 多轮对话流。主路径：DeepSeek 真流式（闲聊直接回复，策略请求额外带 dsl+code）；
+    DeepSeek 不可用时降级到规则解析的一次性生成 + 分块假流式。"""
     from app.models.market import StockInfo
 
     industries = [
@@ -121,21 +125,38 @@ async def chat(
             select(StockInfo.industry).where(StockInfo.industry != "—").distinct()
         ).all()
     ]
-    result = strategy_ai.generate(body.text, industries=industries or None)
+    history = [t.model_dump() for t in body.history]
+
+    def sse(ev: dict) -> str:
+        return f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
 
     async def event_stream():
-        explanation = result["explanation"]
-        # stream the explanation in small chunks
+        if settings.ai_provider.lower() in ("auto", "deepseek") and settings.deepseek_api_key:
+            emitted = False
+            try:
+                async for ev in strategy_ai.chat_stream(
+                    body.text, history, body.currentDsl, industries or None
+                ):
+                    emitted = True
+                    yield sse(ev)
+                return
+            except Exception:  # noqa: BLE001
+                logger.exception("DeepSeek chat stream failed, falling back to rule parser")
+                if emitted:
+                    # 已经吐过内容，补个收尾事件，不能再叠加兜底回复
+                    yield sse({"type": "done"})
+                    return
+
+        result = strategy_ai.generate(body.text, industries=industries or None)
         chunk = ""
-        for ch in explanation:
+        for ch in result["explanation"]:
             chunk += ch
             if len(chunk) >= 6:
-                yield f"data: {json.dumps({'type': 'text', 'delta': chunk}, ensure_ascii=False)}\n\n"
+                yield sse({"type": "text", "delta": chunk})
                 chunk = ""
                 await asyncio.sleep(0.02)
         if chunk:
-            yield f"data: {json.dumps({'type': 'text', 'delta': chunk}, ensure_ascii=False)}\n\n"
-        final = {"type": "done", "dsl": result["dsl"], "code": result["code"]}
-        yield f"data: {json.dumps(final, ensure_ascii=False)}\n\n"
+            yield sse({"type": "text", "delta": chunk})
+        yield sse({"type": "done", "dsl": result["dsl"], "code": result["code"]})
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")

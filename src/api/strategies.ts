@@ -38,11 +38,18 @@ export function fetchStrategyHits(id: string): Promise<StrategyHits> {
 
 export type ChatEvent =
   | { type: "text"; delta: string }
-  | { type: "done"; dsl: Record<string, unknown>; code: string }
+  // 纯闲聊/追问的回合没有 dsl/code
+  | { type: "done"; dsl?: Record<string, unknown>; code?: string }
 
-/** Stream the AI strategy generation over SSE. */
+export type ChatTurn = { role: "user" | "assistant"; content: string }
+
+/** Stream one turn of the AI strategy conversation over SSE. */
 export async function chatStrategy(
-  text: string,
+  params: {
+    text: string
+    history?: ChatTurn[]
+    currentDsl?: Record<string, unknown> | null
+  },
   onEvent: (e: ChatEvent) => void,
 ): Promise<void> {
   const res = await fetch(`${API_BASE_URL}/strategies/chat`, {
@@ -51,8 +58,13 @@ export async function chatStrategy(
       "Content-Type": "application/json",
       ...(getToken() ? { Authorization: `Bearer ${getToken()}` } : {}),
     },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({
+      text: params.text,
+      history: params.history ?? [],
+      currentDsl: params.currentDsl ?? null,
+    }),
   })
+  if (!res.ok) throw new Error(`对话请求失败 (${res.status})`)
   if (!res.body) throw new Error("流式响应不可用")
 
   const reader = res.body.getReader()

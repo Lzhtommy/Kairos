@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -43,8 +43,16 @@ class StrategyIn(BaseModel):
     code: str = ""
 
 
+class ChatTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(max_length=4000)
+
+
 class ChatIn(BaseModel):
-    text: str = Field(min_length=1)
+    text: str = Field(min_length=1, max_length=2000)
+    # 多轮对话上下文：此前的会话记录 + 右侧面板当前草稿策略（供"把 PE 收紧到 20"这类增量修改）
+    history: list[ChatTurn] = []
+    currentDsl: dict[str, Any] | None = None
 
 
 class BacktestIn(BaseModel):
