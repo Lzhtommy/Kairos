@@ -317,7 +317,8 @@ async def chat_stream(
         "回复规则：\n"
         "1. 始终用简短自然的中文对话。问候、闲聊或与选股无关的问题直接回答即可，不要生成策略。\n"
         "2. 当用户提出或修改选股条件时：先用一两句话说明策略逻辑，"
-        "然后另起一行输出 <DSL>{\"filters\": [...], \"technical\": [...]}</DSL>。"
+        "然后另起一行输出 <DSL>{\"name\": \"策略标题\", \"filters\": [...], \"technical\": [...]}</DSL>。"
+        "name 是给这个策略起的简短标题（中文，不超过 12 字，概括策略思路，如\"低估值高分红银行\"）。"
         "<DSL> 块内是严格 JSON；除该块外不要输出任何代码块或 JSON。\n"
         "3. 修改类请求（如\"把 PE 收紧到 20\"）要在【当前策略】基础上输出完整的新 DSL，而不是只给改动部分。\n"
         + _spec_doc(industries)
@@ -377,7 +378,11 @@ async def chat_stream(
             end = dsl_raw.find(_MARK_END)
             payload = json.loads(dsl_raw[:end] if end != -1 else dsl_raw)
             dsl = _build_dsl(payload)
-            yield {"type": "done", "dsl": dsl, "code": _render_code(dsl)}
+            done: dict[str, Any] = {"type": "done", "dsl": dsl, "code": _render_code(dsl)}
+            name = payload.get("name")
+            if isinstance(name, str) and name.strip():
+                done["name"] = name.strip()[:24]
+            yield done
             return
         except Exception:  # noqa: BLE001 — 模型产出不合法 DSL，提示用户重试而非中断
             yield {"type": "text", "delta": "\n\n（这组条件我没能生成有效策略，麻烦把条件说得再具体一点）"}

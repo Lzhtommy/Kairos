@@ -66,6 +66,7 @@ export function StrategyBuilderPage() {
   const [thinking, setThinking] = useState(false)
   const [draftDsl, setDraftDsl] = useState<Record<string, unknown> | null>(null)
   const [draftCode, setDraftCode] = useState<string>("")
+  const [draftName, setDraftName] = useState<string>("")
   const [lastPrompt, setLastPrompt] = useState("")
   const [savedId, setSavedId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -100,6 +101,7 @@ export function StrategyBuilderPage() {
           const { dsl, code } = ev
           setDraftDsl(dsl)
           setDraftCode(code)
+          if (ev.name) setDraftName(ev.name)
           setLastPrompt(text)
           setSavedId(null)
           setBacktest(null)
@@ -128,7 +130,8 @@ export function StrategyBuilderPage() {
     }
     setSaving(true)
     try {
-      const name = lastPrompt.slice(0, 16) || "未命名策略"
+      // AI 起的标题优先；降级路径（规则解析）没有标题时退回截断的用户描述
+      const name = draftName || lastPrompt.slice(0, 16) || "未命名策略"
       const created = await createStrategy({
         name,
         description: lastPrompt,
@@ -194,6 +197,7 @@ export function StrategyBuilderPage() {
   function loadStrategy(s: Strategy) {
     setDraftDsl(s.dsl)
     setDraftCode(s.code)
+    setDraftName(s.name)
     setSavedId(s.id)
     setLastPrompt(s.description)
     setBacktest(null)
@@ -220,6 +224,7 @@ export function StrategyBuilderPage() {
               setMessages([])
               setDraftDsl(null)
               setDraftCode("")
+              setDraftName("")
               setSavedId(null)
               setBacktest(null)
             }}

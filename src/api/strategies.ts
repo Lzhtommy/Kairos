@@ -38,8 +38,8 @@ export function fetchStrategyHits(id: string): Promise<StrategyHits> {
 
 export type ChatEvent =
   | { type: "text"; delta: string }
-  // 纯闲聊/追问的回合没有 dsl/code
-  | { type: "done"; dsl?: Record<string, unknown>; code?: string }
+  // 纯闲聊/追问的回合没有 dsl/code；name 是 AI 起的策略标题
+  | { type: "done"; dsl?: Record<string, unknown>; code?: string; name?: string }
 
 export type ChatTurn = { role: "user" | "assistant"; content: string }
 
