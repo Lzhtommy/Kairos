@@ -5,6 +5,7 @@ import { LandingPage } from "@/pages/landing-page"
 import { DashboardPage } from "@/pages/dashboard-page"
 import { ScreenerPage } from "@/pages/screener-page"
 import { StrategyBuilderPage } from "@/pages/strategy-builder-page"
+import { BacktestPage } from "@/pages/backtest-page"
 import { WatchlistPage } from "@/pages/watchlist-page"
 import { LoginPage } from "@/pages/login-page"
 import { useAuth } from "@/lib/auth"
@@ -30,6 +31,7 @@ function App() {
       <Route path="/app" element={<RequireAuth><DashboardPage /></RequireAuth>} />
       <Route path="/app/screener" element={<RequireAuth><ScreenerPage /></RequireAuth>} />
       <Route path="/app/strategy" element={<RequireAuth><StrategyBuilderPage /></RequireAuth>} />
+      <Route path="/app/backtest" element={<RequireAuth><BacktestPage /></RequireAuth>} />
       <Route path="/app/watchlist" element={<RequireAuth><WatchlistPage /></RequireAuth>} />
     </Routes>
   )

@@ -2,6 +2,7 @@ import { type ReactNode, useState } from "react"
 import { Link, useLocation } from "react-router-dom"
 import {
   ChartLineUp,
+  ChartBar,
   FunnelSimple,
   Sparkle,
   Star,
@@ -29,6 +30,7 @@ const NAV_ITEMS = [
   { to: "/app", label: "大盘", icon: ChartLineUp, end: true },
   { to: "/app/screener", label: "选股", icon: FunnelSimple },
   { to: "/app/strategy", label: "策略工坊", icon: Sparkle },
+  { to: "/app/backtest", label: "回测", icon: ChartBar },
   { to: "/app/watchlist", label: "自选", icon: Star },
 ]
 

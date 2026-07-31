@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useMemo, useRef, useState } from "react"
+import { useNavigate } from "react-router-dom"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
@@ -14,7 +15,6 @@ import { CodeBlock } from "@/components/strategy/code-block"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   fetchStrategies,
   createStrategy,
@@ -22,327 +22,11 @@ import {
   chatStrategy,
   type Strategy,
 } from "@/api/strategies"
-import {
-  submitBacktest,
-  fetchBacktest,
-  fetchBacktests,
-  fetchBacktestTrades,
-  deleteBacktest,
-  type BacktestParams,
-  type BacktestResult,
-  type BacktestSummary,
-  type BacktestTrade,
-  type RebalanceRecord,
-  type TradesPage,
-} from "@/api/backtests"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 
 type Message = { role: "user" | "assistant"; text: string; code?: string }
 
 const PLACEHOLDER_CODE = `# 在左侧用自然语言描述你的选股逻辑，\n# AI 会在这里生成可回测的策略代码。`
-
-function EquityCurve({
-  curve,
-  benchmark = [],
-}: {
-  curve: { t: string; v: number }[]
-  benchmark?: { t: string; v: number }[]
-}) {
-  if (curve.length < 2) return null
-  const all = [...curve.map((p) => p.v), ...benchmark.map((p) => p.v)]
-  const min = Math.min(...all)
-  const max = Math.max(...all)
-  const range = max - min || 1
-  const w = 100
-  const h = 40
-  const toPts = (series: { v: number }[]) =>
-    series
-      .map((p, i) => {
-        const x = (i / (series.length - 1)) * w
-        const y = h - ((p.v - min) / range) * h
-        return `${x.toFixed(2)},${y.toFixed(2)}`
-      })
-      .join(" ")
-  const up = curve[curve.length - 1].v >= curve[0].v
-  return (
-    <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="h-24 w-full">
-      {benchmark.length > 1 && (
-        <polyline
-          points={toPts(benchmark)}
-          fill="none"
-          stroke="var(--color-muted-foreground, #9ca3af)"
-          strokeWidth="1"
-          strokeDasharray="2 2"
-          opacity="0.6"
-          vectorEffect="non-scaling-stroke"
-        />
-      )}
-      <polyline
-        points={toPts(curve)}
-        fill="none"
-        stroke={up ? "var(--color-up, #16a34a)" : "var(--color-down, #dc2626)"}
-        strokeWidth="1"
-        vectorEffect="non-scaling-stroke"
-      />
-    </svg>
-  )
-}
-
-function ParamSelect({
-  label,
-  value,
-  onChange,
-  options,
-}: {
-  label: string
-  value: string
-  onChange: (v: string) => void
-  options: [string, string][]
-}) {
-  const labels = Object.fromEntries(options)
-  return (
-    <label className="flex items-center gap-1.5">
-      <span className="whitespace-nowrap text-xs text-muted-foreground">{label}</span>
-      <Select value={value} onValueChange={(v) => onChange(v as string)}>
-        <SelectTrigger size="sm" className="text-xs">
-          <SelectValue>{(v: string) => labels[v] ?? v}</SelectValue>
-        </SelectTrigger>
-        <SelectContent alignItemWithTrigger={false}>
-          {options.map(([v, l]) => (
-            <SelectItem key={v} value={v}>
-              {l}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    </label>
-  )
-}
-
-const EXIT_REASON: Record<BacktestTrade["reason"], string> = {
-  hold: "到期",
-  signal: "反向信号",
-  stop_gain: "止盈",
-  stop_loss: "止损",
-}
-
-const PERIOD_LABEL: Record<number, string> = { 120: "近半年", 250: "近1年", 500: "近2年", 750: "近3年" }
-const EXIT_LABEL: Record<string, string> = { hold: "持有到期", signal: "反向信号", stop: "止盈止损" }
-const REB_LABEL: Record<string, string> = { weekly: "每周", monthly: "每月", quarterly: "每季" }
-
-function summarizeBacktest(b: BacktestSummary): { params: string; result: string } {
-  const p = b.params
-  const m = b.metrics
-  const bits = [PERIOD_LABEL[p.periodDays ?? 250] ?? `${p.periodDays}日`]
-  if (m.mode === "event") {
-    bits.push(`持有${p.holdDays}天`, EXIT_LABEL[p.exitRule ?? "hold"])
-  } else {
-    bits.push(REB_LABEL[p.rebalance ?? "monthly"], p.weighting === "cap" ? "市值加权" : "等权")
-    if (p.maxPositions) bits.push(`前${p.maxPositions}`)
-  }
-  let result = ""
-  if (b.status === "failed") result = "失败"
-  else if (m.mode === "event") result = `平均 ${m.avgReturn}% · 胜率 ${m.winRate}%`
-  else if (m.mode === "portfolio")
-    result = `年化 ${m.annualizedReturn}%${m.excessReturn != null ? ` · 超额 ${m.excessReturn}%` : ""}`
-  return { params: bits.join("·"), result }
-}
-
-function BacktestHistory({
-  items,
-  currentId,
-  onLoad,
-  onDelete,
-}: {
-  items: BacktestSummary[]
-  currentId: number | null
-  onLoad: (b: BacktestSummary) => void
-  onDelete: (b: BacktestSummary) => void
-}) {
-  if (items.length === 0) return null
-  return (
-    <div className="rounded-lg border border-border">
-      <p className="border-b border-border px-3 py-2 text-xs font-medium text-foreground">
-        历史回测 <span className="ml-1 font-mono text-muted-foreground">{items.length}</span>
-      </p>
-      <div className="max-h-56 divide-y divide-border/60 overflow-y-auto scrollbar-thin">
-        {items.map((b) => {
-          const s = summarizeBacktest(b)
-          return (
-            <div
-              key={b.id}
-              className={cn(
-                "flex items-center gap-2 px-3 py-1.5 text-xs",
-                currentId === b.id && "bg-accent/60",
-              )}
-            >
-              <button
-                onClick={() => onLoad(b)}
-                disabled={b.status !== "done"}
-                className="flex flex-1 flex-wrap items-center gap-x-3 gap-y-0.5 text-left disabled:opacity-50"
-              >
-                <span className="font-mono tabular-nums text-muted-foreground">{b.createdAt}</span>
-                <span className="text-foreground">{s.params}</span>
-                <span
-                  className={cn(
-                    "font-mono tabular-nums",
-                    b.status === "failed" ? "text-down" : "text-muted-foreground",
-                  )}
-                >
-                  {s.result}
-                </span>
-              </button>
-              <button
-                onClick={() => onDelete(b)}
-                aria-label="删除该回测"
-                className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-destructive"
-              >
-                <Trash className="size-3" />
-              </button>
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
-function TradeDetails({ backtestId }: { backtestId: number }) {
-  const [data, setData] = useState<TradesPage | null>(null)
-  const [page, setPage] = useState(1)
-  const [sortKey, setSortKey] = useState("date_desc")
-
-  useEffect(() => {
-    let alive = true
-    const [sort, order] =
-      sortKey === "ret_desc" ? ["ret", "desc"] : sortKey === "ret_asc" ? ["ret", "asc"] : ["date", "desc"]
-    fetchBacktestTrades(backtestId, page, sort as "date" | "ret", order as "asc" | "desc")
-      .then((d) => alive && setData(d))
-      .catch(() => {})
-    return () => {
-      alive = false
-    }
-  }, [backtestId, page, sortKey])
-
-  if (!data || data.total === 0) return null
-  const totalPages = Math.max(1, Math.ceil(data.total / data.pageSize))
-
-  return (
-    <div className="rounded-lg border border-border">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2">
-        <p className="text-xs font-medium text-foreground">
-          {data.kind === "trades" ? "交易明细" : "调仓记录"}
-          <span className="ml-1.5 font-mono text-muted-foreground">共 {data.total} {data.kind === "trades" ? "笔" : "期"}</span>
-        </p>
-        <div className="flex items-center gap-2">
-          {data.kind === "trades" && (
-            <ParamSelect
-              label="排序"
-              value={sortKey}
-              onChange={(v) => {
-                setSortKey(v)
-                setPage(1)
-              }}
-              options={[["date_desc", "时间新→旧"], ["ret_desc", "收益高→低"], ["ret_asc", "收益低→高"]]}
-            />
-          )}
-          {totalPages > 1 && (
-            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <button
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
-                disabled={page <= 1}
-                className="rounded border border-border px-1.5 py-0.5 hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
-              >
-                上一页
-              </button>
-              <span className="font-mono tabular-nums">{page}/{totalPages}</span>
-              <button
-                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                disabled={page >= totalPages}
-                className="rounded border border-border px-1.5 py-0.5 hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
-              >
-                下一页
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-      {data.kind === "trades" ? (
-        <div className="overflow-x-auto scrollbar-thin">
-          <table className="w-full border-collapse text-left text-xs">
-            <thead>
-              <tr className="border-b border-border text-muted-foreground">
-                {["入场日", "标的", "入场价", "出场日", "出场价", "收益", "持有", "退出"].map((h) => (
-                  <th key={h} className="whitespace-nowrap px-3 py-1.5 font-medium">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {(data.items as BacktestTrade[]).map((t, i) => (
-                <tr key={`${t.code}-${t.entryDate}-${i}`} className="border-b border-border/60 hover:bg-muted/50">
-                  <td className="whitespace-nowrap px-3 py-1.5 font-mono tabular-nums">{t.entryDate}</td>
-                  <td className="whitespace-nowrap px-3 py-1.5">
-                    <a
-                      href={`https://xueqiu.com/S/${t.code.startsWith("6") ? "SH" : t.code.startsWith("4") || t.code.startsWith("8") || t.code.startsWith("9") ? "BJ" : "SZ"}${t.code}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-foreground hover:text-primary"
-                    >
-                      {t.name}
-                      <span className="ml-1 font-mono text-[10px] text-muted-foreground">{t.code}</span>
-                    </a>
-                  </td>
-                  <td className="px-3 py-1.5 font-mono tabular-nums">{t.entryPx}</td>
-                  <td className="whitespace-nowrap px-3 py-1.5 font-mono tabular-nums">{t.exitDate}</td>
-                  <td className="px-3 py-1.5 font-mono tabular-nums">{t.exitPx}</td>
-                  <td className={cn("px-3 py-1.5 font-mono tabular-nums", t.ret >= 0 ? "text-up" : "text-down")}>
-                    {t.ret > 0 ? "+" : ""}{t.ret}%
-                  </td>
-                  <td className="px-3 py-1.5 font-mono tabular-nums">{t.days}天</td>
-                  <td className="whitespace-nowrap px-3 py-1.5 text-muted-foreground">{EXIT_REASON[t.reason] ?? t.reason}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <div className="divide-y divide-border/60">
-          {(data.items as RebalanceRecord[]).map((r) => (
-            <div key={r.date} className="px-3 py-2 text-xs">
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                <span className="font-mono tabular-nums text-foreground">{r.date}</span>
-                <span className="text-muted-foreground">持仓 {r.holdings}</span>
-                {r.addedCount > 0 && <span className="text-up">新进 {r.addedCount}</span>}
-                {r.removedCount > 0 && <span className="text-down">调出 {r.removedCount}</span>}
-                <span className={cn("ml-auto font-mono tabular-nums", r.periodReturn >= 0 ? "text-up" : "text-down")}>
-                  期收益 {r.periodReturn > 0 ? "+" : ""}{r.periodReturn}%
-                </span>
-              </div>
-              {(r.added.length > 0 || r.removed.length > 0) && (
-                <p className="mt-1 text-muted-foreground">
-                  {r.added.length > 0 && (
-                    <>进：{r.added.slice(0, 6).map((s) => s.name).join("、")}{r.addedCount > 6 ? ` 等${r.addedCount}只` : ""}</>
-                  )}
-                  {r.added.length > 0 && r.removed.length > 0 && "　"}
-                  {r.removed.length > 0 && (
-                    <>出：{r.removed.slice(0, 6).map((s) => s.name).join("、")}{r.removedCount > 6 ? ` 等${r.removedCount}只` : ""}</>
-                  )}
-                </p>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
 
 export function StrategyBuilderPage() {
   const qc = useQueryClient()
@@ -358,69 +42,8 @@ export function StrategyBuilderPage() {
   const [lastPrompt, setLastPrompt] = useState("")
   const [savedId, setSavedId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
-  const [backtest, setBacktest] = useState<BacktestResult | null>(null)
-  const [btRunning, setBtRunning] = useState(false)
-  const [btParams, setBtParams] = useState<BacktestParams>({
-    periodDays: 250,
-    holdDays: 10,
-    entry: "open",
-    exitRule: "hold",
-    stopGain: 15,
-    stopLoss: 8,
-    rebalance: "monthly",
-    costRate: 0.0005,
-    benchmark: "000300",
-    weighting: "equal",
-    maxPositions: 0,
-  })
-  const [tab, setTab] = useState("code")
   const scrollRef = useRef<HTMLDivElement>(null)
-
-  // 已保存策略的历史回测；刷新/重新载入策略后自动展示最近一次完成的结果
-  const historyQ = useQuery({
-    queryKey: ["backtests", savedId],
-    queryFn: () => fetchBacktests(savedId!),
-    enabled: !!savedId,
-  })
-  useEffect(() => {
-    const latest = historyQ.data?.find((b) => b.status === "done")
-    if (!latest || backtest || btRunning) return
-    let alive = true
-    fetchBacktest(latest.id)
-      .then((res) => alive && setBacktest((cur) => cur ?? res))
-      .catch(() => {})
-    return () => {
-      alive = false
-    }
-  }, [historyQ.data, backtest, btRunning])
-
-  async function loadHistoryBacktest(b: BacktestSummary) {
-    try {
-      setBacktest(await fetchBacktest(b.id))
-    } catch {
-      toast.error("载入回测失败")
-    }
-  }
-
-  async function removeBacktest(b: BacktestSummary) {
-    try {
-      await deleteBacktest(b.id)
-      qc.invalidateQueries({ queryKey: ["backtests"] })
-      if (backtest?.id === b.id) setBacktest(null) // 删的是当前展示的，自动回落到最近一次
-      toast.success("已删除该回测记录")
-    } catch {
-      toast.error("删除失败")
-    }
-  }
-
-  // 含技术形态的策略走事件驱动回测，参数面板按模式显隐
-  const isEventStrategy =
-    Array.isArray((draftDsl as { technical?: unknown[] } | null)?.technical) &&
-    ((draftDsl as { technical: unknown[] }).technical.length > 0)
-
-  function setParam<K extends keyof BacktestParams>(key: K, value: BacktestParams[K]) {
-    setBtParams((p) => ({ ...p, [key]: value }))
-  }
+  const navigate = useNavigate()
 
   async function send() {
     const text = input.trim()
@@ -451,7 +74,6 @@ export function StrategyBuilderPage() {
           if (ev.name) setDraftName(ev.name)
           setLastPrompt(text)
           setSavedId(null)
-          setBacktest(null)
           setMessages((m) => {
             const next = [...m]
             const cur = next[assistantIndex]
@@ -498,30 +120,10 @@ export function StrategyBuilderPage() {
     }
   }
 
-  async function runBacktest() {
+  async function goBacktest() {
     let id = savedId
     if (!id) id = await save()
-    if (!id) return
-    setBtRunning(true)
-    setBacktest(null)
-    setTab("backtest")
-    try {
-      const { id: bid } = await submitBacktest(id, btParams)
-      for (let i = 0; i < 120; i++) {
-        const res = await fetchBacktest(bid)
-        if (res.status === "done" || res.status === "failed") {
-          setBacktest(res)
-          qc.invalidateQueries({ queryKey: ["backtests"] })
-          if (res.status === "failed") toast.error("回测失败：" + (res.error ?? ""))
-          break
-        }
-        await new Promise((r) => setTimeout(r, 500))
-      }
-    } catch {
-      toast.error("回测请求失败")
-    } finally {
-      setBtRunning(false)
-    }
+    if (id) navigate(`/app/backtest?s=${id}`)
   }
 
   function confirmDelete(s: Strategy) {
@@ -548,15 +150,13 @@ export function StrategyBuilderPage() {
     setDraftName(s.name)
     setSavedId(s.id)
     setLastPrompt(s.description)
-    setBacktest(null)
     setMessages([
       { role: "user", text: s.description || s.name },
-      { role: "assistant", text: `已载入策略「${s.name}」，可继续对话调整，或直接运行回测。`, code: s.code },
+      { role: "assistant", text: `已载入策略「${s.name}」，可继续对话调整，或去回测页检验表现。`, code: s.code },
     ])
   }
 
   const activeCode = draftCode || PLACEHOLDER_CODE
-  const metrics = backtest?.status === "done" ? backtest.metrics : null
 
   return (
     <div className="grid h-[calc(100dvh-4rem)] grid-cols-1 lg:grid-cols-[240px_1fr_440px]">
@@ -574,7 +174,6 @@ export function StrategyBuilderPage() {
               setDraftCode("")
               setDraftName("")
               setSavedId(null)
-              setBacktest(null)
             }}
           >
             <Plus className="size-4" />
@@ -701,195 +300,35 @@ export function StrategyBuilderPage() {
         </div>
       </div>
 
-      {/* Code / backtest preview */}
+      {/* Code panel */}
       <div className="flex min-w-0 flex-col">
-        <Tabs value={tab} onValueChange={setTab} className="flex min-h-0 flex-1 flex-col">
-          <div className="flex h-12 shrink-0 items-center justify-between px-4">
-            <TabsList>
-              <TabsTrigger value="code">策略代码</TabsTrigger>
-              <TabsTrigger value="backtest">回测预览</TabsTrigger>
-            </TabsList>
-            <div className="flex gap-1.5">
-              <Button
-                size="icon-sm"
-                variant="ghost"
-                aria-label="保存策略"
-                onClick={save}
-                disabled={saving || !draftDsl}
-              >
-                <FloppyDisk className="size-4" />
-              </Button>
-              <Button size="sm" className="gap-1.5" onClick={runBacktest} disabled={btRunning || !draftDsl}>
-                <Play weight="fill" className="size-3.5" />
-                {btRunning ? "回测中…" : "运行回测"}
-              </Button>
-            </div>
+        <div className="flex h-12 shrink-0 items-center justify-between px-4">
+          <p className="text-sm font-medium text-foreground">策略代码</p>
+          <div className="flex gap-1.5">
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              aria-label="保存策略"
+              onClick={save}
+              disabled={saving || !draftDsl}
+            >
+              <FloppyDisk className="size-4" />
+            </Button>
+            <Button size="sm" className="gap-1.5" onClick={goBacktest} disabled={saving || !draftDsl}>
+              <Play weight="fill" className="size-3.5" />
+              去回测
+            </Button>
           </div>
-          <TabsContent value="code" className="min-h-0 flex-1 overflow-y-auto px-4 pb-4 scrollbar-thin">
-            <div className="rounded-lg border border-border bg-muted/30 p-3.5">
-              <CodeBlock code={activeCode} className="overflow-x-auto" />
-            </div>
-            <div className="mt-3 flex items-start gap-2 rounded-lg border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
-              <Robot className="mt-0.5 size-3.5 shrink-0" />
-              <p>代码由 AI 根据你的自然语言描述生成，运行前建议先在回测预览中核对逻辑与参数。</p>
-            </div>
-          </TabsContent>
-          <TabsContent value="backtest" className="min-h-0 flex-1 overflow-y-auto px-4 pb-4 scrollbar-thin">
-            <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-border bg-muted/30 p-3">
-              <ParamSelect
-                label="区间"
-                value={String(btParams.periodDays)}
-                onChange={(v) => setParam("periodDays", Number(v))}
-                options={[["120", "近半年"], ["250", "近1年"], ["500", "近2年"], ["750", "近3年"]]}
-              />
-              <ParamSelect
-                label="费率"
-                value={String(btParams.costRate)}
-                onChange={(v) => setParam("costRate", Number(v))}
-                options={[["0.0005", "万5"], ["0.001", "千1"], ["0.002", "千2"]]}
-              />
-              <ParamSelect
-                label="基准"
-                value={btParams.benchmark!}
-                onChange={(v) => setParam("benchmark", v as BacktestParams["benchmark"])}
-                options={[["000300", "沪深300"], ["000905", "中证500"], ["399006", "创业板指"]]}
-              />
-              {isEventStrategy ? (
-                <>
-                  <ParamSelect
-                    label="持有"
-                    value={String(btParams.holdDays)}
-                    onChange={(v) => setParam("holdDays", Number(v))}
-                    options={[["5", "5天"], ["10", "10天"], ["20", "20天"], ["30", "30天"]]}
-                  />
-                  <ParamSelect
-                    label="入场"
-                    value={btParams.entry!}
-                    onChange={(v) => setParam("entry", v as BacktestParams["entry"])}
-                    options={[["open", "次日开盘"], ["close", "次日收盘"]]}
-                  />
-                  <ParamSelect
-                    label="退出"
-                    value={btParams.exitRule!}
-                    onChange={(v) => setParam("exitRule", v as BacktestParams["exitRule"])}
-                    options={[["hold", "持有到期"], ["signal", "反向信号"], ["stop", "止盈止损"]]}
-                  />
-                  {btParams.exitRule === "stop" && (
-                    <ParamSelect
-                      label="止盈/损"
-                      value={`${btParams.stopGain}/${btParams.stopLoss}`}
-                      onChange={(v) => {
-                        const [g, l] = v.split("/").map(Number)
-                        setBtParams((p) => ({ ...p, stopGain: g, stopLoss: l }))
-                      }}
-                      options={[["10/5", "+10%/-5%"], ["15/8", "+15%/-8%"], ["20/10", "+20%/-10%"], ["30/15", "+30%/-15%"]]}
-                    />
-                  )}
-                </>
-              ) : (
-                <>
-                  <ParamSelect
-                    label="调仓"
-                    value={btParams.rebalance!}
-                    onChange={(v) => setParam("rebalance", v as BacktestParams["rebalance"])}
-                    options={[["weekly", "每周"], ["monthly", "每月"], ["quarterly", "每季"]]}
-                  />
-                  <ParamSelect
-                    label="权重"
-                    value={btParams.weighting!}
-                    onChange={(v) => setParam("weighting", v as BacktestParams["weighting"])}
-                    options={[["equal", "等权"], ["cap", "市值加权"]]}
-                  />
-                  <ParamSelect
-                    label="持仓数"
-                    value={String(btParams.maxPositions)}
-                    onChange={(v) => setParam("maxPositions", Number(v))}
-                    options={[["0", "不限"], ["10", "前10"], ["20", "前20"], ["50", "前50"]]}
-                  />
-                </>
-              )}
-            </div>
-            {!metrics && !btRunning && (
-              <div className="rounded-lg border border-dashed border-border py-14 text-center text-sm text-muted-foreground">
-                调好参数后点击「运行回测」查看历史表现
-              </div>
-            )}
-            {btRunning && (
-              <div className="rounded-lg border border-dashed border-border py-14 text-center text-sm text-muted-foreground">
-                正在回测…
-              </div>
-            )}
-            {metrics && (
-              <div className="space-y-3">
-                <div className="grid grid-cols-3 gap-px overflow-hidden rounded-lg border border-border bg-border">
-                  {(metrics.mode === "event"
-                    ? [
-                        { label: "信号次数", value: `${metrics.eventCount}`, tone: "flat" as const },
-                        { label: "胜率", value: `${metrics.winRate}%`, tone: "flat" as const },
-                        { label: "平均单次收益", value: `${(metrics.avgReturn ?? 0) > 0 ? "+" : ""}${metrics.avgReturn}%`, tone: (metrics.avgReturn ?? 0) >= 0 ? ("up" as const) : ("down" as const) },
-                        { label: "中位收益", value: `${metrics.medianReturn}%`, tone: "flat" as const },
-                        { label: "平均持有", value: `${metrics.avgHoldDays} 天`, tone: "flat" as const },
-                        { label: `超额 vs ${metrics.benchmarkName ?? "基准"}`, value: metrics.avgExcess == null ? "—" : `${metrics.avgExcess > 0 ? "+" : ""}${metrics.avgExcess}%`, tone: (metrics.avgExcess ?? 0) >= 0 ? ("up" as const) : ("down" as const) },
-                      ]
-                    : [
-                        { label: "年化收益", value: `${(metrics.annualizedReturn ?? 0) > 0 ? "+" : ""}${metrics.annualizedReturn}%`, tone: (metrics.annualizedReturn ?? 0) >= 0 ? ("up" as const) : ("down" as const) },
-                        { label: "最大回撤", value: `${metrics.maxDrawdown}%`, tone: "down" as const },
-                        { label: "夏普比率", value: `${metrics.sharpe}`, tone: "flat" as const },
-                        { label: "胜率", value: `${metrics.winRate}%`, tone: "flat" as const },
-                        { label: `${metrics.benchmarkName ?? "基准"}同期`, value: metrics.benchmarkReturn == null ? "—" : `${metrics.benchmarkReturn > 0 ? "+" : ""}${metrics.benchmarkReturn}%`, tone: "flat" as const },
-                        { label: "超额收益", value: metrics.excessReturn == null ? "—" : `${metrics.excessReturn > 0 ? "+" : ""}${metrics.excessReturn}%`, tone: (metrics.excessReturn ?? 0) >= 0 ? ("up" as const) : ("down" as const) },
-                      ]
-                  ).map((m) => (
-                    <div key={m.label} className="bg-card px-3 py-3">
-                      <p className="text-xs text-muted-foreground">{m.label}</p>
-                      <p
-                        className={cn(
-                          "mt-1 font-mono text-base font-semibold tabular-nums",
-                          m.tone === "up" && "text-up",
-                          m.tone === "down" && "text-down",
-                          m.tone === "flat" && "text-foreground",
-                        )}
-                      >
-                        {m.value}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-                {backtest && (
-                  <EquityCurve curve={backtest.curve} benchmark={backtest.benchmark} />
-                )}
-                {backtest?.status === "done" && (
-                  <TradeDetails key={backtest.id} backtestId={backtest.id} />
-                )}
-                <p className="text-xs text-muted-foreground">
-                  {metrics.mode === "event"
-                    ? "事件驱动回测：信号次日入场、按所选规则退出，同一股票同时只持一笔；曲线为全部信号的平均收益路径。成分按当前条件筛选，存在一定前视偏差。"
-                    : `组合回测：每个调仓期按当期时点数据重新选股（虚线为基准指数）。时点因子来自每日收盘快照${
-                        metrics.rebalances
-                          ? `，本次 ${metrics.rebalances} 期中 ${metrics.pitPeriods ?? 0} 期有真实快照`
-                          : ""
-                      }；快照未覆盖的日期用价格重构近似（ROE/股息率/行业按当前值）。历史表现不代表未来收益。`}
-                </p>
-                <BacktestHistory
-                  items={historyQ.data ?? []}
-                  currentId={backtest?.id ?? null}
-                  onLoad={loadHistoryBacktest}
-                  onDelete={removeBacktest}
-                />
-              </div>
-            )}
-            {!metrics && (
-              <div className="mt-3">
-                <BacktestHistory
-                  items={historyQ.data ?? []}
-                  currentId={null}
-                  onLoad={loadHistoryBacktest}
-                  onDelete={removeBacktest}
-                />
-              </div>
-            )}
-          </TabsContent>
-        </Tabs>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4 scrollbar-thin">
+          <div className="rounded-lg border border-border bg-muted/30 p-3.5">
+            <CodeBlock code={activeCode} className="overflow-x-auto" />
+          </div>
+          <div className="mt-3 flex items-start gap-2 rounded-lg border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+            <Robot className="mt-0.5 size-3.5 shrink-0" />
+            <p>代码由 AI 根据你的自然语言描述生成，保存后可在回测页检验历史表现。</p>
+          </div>
+        </div>
       </div>
     </div>
   )
