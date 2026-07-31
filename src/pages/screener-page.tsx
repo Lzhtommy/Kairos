@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { keepPreviousData, useQuery } from "@tanstack/react-query"
-import { Sparkle, ArrowCounterClockwise, CircleNotch } from "@phosphor-icons/react"
+import { Sparkle, ArrowCounterClockwise, ArrowsClockwise, CircleNotch } from "@phosphor-icons/react"
 import { INDUSTRIES } from "@/lib/mock-data"
 import { fetchIndustries, runScreener } from "@/api/market"
 import { fetchStrategies, fetchStrategyHits } from "@/api/strategies"
@@ -226,6 +226,15 @@ export function ScreenerPage() {
           <p className="flex items-center gap-2 text-sm text-muted-foreground">
             共 <span className="font-mono font-medium text-foreground">{total}</span> 只符合条件
             {loading && <CircleNotch className="size-3.5 animate-spin" />}
+            <button
+              onClick={() => activeQ.refetch()}
+              disabled={activeQ.isFetching}
+              aria-label="刷新结果"
+              title="重新计算筛选结果"
+              className="flex size-6 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none"
+            >
+              <ArrowsClockwise className={cn("size-3.5", activeQ.isFetching && "animate-spin")} />
+            </button>
           </p>
           {filtered.length > 0 && (
             <div
