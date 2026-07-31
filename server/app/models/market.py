@@ -67,6 +67,29 @@ class IndexQuote(Base):
     change_pct: Mapped[float] = mapped_column(Float)
 
 
+class FactorSnapshot(Base):
+    """每个交易日收盘后的全市场因子快照——point-in-time 回测的数据基础。
+
+    quotes 表只有"最新一份"，历史因子只能靠逐日归档；从部署日起积累，
+    积累越久，无前视回测的可用窗口越长。约 5500 行/交易日。
+    """
+
+    __tablename__ = "factor_history"
+
+    code: Mapped[str] = mapped_column(String(16), primary_key=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True, index=True)
+    pe: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pb: Mapped[float] = mapped_column(Float)
+    roe: Mapped[float] = mapped_column(Float)
+    turnover_rate: Mapped[float] = mapped_column(Float)
+    turnover: Mapped[float] = mapped_column(Float)          # 亿元
+    market_cap: Mapped[float] = mapped_column(Float)        # 亿元
+    change_pct: Mapped[float] = mapped_column(Float)
+    price: Mapped[float] = mapped_column(Float)
+    dividend_yield: Mapped[float] = mapped_column(Float, default=0.0)
+    industry: Mapped[str] = mapped_column(String(64), default="—")
+
+
 class Fundamental(Base):
     __tablename__ = "fundamentals"
 

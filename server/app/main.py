@@ -30,7 +30,12 @@ async def lifespan(_app: FastAPI):
         )
         conn.commit()
 
-    from app.jobs.collect import collect_once, refresh_reference, run_bootstrap_and_first_collect
+    from app.jobs.collect import (
+        collect_once,
+        refresh_reference,
+        run_bootstrap_and_first_collect,
+        snapshot_factors,
+    )
 
     run_bootstrap_and_first_collect()
 
@@ -52,6 +57,18 @@ async def lifespan(_app: FastAPI):
             "interval",
             hours=24,
             id="reference",
+            max_instances=1,
+            coalesce=True,
+            next_run_time=datetime.now(timezone.utc),
+        )
+        # 收盘后 15:15 CST（07:15 UTC）归档因子快照；启动时补拍一次，
+        # 覆盖服务器当天收盘后才启动的情况（幂等 + 盘中自动跳过）。
+        _scheduler.add_job(
+            snapshot_factors,
+            "cron",
+            hour=7,
+            minute=15,
+            id="factor_snapshot",
             max_instances=1,
             coalesce=True,
             next_run_time=datetime.now(timezone.utc),

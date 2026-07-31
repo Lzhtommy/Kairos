@@ -598,7 +598,11 @@ export function StrategyBuilderPage() {
                 <p className="text-xs text-muted-foreground">
                   {metrics.mode === "event"
                     ? "事件驱动回测：信号次日入场、按所选规则退出，同一股票同时只持一笔；曲线为全部信号的平均收益路径。成分按当前条件筛选，存在一定前视偏差。"
-                    : "组合回测：按当前条件选出的成分在区间内持有（虚线为基准指数）。成分与权重取自当前快照，存在前视偏差，历史表现不代表未来收益。"}
+                    : `组合回测：每个调仓期按当期时点数据重新选股（虚线为基准指数）。时点因子来自每日收盘快照${
+                        metrics.rebalances
+                          ? `，本次 ${metrics.rebalances} 期中 ${metrics.pitPeriods ?? 0} 期有真实快照`
+                          : ""
+                      }；快照未覆盖的日期用价格重构近似（ROE/股息率/行业按当前值）。历史表现不代表未来收益。`}
                 </p>
               </div>
             )}

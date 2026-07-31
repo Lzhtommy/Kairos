@@ -14,7 +14,7 @@ from time import sleep
 from sqlalchemy import delete, func, select
 
 from app.core.db import SessionLocal
-from app.models.market import Fundamental, IndexQuote, Kline, Quote, StockInfo
+from app.models.market import FactorSnapshot, Fundamental, IndexQuote, Kline, Quote, StockInfo
 from app.providers.factory import get_provider
 
 logger = logging.getLogger("kairos.collector")
@@ -312,6 +312,49 @@ def _deepen_kline_history(db, provider, cap: int = 3000) -> int:
             logger.info("Kline deepen progress: %d", deepened)
     db.commit()
     return deepened
+
+
+def snapshot_factors() -> None:
+    """收盘后归档当个交易日的全市场因子快照（point-in-time 回测的数据源）。
+
+    幂等：以库里最新日 K 的日期为快照日，已存在即跳过；盘中不拍
+    （盘中值不是收盘值）。停机漏拍的日子无法补（quotes 只有最新一份），
+    但下一个交易日会正常续上。
+    """
+    db = SessionLocal()
+    try:
+        if in_trading_session():
+            return
+        snap_day = db.execute(
+            select(func.max(Kline.ts)).where(Kline.period == "1d")
+        ).scalar()
+        if snap_day is None:
+            return
+        exists = db.execute(
+            select(func.count()).select_from(FactorSnapshot).where(FactorSnapshot.ts == snap_day)
+        ).scalar()
+        if exists:
+            return
+        from app.services.market import factor_rows
+
+        rows = factor_rows(db)
+        for r in rows:
+            db.add(
+                FactorSnapshot(
+                    code=r["code"], ts=snap_day,
+                    pe=r["pe"], pb=r["pb"], roe=r["roe"],
+                    turnover_rate=r["turnover_rate"], turnover=r["turnover"],
+                    market_cap=r["market_cap"], change_pct=r["change_pct"],
+                    price=r["price"], dividend_yield=r["dividend_yield"],
+                    industry=r["industry"],
+                )
+            )
+        db.commit()
+        logger.info("Factor snapshot for %s: %d stocks", snap_day.date(), len(rows))
+    except Exception as exc:  # noqa: BLE001 — keep the scheduler alive
+        logger.warning("Factor snapshot failed: %s", exc)
+    finally:
+        db.close()
 
 
 def collect_once(force: bool = False) -> None:

@@ -23,7 +23,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models.market import Kline
+from app.models.market import FactorSnapshot, Kline, StockInfo
 from app.services import technical
 from app.services.dsl import apply_universe, execute, validate_dsl
 from app.services.market import factor_rows
@@ -122,15 +122,19 @@ def _empty_result(mode: str, hit_count: int = 0) -> dict[str, Any]:
 def run(db: Session, dsl: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
     dsl = validate_dsl(dsl)
     p = _clean_params(params or {}, dsl)
-    # 标量层先筛（今日快照）；纯技术策略只做 universe 过滤，
-    # 不能走 execute——technical 摘掉后会触发"双空"校验
-    if dsl["filters"]:
-        rows = execute({**dsl, "technical": []}, factor_rows(db))
-    else:
-        rows = apply_universe(dsl, factor_rows(db))
+    all_rows = factor_rows(db)
     if dsl.get("technical"):
-        return _run_event(db, dsl, p, rows)
-    return _run_portfolio(db, dsl, p, rows)
+        # 事件模式：标量层作为股票池预筛（今日快照，已在 UI 披露）；
+        # 纯技术策略只做 universe 过滤，不能走 execute——会触发"双空"校验
+        pool = (
+            execute({**dsl, "technical": []}, all_rows)
+            if dsl["filters"]
+            else apply_universe(dsl, all_rows)
+        )
+        return _run_event(db, dsl, p, pool)
+    # 组合模式：传全市场行，内部按各调仓时点重选（今天不满足条件的
+    # 股票，历史时点可能满足）
+    return _run_portfolio(db, dsl, p, all_rows)
 
 
 # ---- 事件驱动模式 ---------------------------------------------------------------
@@ -247,43 +251,187 @@ def _period_key(ts: datetime, freq: str) -> tuple:
     return (ts.year, ts.month)
 
 
-def _run_portfolio(
-    db: Session, dsl: dict[str, Any], p: dict[str, Any], rows: list[dict[str, Any]]
-) -> dict[str, Any]:
-    if p["max_pos"]:
-        rows = sorted(rows, key=lambda r: r.get("market_cap") or 0, reverse=True)[: p["max_pos"]]
-    hit_count = len(rows)
-    weights = {
-        r["code"]: (r.get("market_cap") or 0.0) if p["weighting"] == "cap" else 1.0 for r in rows
-    }
-    codes = [r["code"] for r in rows if weights[r["code"]] > 0 or p["weighting"] == "equal"]
+def _trading_calendar(db: Session, bench: dict[datetime, float], period: int) -> list[datetime]:
+    """回测交易日历：优先用基准指数的日期序列，基准不可用时退回参照股。"""
+    if bench:
+        cal = sorted(bench.keys())
+    else:
+        cal = [
+            r[0]
+            for r in db.execute(
+                select(Kline.ts)
+                .where(Kline.code == "600519", Kline.period == "1d")
+                .order_by(Kline.ts.asc())
+            )
+        ]
+    return cal[-(period + 1) :]
 
-    series = {}
-    for chunk in _chunks(codes, _CHUNK):
-        series.update(_bars_by_code(db, chunk, p["period"] + 1))
-    codes = [c for c in codes if series.get(c)]
-    if not codes:
+
+def _bar_lookup(
+    db: Session, dates: list[datetime]
+) -> dict[datetime, dict[str, tuple[float, float]]]:
+    """指定日期集的全市场 (close, volume)，按日期分组。"""
+    out: dict[datetime, dict[str, tuple[float, float]]] = {}
+    if not dates:
+        return out
+    for code, ts, close, vol in db.execute(
+        select(Kline.code, Kline.ts, Kline.close, Kline.volume).where(
+            Kline.period == "1d", Kline.ts.in_(dates)
+        )
+    ):
+        out.setdefault(ts, {})[code] = (close, vol)
+    return out
+
+
+def _snapshot_rows(db: Session, ts: datetime) -> list[dict[str, Any]]:
+    """factor_history 某日快照 → DSL 因子行（name/market 用当前值，ST 状态近似）。"""
+    info = {s.code: s for s in db.execute(select(StockInfo)).scalars().all()}
+    rows = []
+    for s in db.execute(select(FactorSnapshot).where(FactorSnapshot.ts == ts)).scalars():
+        meta = info.get(s.code)
+        rows.append(
+            {
+                "code": s.code,
+                "name": meta.name if meta else s.code,
+                "market": meta.market if meta else "SH",
+                "industry": s.industry,
+                "pe": s.pe, "pb": s.pb, "roe": s.roe,
+                "turnover_rate": s.turnover_rate, "turnover": s.turnover,
+                "market_cap": s.market_cap, "change_pct": s.change_pct,
+                "price": s.price, "dividend_yield": s.dividend_yield,
+            }
+        )
+    return rows
+
+
+def _reconstructed_rows(
+    rows_today: list[dict[str, Any]],
+    ref_bars: dict[str, tuple[float, float]],
+    day_bars: dict[str, tuple[float, float]],
+    prev_bars: dict[str, tuple[float, float]],
+) -> list[dict[str, Any]]:
+    """无快照日期的近似因子行：价格相关因子按当日收盘缩放（股本/盈利视为不变），
+    成交额按当日量价直算；ROE/股息率/行业取当前值（季度级慢变）。"""
+    out = []
+    for r in rows_today:
+        code = r["code"]
+        ref = ref_bars.get(code)
+        day = day_bars.get(code)
+        if not ref or not day or ref[0] <= 0:
+            continue  # 当时未上市 / 无数据
+        k = day[0] / ref[0]
+        prev = prev_bars.get(code)
+        out.append(
+            {
+                **r,
+                "price": day[0],
+                "market_cap": round(r["market_cap"] * k, 2),
+                "pe": round(r["pe"] * k, 2) if r["pe"] else None,
+                "pb": round(r["pb"] * k, 3),
+                "change_pct": round((day[0] / prev[0] - 1) * 100, 2) if prev and prev[0] else 0.0,
+                "turnover": round(day[1] * 100 * day[0] / 1e8, 2),
+                "turnover_rate": (
+                    round(r["turnover_rate"] * day[1] / ref[1], 2) if ref[1] else r["turnover_rate"]
+                ),
+            }
+        )
+    return out
+
+
+def _run_portfolio(
+    db: Session, dsl: dict[str, Any], p: dict[str, Any], rows_today: list[dict[str, Any]]
+) -> dict[str, Any]:
+    scalar_dsl = {**dsl, "technical": []}
+    hit_count = len(execute(scalar_dsl, rows_today)) if dsl["filters"] else len(rows_today)
+
+    bench = _benchmark_closes(p["benchmark"])
+    calendar = _trading_calendar(db, bench, p["period"])
+    if len(calendar) < 2:
         return _empty_result("portfolio", hit_count)
 
-    calendar = [ts for ts, _, _ in max(series.values(), key=len)]
-    close_map = {c: {ts: close for ts, _, close in s} for c, s in series.items()}
+    # 调仓期边界：日历上周期键变化的位置；每期成分在上一交易日收盘后选定
+    boundaries = [0] + [
+        i
+        for i in range(1, len(calendar))
+        if _period_key(calendar[i], p["rebalance"]) != _period_key(calendar[i - 1], p["rebalance"])
+    ]
+    sel_dates: list[datetime] = []
+    all_cal = sorted(bench.keys()) if bench else calendar
+    for b in boundaries:
+        d = calendar[b]
+        pos = all_cal.index(d)
+        sel_dates.append(all_cal[pos - 1] if pos > 0 else d)
 
+    snap_days = {
+        r[0]
+        for r in db.execute(
+            select(FactorSnapshot.ts).where(FactorSnapshot.ts.in_(sel_dates)).distinct()
+        )
+    }
+    # 重构需要：各选股日及其前一日的收盘/量 + 今日参照价
+    prev_of = {d: all_cal[all_cal.index(d) - 1] for d in sel_dates if all_cal.index(d) > 0}
+    ref_date = calendar[-1]
+    lookup_dates = sorted({*sel_dates, *prev_of.values(), ref_date} - snap_days | {ref_date})
+    bar_lookup = _bar_lookup(db, lookup_dates)
+    ref_bars = bar_lookup.get(ref_date, {})
+
+    # 每个调仓期重选成分并定权重
+    period_sel: list[dict[str, float]] = []  # 每期 code → weight
+    pit_periods = 0
+    for d in sel_dates:
+        if d in snap_days:
+            rows_d = _snapshot_rows(db, d)
+            pit_periods += 1
+        else:
+            rows_d = _reconstructed_rows(
+                rows_today, ref_bars, bar_lookup.get(d, {}), bar_lookup.get(prev_of.get(d), {})
+            )
+        picked = execute(scalar_dsl, rows_d) if dsl["filters"] else apply_universe(dsl, rows_d)
+        if p["max_pos"]:
+            picked = sorted(picked, key=lambda r: r.get("market_cap") or 0, reverse=True)[
+                : p["max_pos"]
+            ]
+        period_sel.append(
+            {
+                r["code"]: (r.get("market_cap") or 0.0) if p["weighting"] == "cap" else 1.0
+                for r in picked
+                if p["weighting"] == "equal" or (r.get("market_cap") or 0) > 0
+            }
+        )
+
+    union_codes = sorted({c for sel in period_sel for c in sel})
+    if not union_codes:
+        return _empty_result("portfolio", hit_count)
+    close_map: dict[str, dict[datetime, float]] = {}
+    for chunk in _chunks(union_codes, _CHUNK):
+        for code, s in _bars_by_code(db, chunk, p["period"] + 1).items():
+            close_map[code] = {ts: close for ts, _, close in s}
+
+    # 日收益：用当日所属调仓期的成分与权重
+    boundary_set = set(boundaries)
     daily_returns: list[float] = []
     dates: list[datetime] = []
+    active = 0
     for i in range(1, len(calendar)):
+        if i in boundary_set:
+            active = boundaries.index(i)
+        weights = period_sel[active]
         d0, d1 = calendar[i - 1], calendar[i]
         num = den = 0.0
-        for c in codes:
-            p0, p1 = close_map[c].get(d0), close_map[c].get(d1)
+        for c, w in weights.items():
+            m = close_map.get(c)
+            if not m:
+                continue
+            p0, p1 = m.get(d0), m.get(d1)
             if p0 and p1 and p0 > 0:
-                w = weights[c] or 1.0
+                w = w or 1.0
                 num += w * (p1 / p0 - 1)
                 den += w
         if not den:
             continue
         r = num / den
-        if _period_key(d1, p["rebalance"]) != _period_key(d0, p["rebalance"]):
-            r -= 2 * p["rate"]
+        if i in boundary_set:
+            r -= 2 * p["rate"]  # 调仓成本
         daily_returns.append(r)
         dates.append(d1)
 
@@ -333,6 +481,8 @@ def _run_portfolio(
                 round((equity - 1 - bench_total) * 100, 2) if bench_total is not None else None
             ),
             "benchmarkName": _BENCHMARKS[p["benchmark"]],
+            "rebalances": len(period_sel),
+            "pitPeriods": pit_periods,  # 用真实快照重选的期数（随归档积累增长）
         },
         "curve": curve,
         "benchmark": bench_curve,
