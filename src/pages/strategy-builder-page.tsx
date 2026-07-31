@@ -25,9 +25,12 @@ import {
 import {
   submitBacktest,
   fetchBacktest,
+  fetchBacktests,
   fetchBacktestTrades,
+  deleteBacktest,
   type BacktestParams,
   type BacktestResult,
+  type BacktestSummary,
   type BacktestTrade,
   type RebalanceRecord,
   type TradesPage,
@@ -128,6 +131,87 @@ const EXIT_REASON: Record<BacktestTrade["reason"], string> = {
   signal: "反向信号",
   stop_gain: "止盈",
   stop_loss: "止损",
+}
+
+const PERIOD_LABEL: Record<number, string> = { 120: "近半年", 250: "近1年", 500: "近2年", 750: "近3年" }
+const EXIT_LABEL: Record<string, string> = { hold: "持有到期", signal: "反向信号", stop: "止盈止损" }
+const REB_LABEL: Record<string, string> = { weekly: "每周", monthly: "每月", quarterly: "每季" }
+
+function summarizeBacktest(b: BacktestSummary): { params: string; result: string } {
+  const p = b.params
+  const m = b.metrics
+  const bits = [PERIOD_LABEL[p.periodDays ?? 250] ?? `${p.periodDays}日`]
+  if (m.mode === "event") {
+    bits.push(`持有${p.holdDays}天`, EXIT_LABEL[p.exitRule ?? "hold"])
+  } else {
+    bits.push(REB_LABEL[p.rebalance ?? "monthly"], p.weighting === "cap" ? "市值加权" : "等权")
+    if (p.maxPositions) bits.push(`前${p.maxPositions}`)
+  }
+  let result = ""
+  if (b.status === "failed") result = "失败"
+  else if (m.mode === "event") result = `平均 ${m.avgReturn}% · 胜率 ${m.winRate}%`
+  else if (m.mode === "portfolio")
+    result = `年化 ${m.annualizedReturn}%${m.excessReturn != null ? ` · 超额 ${m.excessReturn}%` : ""}`
+  return { params: bits.join("·"), result }
+}
+
+function BacktestHistory({
+  items,
+  currentId,
+  onLoad,
+  onDelete,
+}: {
+  items: BacktestSummary[]
+  currentId: number | null
+  onLoad: (b: BacktestSummary) => void
+  onDelete: (b: BacktestSummary) => void
+}) {
+  if (items.length === 0) return null
+  return (
+    <div className="rounded-lg border border-border">
+      <p className="border-b border-border px-3 py-2 text-xs font-medium text-foreground">
+        历史回测 <span className="ml-1 font-mono text-muted-foreground">{items.length}</span>
+      </p>
+      <div className="max-h-56 divide-y divide-border/60 overflow-y-auto scrollbar-thin">
+        {items.map((b) => {
+          const s = summarizeBacktest(b)
+          return (
+            <div
+              key={b.id}
+              className={cn(
+                "flex items-center gap-2 px-3 py-1.5 text-xs",
+                currentId === b.id && "bg-accent/60",
+              )}
+            >
+              <button
+                onClick={() => onLoad(b)}
+                disabled={b.status !== "done"}
+                className="flex flex-1 flex-wrap items-center gap-x-3 gap-y-0.5 text-left disabled:opacity-50"
+              >
+                <span className="font-mono tabular-nums text-muted-foreground">{b.createdAt}</span>
+                <span className="text-foreground">{s.params}</span>
+                <span
+                  className={cn(
+                    "font-mono tabular-nums",
+                    b.status === "failed" ? "text-down" : "text-muted-foreground",
+                  )}
+                >
+                  {s.result}
+                </span>
+              </button>
+              <button
+                onClick={() => onDelete(b)}
+                aria-label="删除该回测"
+                className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-destructive"
+              >
+                <Trash className="size-3" />
+              </button>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
 }
 
 function TradeDetails({ backtestId }: { backtestId: number }) {
@@ -292,6 +376,43 @@ export function StrategyBuilderPage() {
   const [tab, setTab] = useState("code")
   const scrollRef = useRef<HTMLDivElement>(null)
 
+  // 已保存策略的历史回测；刷新/重新载入策略后自动展示最近一次完成的结果
+  const historyQ = useQuery({
+    queryKey: ["backtests", savedId],
+    queryFn: () => fetchBacktests(savedId!),
+    enabled: !!savedId,
+  })
+  useEffect(() => {
+    const latest = historyQ.data?.find((b) => b.status === "done")
+    if (!latest || backtest || btRunning) return
+    let alive = true
+    fetchBacktest(latest.id)
+      .then((res) => alive && setBacktest((cur) => cur ?? res))
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [historyQ.data, backtest, btRunning])
+
+  async function loadHistoryBacktest(b: BacktestSummary) {
+    try {
+      setBacktest(await fetchBacktest(b.id))
+    } catch {
+      toast.error("载入回测失败")
+    }
+  }
+
+  async function removeBacktest(b: BacktestSummary) {
+    try {
+      await deleteBacktest(b.id)
+      qc.invalidateQueries({ queryKey: ["backtests"] })
+      if (backtest?.id === b.id) setBacktest(null) // 删的是当前展示的，自动回落到最近一次
+      toast.success("已删除该回测记录")
+    } catch {
+      toast.error("删除失败")
+    }
+  }
+
   // 含技术形态的策略走事件驱动回测，参数面板按模式显隐
   const isEventStrategy =
     Array.isArray((draftDsl as { technical?: unknown[] } | null)?.technical) &&
@@ -390,6 +511,7 @@ export function StrategyBuilderPage() {
         const res = await fetchBacktest(bid)
         if (res.status === "done" || res.status === "failed") {
           setBacktest(res)
+          qc.invalidateQueries({ queryKey: ["backtests"] })
           if (res.status === "failed") toast.error("回测失败：" + (res.error ?? ""))
           break
         }
@@ -748,6 +870,22 @@ export function StrategyBuilderPage() {
                           : ""
                       }；快照未覆盖的日期用价格重构近似（ROE/股息率/行业按当前值）。历史表现不代表未来收益。`}
                 </p>
+                <BacktestHistory
+                  items={historyQ.data ?? []}
+                  currentId={backtest?.id ?? null}
+                  onLoad={loadHistoryBacktest}
+                  onDelete={removeBacktest}
+                />
+              </div>
+            )}
+            {!metrics && (
+              <div className="mt-3">
+                <BacktestHistory
+                  items={historyQ.data ?? []}
+                  currentId={null}
+                  onLoad={loadHistoryBacktest}
+                  onDelete={removeBacktest}
+                />
               </div>
             )}
           </TabsContent>

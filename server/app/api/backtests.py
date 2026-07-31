@@ -86,6 +86,51 @@ def _get_owned_backtest(db: Session, bid: int, user: User) -> Backtest:
     return rec
 
 
+@router.get("")
+def list_backtests(
+    strategyId: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """某策略的历史回测（新→旧，最多 50 条），供参数对比与回看。"""
+    s = db.get(Strategy, strategyId)
+    if not s or s.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "策略不存在")
+    rows = (
+        db.query(Backtest)
+        .filter(Backtest.strategy_id == strategyId)
+        .order_by(Backtest.created_at.desc(), Backtest.id.desc())
+        .limit(50)
+        .all()
+    )
+    return [
+        {
+            "id": r.id,
+            "status": r.status,
+            "params": r.params or {},
+            "metrics": r.metrics or {},
+            "createdAt": r.created_at.strftime("%Y-%m-%d %H:%M"),
+        }
+        for r in rows
+    ]
+
+
+@router.delete("/{bid}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_backtest(
+    bid: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
+    rec = _get_owned_backtest(db, bid, user)
+    if rec.curve_ref:
+        import os
+
+        try:
+            os.remove(rec.curve_ref)
+        except OSError:
+            pass
+    db.delete(rec)
+    db.commit()
+
+
 @router.get("/{bid}/trades")
 def backtest_trades(
     bid: int,

@@ -61,6 +61,23 @@ export function fetchBacktest(id: number): Promise<BacktestResult> {
   return api<BacktestResult>(`/backtests/${id}`)
 }
 
+/** 历史回测摘要（列表项） */
+export type BacktestSummary = {
+  id: number
+  status: BacktestResult["status"]
+  params: BacktestParams
+  metrics: BacktestMetrics
+  createdAt: string
+}
+
+export function fetchBacktests(strategyId: string): Promise<BacktestSummary[]> {
+  return api<BacktestSummary[]>(`/backtests?strategyId=${Number(strategyId)}`)
+}
+
+export function deleteBacktest(id: number): Promise<unknown> {
+  return api(`/backtests/${id}`, { method: "DELETE" })
+}
+
 /** 事件模式的逐笔交易 */
 export type BacktestTrade = {
   code: string
