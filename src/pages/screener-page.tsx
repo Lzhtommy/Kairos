@@ -20,7 +20,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 
 export function ScreenerPage() {
-  const [mode, setMode] = useState<"classic" | "strategy">("classic")
+  const [mode, setMode] = useState<"classic" | "strategy">("strategy")
   const [industry, setIndustry] = useState<string>("all")
   const [peRange, setPeRange] = useState([0, 60])
   const [minRoe, setMinRoe] = useState([0])
@@ -79,13 +79,13 @@ export function ScreenerPage() {
         <div>
           <h1 className="text-lg font-semibold text-foreground">选股</h1>
           <p className="mt-0.5 text-sm text-muted-foreground">
-            用传统指标筛选，或直接套用你与 AI 生成的策略
+            直接套用你与 AI 生成的策略，或用传统指标筛选
           </p>
         </div>
         <Tabs value={mode} onValueChange={(v) => setMode(v as typeof mode)}>
           <TabsList>
-            <TabsTrigger value="classic">传统筛选</TabsTrigger>
             <TabsTrigger value="strategy">策略筛选</TabsTrigger>
+            <TabsTrigger value="classic">传统筛选</TabsTrigger>
           </TabsList>
         </Tabs>
       </div>
