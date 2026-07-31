@@ -60,3 +60,46 @@ export function submitBacktest(
 export function fetchBacktest(id: number): Promise<BacktestResult> {
   return api<BacktestResult>(`/backtests/${id}`)
 }
+
+/** 事件模式的逐笔交易 */
+export type BacktestTrade = {
+  code: string
+  name: string
+  entryDate: string
+  entryPx: number
+  exitDate: string
+  exitPx: number
+  ret: number // %
+  days: number
+  reason: "hold" | "signal" | "stop_gain" | "stop_loss"
+}
+
+/** 组合模式的调仓记录 */
+export type RebalanceRecord = {
+  date: string
+  holdings: number
+  addedCount: number
+  removedCount: number
+  added: { code: string; name: string }[]
+  removed: { code: string; name: string }[]
+  periodReturn: number // %
+}
+
+export type TradesPage = {
+  kind: "trades" | "rebalances"
+  total: number
+  page: number
+  pageSize: number
+  items: BacktestTrade[] | RebalanceRecord[]
+}
+
+export function fetchBacktestTrades(
+  id: number,
+  page = 1,
+  sort: "date" | "ret" = "date",
+  order: "asc" | "desc" = "desc",
+): Promise<TradesPage> {
+  return api<TradesPage>(
+    `/backtests/${id}/trades?page=${page}&pageSize=50&sort=${sort}&order=${order}`,
+  )
+}

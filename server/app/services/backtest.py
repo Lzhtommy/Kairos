@@ -116,6 +116,8 @@ def _empty_result(mode: str, hit_count: int = 0) -> dict[str, Any]:
                     "annualizedReturn": 0.0, "maxDrawdown": 0.0, "sharpe": 0.0, "winRate": 0.0},
         "curve": [],
         "benchmark": [],
+        "trades": [],
+        "rebalanceRecords": [],
     }
 
 
@@ -145,6 +147,7 @@ def _run_event(
 ) -> dict[str, Any]:
     tech = dsl["technical"]
     codes = [r["code"] for r in rows]
+    names = {r["code"]: r["name"] for r in rows}
     need = technical.bars_needed(tech)
     depth = min(_MAX_BARS, p["period"] + need + p["hold"] * 3 + 2)
     rev = technical.reverse_signal(tech) if p["exit"] == "signal" else None
@@ -170,27 +173,35 @@ def _run_event(
                     i += 1
                     continue
                 cap_idx = min(e_idx + p["hold"], n - 1)
-                exit_idx = cap_idx
+                exit_idx, reason = cap_idx, "hold"
                 if p["exit"] == "signal" and rev_sig is not None:
                     cap = min(e_idx + p["hold"] * 3, n - 1)  # 反向信号迟迟不来时的兜底
                     exit_idx = cap
                     for j in range(e_idx + 1, cap + 1):
                         if rev_sig[j]:
-                            exit_idx = j
+                            exit_idx, reason = j, "signal"
                             break
                 elif p["exit"] == "stop":
                     for j in range(e_idx, cap_idx + 1):
                         r = series[j][2] / entry_px - 1
-                        if r >= p["stop_gain"] / 100 or r <= -p["stop_loss"] / 100:
-                            exit_idx = j
+                        if r >= p["stop_gain"] / 100:
+                            exit_idx, reason = j, "stop_gain"
+                            break
+                        if r <= -p["stop_loss"] / 100:
+                            exit_idx, reason = j, "stop_loss"
                             break
                 exit_px = series[exit_idx][2]
                 trades.append(
                     {
+                        "code": code,
+                        "name": names.get(code, code),
                         "ret": exit_px / entry_px - 1 - 2 * p["rate"],
                         "days": exit_idx - e_idx,
                         "entry_ts": series[e_idx][0],
                         "exit_ts": series[exit_idx][0],
+                        "entry_px": round(entry_px, 3),
+                        "exit_px": round(exit_px, 3),
+                        "reason": reason,
                     }
                 )
                 # 平均收益路径（按持有期对齐；实际提前退出的用退出价截断）
@@ -222,6 +233,23 @@ def _run_event(
             break
         curve.append({"t": f"D{k}", "v": round(1 + mean(vals), 4)})
 
+    # 逐笔明细：全量落盘（分页接口按需读取），超上限截断并在指标注明
+    _TRADES_CAP = 50_000
+    trade_records = [
+        {
+            "code": t["code"],
+            "name": t["name"],
+            "entryDate": t["entry_ts"].strftime("%Y-%m-%d"),
+            "entryPx": t["entry_px"],
+            "exitDate": t["exit_ts"].strftime("%Y-%m-%d"),
+            "exitPx": t["exit_px"],
+            "ret": round(t["ret"] * 100, 2),
+            "days": t["days"],
+            "reason": t["reason"],
+        }
+        for t in trades[:_TRADES_CAP]
+    ]
+
     return {
         "metrics": {
             "mode": "event",
@@ -233,9 +261,11 @@ def _run_event(
             "avgHoldDays": round(mean(t["days"] for t in trades), 1),
             "avgExcess": round(mean(excesses) * 100, 2) if excesses else None,
             "benchmarkName": _BENCHMARKS[p["benchmark"]],
+            "tradesTruncated": len(trades) > _TRADES_CAP,
         },
         "curve": curve,
         "benchmark": [],
+        "trades": trade_records,
     }
 
 
@@ -377,6 +407,7 @@ def _run_portfolio(
 
     # 每个调仓期重选成分并定权重
     period_sel: list[dict[str, float]] = []  # 每期 code → weight
+    period_names: list[dict[str, str]] = []
     pit_periods = 0
     for d in sel_dates:
         if d in snap_days:
@@ -398,6 +429,7 @@ def _run_portfolio(
                 if p["weighting"] == "equal" or (r.get("market_cap") or 0) > 0
             }
         )
+        period_names.append({r["code"]: r["name"] for r in picked})
 
     union_codes = sorted({c for sel in period_sel for c in sel})
     if not union_codes:
@@ -407,10 +439,11 @@ def _run_portfolio(
         for code, s in _bars_by_code(db, chunk, p["period"] + 1).items():
             close_map[code] = {ts: close for ts, _, close in s}
 
-    # 日收益：用当日所属调仓期的成分与权重
+    # 日收益：用当日所属调仓期的成分与权重；顺带累计每期收益
     boundary_set = set(boundaries)
     daily_returns: list[float] = []
     dates: list[datetime] = []
+    period_equity = [1.0] * len(period_sel)
     active = 0
     for i in range(1, len(calendar)):
         if i in boundary_set:
@@ -432,8 +465,31 @@ def _run_portfolio(
         r = num / den
         if i in boundary_set:
             r -= 2 * p["rate"]  # 调仓成本
+        period_equity[active] *= 1 + r
         daily_returns.append(r)
         dates.append(d1)
+
+    # 调仓记录：每期新进/调出（名单各截前 100 只，计数保留全量）
+    rebalance_records: list[dict[str, Any]] = []
+    for k, b in enumerate(boundaries):
+        cur, prev = set(period_sel[k]), set(period_sel[k - 1]) if k else set()
+        added = sorted(cur - prev)
+        removed = sorted(prev - cur)
+        names_k = period_names[k]
+        names_prev = period_names[k - 1] if k else {}
+        rebalance_records.append(
+            {
+                "date": calendar[b].strftime("%Y-%m-%d"),
+                "holdings": len(cur),
+                "addedCount": len(added) if k else 0,  # 首期是建仓，不算"新进"
+                "removedCount": len(removed),
+                "added": [] if not k else [
+                    {"code": c, "name": names_k.get(c, c)} for c in added[:100]
+                ],
+                "removed": [{"code": c, "name": names_prev.get(c, c)} for c in removed[:100]],
+                "periodReturn": round((period_equity[k] - 1) * 100, 2),
+            }
+        )
 
     equity, peak, max_dd = 1.0, 1.0, 0.0
     curve: list[dict[str, Any]] = [{"t": calendar[0].strftime("%Y-%m-%d"), "v": 1.0}]
@@ -486,6 +542,7 @@ def _run_portfolio(
         },
         "curve": curve,
         "benchmark": bench_curve,
+        "rebalanceRecords": rebalance_records,
     }
 
 

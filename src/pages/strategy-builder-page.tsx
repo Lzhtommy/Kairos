@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
@@ -25,8 +25,12 @@ import {
 import {
   submitBacktest,
   fetchBacktest,
+  fetchBacktestTrades,
   type BacktestParams,
   type BacktestResult,
+  type BacktestTrade,
+  type RebalanceRecord,
+  type TradesPage,
 } from "@/api/backtests"
 import {
   Select,
@@ -116,6 +120,143 @@ function ParamSelect({
         </SelectContent>
       </Select>
     </label>
+  )
+}
+
+const EXIT_REASON: Record<BacktestTrade["reason"], string> = {
+  hold: "到期",
+  signal: "反向信号",
+  stop_gain: "止盈",
+  stop_loss: "止损",
+}
+
+function TradeDetails({ backtestId }: { backtestId: number }) {
+  const [data, setData] = useState<TradesPage | null>(null)
+  const [page, setPage] = useState(1)
+  const [sortKey, setSortKey] = useState("date_desc")
+
+  useEffect(() => {
+    let alive = true
+    const [sort, order] =
+      sortKey === "ret_desc" ? ["ret", "desc"] : sortKey === "ret_asc" ? ["ret", "asc"] : ["date", "desc"]
+    fetchBacktestTrades(backtestId, page, sort as "date" | "ret", order as "asc" | "desc")
+      .then((d) => alive && setData(d))
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [backtestId, page, sortKey])
+
+  if (!data || data.total === 0) return null
+  const totalPages = Math.max(1, Math.ceil(data.total / data.pageSize))
+
+  return (
+    <div className="rounded-lg border border-border">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2">
+        <p className="text-xs font-medium text-foreground">
+          {data.kind === "trades" ? "交易明细" : "调仓记录"}
+          <span className="ml-1.5 font-mono text-muted-foreground">共 {data.total} {data.kind === "trades" ? "笔" : "期"}</span>
+        </p>
+        <div className="flex items-center gap-2">
+          {data.kind === "trades" && (
+            <ParamSelect
+              label="排序"
+              value={sortKey}
+              onChange={(v) => {
+                setSortKey(v)
+                setPage(1)
+              }}
+              options={[["date_desc", "时间新→旧"], ["ret_desc", "收益高→低"], ["ret_asc", "收益低→高"]]}
+            />
+          )}
+          {totalPages > 1 && (
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <button
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page <= 1}
+                className="rounded border border-border px-1.5 py-0.5 hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+              >
+                上一页
+              </button>
+              <span className="font-mono tabular-nums">{page}/{totalPages}</span>
+              <button
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={page >= totalPages}
+                className="rounded border border-border px-1.5 py-0.5 hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+              >
+                下一页
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+      {data.kind === "trades" ? (
+        <div className="overflow-x-auto scrollbar-thin">
+          <table className="w-full border-collapse text-left text-xs">
+            <thead>
+              <tr className="border-b border-border text-muted-foreground">
+                {["入场日", "标的", "入场价", "出场日", "出场价", "收益", "持有", "退出"].map((h) => (
+                  <th key={h} className="whitespace-nowrap px-3 py-1.5 font-medium">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {(data.items as BacktestTrade[]).map((t, i) => (
+                <tr key={`${t.code}-${t.entryDate}-${i}`} className="border-b border-border/60 hover:bg-muted/50">
+                  <td className="whitespace-nowrap px-3 py-1.5 font-mono tabular-nums">{t.entryDate}</td>
+                  <td className="whitespace-nowrap px-3 py-1.5">
+                    <a
+                      href={`https://xueqiu.com/S/${t.code.startsWith("6") ? "SH" : t.code.startsWith("4") || t.code.startsWith("8") || t.code.startsWith("9") ? "BJ" : "SZ"}${t.code}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-foreground hover:text-primary"
+                    >
+                      {t.name}
+                      <span className="ml-1 font-mono text-[10px] text-muted-foreground">{t.code}</span>
+                    </a>
+                  </td>
+                  <td className="px-3 py-1.5 font-mono tabular-nums">{t.entryPx}</td>
+                  <td className="whitespace-nowrap px-3 py-1.5 font-mono tabular-nums">{t.exitDate}</td>
+                  <td className="px-3 py-1.5 font-mono tabular-nums">{t.exitPx}</td>
+                  <td className={cn("px-3 py-1.5 font-mono tabular-nums", t.ret >= 0 ? "text-up" : "text-down")}>
+                    {t.ret > 0 ? "+" : ""}{t.ret}%
+                  </td>
+                  <td className="px-3 py-1.5 font-mono tabular-nums">{t.days}天</td>
+                  <td className="whitespace-nowrap px-3 py-1.5 text-muted-foreground">{EXIT_REASON[t.reason] ?? t.reason}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="divide-y divide-border/60">
+          {(data.items as RebalanceRecord[]).map((r) => (
+            <div key={r.date} className="px-3 py-2 text-xs">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <span className="font-mono tabular-nums text-foreground">{r.date}</span>
+                <span className="text-muted-foreground">持仓 {r.holdings}</span>
+                {r.addedCount > 0 && <span className="text-up">新进 {r.addedCount}</span>}
+                {r.removedCount > 0 && <span className="text-down">调出 {r.removedCount}</span>}
+                <span className={cn("ml-auto font-mono tabular-nums", r.periodReturn >= 0 ? "text-up" : "text-down")}>
+                  期收益 {r.periodReturn > 0 ? "+" : ""}{r.periodReturn}%
+                </span>
+              </div>
+              {(r.added.length > 0 || r.removed.length > 0) && (
+                <p className="mt-1 text-muted-foreground">
+                  {r.added.length > 0 && (
+                    <>进：{r.added.slice(0, 6).map((s) => s.name).join("、")}{r.addedCount > 6 ? ` 等${r.addedCount}只` : ""}</>
+                  )}
+                  {r.added.length > 0 && r.removed.length > 0 && "　"}
+                  {r.removed.length > 0 && (
+                    <>出：{r.removed.slice(0, 6).map((s) => s.name).join("、")}{r.removedCount > 6 ? ` 等${r.removedCount}只` : ""}</>
+                  )}
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -594,6 +735,9 @@ export function StrategyBuilderPage() {
                 </div>
                 {backtest && (
                   <EquityCurve curve={backtest.curve} benchmark={backtest.benchmark} />
+                )}
+                {backtest?.status === "done" && (
+                  <TradeDetails key={backtest.id} backtestId={backtest.id} />
                 )}
                 <p className="text-xs text-muted-foreground">
                   {metrics.mode === "event"
