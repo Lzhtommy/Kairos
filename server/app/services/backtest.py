@@ -116,6 +116,7 @@ def _empty_result(mode: str, hit_count: int = 0) -> dict[str, Any]:
                     "annualizedReturn": 0.0, "maxDrawdown": 0.0, "sharpe": 0.0, "winRate": 0.0},
         "curve": [],
         "benchmark": [],
+        "avgPath": [],
         "trades": [],
         "rebalanceRecords": [],
     }
@@ -154,6 +155,7 @@ def _run_event(
 
     trades: list[dict[str, Any]] = []
     paths: list[list[float]] = []
+    day_agg: dict[datetime, list[float]] = {}  # 日期 → [收益和, 在场笔数]，等权模拟资金曲线
     for chunk in _chunks(codes, _CHUNK):
         for code, series in _bars_by_code(db, chunk, depth).items():
             closes = [c for _, _, c in series]
@@ -210,6 +212,18 @@ def _run_event(
                     for j in range(e_idx, min(e_idx + p["hold"], n - 1) + 1)
                 ]
                 paths.append(path)
+                # 资金曲线贡献：入场日为成交价→收盘，此后逐日 close-to-close，进出各扣单边费率
+                r0 = series[e_idx][2] / entry_px - 1 - p["rate"]
+                acc = day_agg.setdefault(series[e_idx][0], [0.0, 0])
+                acc[0] += r0
+                acc[1] += 1
+                for j in range(e_idx + 1, exit_idx + 1):
+                    rj = series[j][2] / series[j - 1][2] - 1
+                    if j == exit_idx:
+                        rj -= p["rate"]
+                    acc = day_agg.setdefault(series[j][0], [0.0, 0])
+                    acc[0] += rj
+                    acc[1] += 1
                 i = exit_idx + 1  # 单股同时只持一笔
 
     hit_count = len(codes)
@@ -224,14 +238,36 @@ def _run_event(
         if b0 and b1:
             excesses.append(t["ret"] - (b1 / b0 - 1))
 
-    # 曲线：所有事件的平均累计收益路径 D0..D{hold}（短路径用末值补齐）
+    # 主曲线（日期轴）：逐日等权持有全部在场信号的模拟资金曲线，空仓日现金持平
+    calendar = _trading_calendar(db, bench, p["period"])
+    equity = 1.0
+    curve: list[dict[str, Any]] = []
+    bench_curve: list[dict[str, Any]] = []
+    base = bench.get(calendar[0]) if calendar else None
+    for d in calendar:
+        agg = day_agg.get(d)
+        if agg and agg[1]:
+            equity *= 1 + agg[0] / agg[1]
+        curve.append({"t": d.strftime("%Y-%m-%d"), "v": round(equity, 4)})
+        if base:
+            v = bench.get(d)
+            if v:
+                bench_curve.append({"t": d.strftime("%Y-%m-%d"), "v": round(v / base, 4)})
+    total_return = curve[-1]["v"] - 1 if curve else 0.0
+    bench_total = (bench_curve[-1]["v"] - 1) if bench_curve else None
+    for series_ in (curve, bench_curve):
+        if len(series_) > 120:
+            step = len(series_) // 120
+            series_[:] = series_[::step] + [series_[-1]]
+
+    # 次曲线（对齐入场日）：所有事件的平均累计收益路径 D0..D{hold}（短路径用末值补齐）
     horizon = p["hold"] + 1
-    curve = []
+    avg_path = []
     for k in range(horizon):
         vals = [path[k] if k < len(path) else path[-1] for path in paths if path]
         if not vals:
             break
-        curve.append({"t": f"D{k}", "v": round(1 + mean(vals), 4)})
+        avg_path.append({"t": f"D{k}", "v": round(1 + mean(vals), 4)})
 
     # 逐笔明细：全量落盘（分页接口按需读取），超上限截断并在指标注明
     _TRADES_CAP = 50_000
@@ -261,10 +297,13 @@ def _run_event(
             "avgHoldDays": round(mean(t["days"] for t in trades), 1),
             "avgExcess": round(mean(excesses) * 100, 2) if excesses else None,
             "benchmarkName": _BENCHMARKS[p["benchmark"]],
+            "totalReturn": round(total_return * 100, 2),
+            "benchmarkReturn": round(bench_total * 100, 2) if bench_total is not None else None,
             "tradesTruncated": len(trades) > _TRADES_CAP,
         },
         "curve": curve,
-        "benchmark": [],
+        "benchmark": bench_curve,
+        "avgPath": avg_path,
         "trades": trade_records,
     }
 

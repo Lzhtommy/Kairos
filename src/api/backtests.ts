@@ -44,6 +44,8 @@ export type BacktestResult = {
   metrics: BacktestMetrics
   curve: { t: string; v: number }[]
   benchmark: { t: string; v: number }[]
+  /** 事件模式：所有信号对齐入场日的平均累计收益路径（D0..DN） */
+  avgPath: { t: string; v: number }[]
   error: string | null
 }
 

@@ -26,6 +26,7 @@ def _run_backtest(backtest_id: int, dsl: dict, params: dict) -> None:
                 {
                     "curve": result["curve"],
                     "benchmark": result["benchmark"],
+                    "avgPath": result.get("avgPath", []),
                     "trades": result.get("trades", []),
                     "rebalanceRecords": result.get("rebalanceRecords", []),
                 },
@@ -183,5 +184,6 @@ def get_backtest(bid: int, db: Session = Depends(get_db), user: User = Depends(g
         "metrics": rec.metrics,
         "curve": payload.get("curve", []),
         "benchmark": payload.get("benchmark", []),
+        "avgPath": payload.get("avgPath", []),
         "error": rec.error,
     }

@@ -311,6 +311,7 @@ export function BacktestPage() {
   const [btParams, setBtParams] = useState<BacktestParams>(DEFAULT_PARAMS)
   const [backtest, setBacktest] = useState<BacktestResult | null>(null)
   const [btRunning, setBtRunning] = useState(false)
+  const [chartView, setChartView] = useState<"equity" | "path">("equity")
 
   // 切换策略时清掉当前展示；自动加载效应会补上该策略最近一次的结果
   useEffect(() => {
@@ -538,12 +539,14 @@ export function BacktestPage() {
                   <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border sm:grid-cols-3 lg:grid-cols-6">
                     {(metrics.mode === "event"
                       ? [
+                          { label: "模拟总收益", value: `${(metrics.totalReturn ?? 0) > 0 ? "+" : ""}${metrics.totalReturn}%`, tone: (metrics.totalReturn ?? 0) >= 0 ? ("up" as const) : ("down" as const) },
+                          { label: `${metrics.benchmarkName ?? "基准"}同期`, value: metrics.benchmarkReturn == null ? "—" : `${metrics.benchmarkReturn > 0 ? "+" : ""}${metrics.benchmarkReturn}%`, tone: "flat" as const },
                           { label: "信号次数", value: `${metrics.eventCount}`, tone: "flat" as const },
                           { label: "胜率", value: `${metrics.winRate}%`, tone: "flat" as const },
                           { label: "平均单次收益", value: `${(metrics.avgReturn ?? 0) > 0 ? "+" : ""}${metrics.avgReturn}%`, tone: (metrics.avgReturn ?? 0) >= 0 ? ("up" as const) : ("down" as const) },
                           { label: "中位收益", value: `${metrics.medianReturn}%`, tone: "flat" as const },
                           { label: "平均持有", value: `${metrics.avgHoldDays} 天`, tone: "flat" as const },
-                          { label: `超额 vs ${metrics.benchmarkName ?? "基准"}`, value: metrics.avgExcess == null ? "—" : `${metrics.avgExcess > 0 ? "+" : ""}${metrics.avgExcess}%`, tone: (metrics.avgExcess ?? 0) >= 0 ? ("up" as const) : ("down" as const) },
+                          { label: `单次超额 vs ${metrics.benchmarkName ?? "基准"}`, value: metrics.avgExcess == null ? "—" : `${metrics.avgExcess > 0 ? "+" : ""}${metrics.avgExcess}%`, tone: (metrics.avgExcess ?? 0) >= 0 ? ("up" as const) : ("down" as const) },
                         ]
                       : [
                           { label: "年化收益", value: `${(metrics.annualizedReturn ?? 0) > 0 ? "+" : ""}${metrics.annualizedReturn}%`, tone: (metrics.annualizedReturn ?? 0) >= 0 ? ("up" as const) : ("down" as const) },
@@ -571,11 +574,43 @@ export function BacktestPage() {
                   </div>
                   {backtest && backtest.curve.length > 1 && (
                     <div className="rounded-lg border border-border p-3">
-                      <BacktestChart
-                        curve={backtest.curve}
-                        benchmark={backtest.benchmark}
-                        benchmarkName={metrics.benchmarkName ?? "基准"}
-                      />
+                      {metrics.mode === "event" && backtest.avgPath.length > 1 && (
+                        <div className="mb-2 flex items-center gap-1">
+                          {(
+                            [
+                              ["equity", "资金曲线"],
+                              ["path", "信号平均路径"],
+                            ] as const
+                          ).map(([key, label]) => (
+                            <button
+                              key={key}
+                              onClick={() => setChartView(key)}
+                              className={cn(
+                                "rounded-md px-2 py-1 text-xs transition-colors",
+                                chartView === key
+                                  ? "bg-accent text-accent-foreground"
+                                  : "text-muted-foreground hover:text-foreground",
+                              )}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                          <span className="ml-2 text-[11px] text-muted-foreground">
+                            {chartView === "equity"
+                              ? "逐日等权持有全部在场信号的模拟资金曲线"
+                              : "横轴为入场后交易日数（D0=入场日），曲线为全部信号的平均累计收益"}
+                          </span>
+                        </div>
+                      )}
+                      {metrics.mode === "event" && chartView === "path" ? (
+                        <BacktestChart curve={backtest.avgPath} />
+                      ) : (
+                        <BacktestChart
+                          curve={backtest.curve}
+                          benchmark={backtest.benchmark}
+                          benchmarkName={metrics.benchmarkName ?? "基准"}
+                        />
+                      )}
                     </div>
                   )}
                   {backtest?.status === "done" && (
@@ -583,7 +618,7 @@ export function BacktestPage() {
                   )}
                   <p className="text-xs text-muted-foreground">
                     {metrics.mode === "event"
-                      ? "事件驱动回测：信号次日入场、按所选规则退出，同一股票同时只持一笔；曲线为全部信号的平均收益路径。成分按当前条件筛选，存在一定前视偏差。"
+                      ? "事件驱动回测：信号次日入场、按所选规则退出，同一股票同时只持一笔。资金曲线为逐日等权持有全部在场信号的模拟（空仓日现金持平，虚线为基准）；信号平均路径为所有信号对齐入场日的平均累计收益。股票池按当前条件筛选，存在一定前视偏差。"
                       : `组合回测：每个调仓期按当期时点数据重新选股（虚线为基准指数）。时点因子来自每日收盘快照${
                           metrics.rebalances
                             ? `，本次 ${metrics.rebalances} 期中 ${metrics.pitPeriods ?? 0} 期有真实快照`
