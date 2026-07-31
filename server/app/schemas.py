@@ -56,7 +56,17 @@ class ChatIn(BaseModel):
 
 
 class BacktestIn(BaseModel):
+    """回测参数。全部有默认值；数值范围与枚举在 backtest._clean_params 里夹紧。"""
+
     strategyId: int
-    start: str = "2021-01-01"
-    rebalance: str = "monthly_first_trading_day"
-    costRate: float = 0.0005
+    periodDays: int = 250          # 回测窗口（交易日）：120≈半年 250≈1年 500≈2年 750≈3年
+    holdDays: int = 10             # 事件驱动：信号后持有期
+    entry: str = "open"            # 事件驱动：信号次日 open|close 入场
+    exitRule: str = "hold"         # 事件驱动：hold|signal|stop
+    stopGain: float = 15.0         # exitRule=stop 时的止盈 %
+    stopLoss: float = 8.0          # exitRule=stop 时的止损 %
+    rebalance: str = "monthly"     # 组合模式：weekly|monthly|quarterly
+    costRate: float = 0.0005       # 双边费率
+    benchmark: str = "000300"      # 000300|000905|399006
+    weighting: str = "equal"       # 组合模式：equal|cap
+    maxPositions: int = 0          # 组合模式：0=不限，否则按市值取前 N

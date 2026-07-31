@@ -116,6 +116,9 @@ class SeedProvider:
             out.append(q)
         return out
 
+    def get_index_kline(self, code: str, limit: int = 760) -> list[Candle]:
+        return []  # 指数历史仅腾讯源提供；缺省时回测跳过基准对比
+
     def get_kline(self, code: str, period: str = "1d", limit: int = 250) -> list[Candle]:
         row = next((r for r in RAW if r[0] == code), None)
         if row is None:

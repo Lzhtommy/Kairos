@@ -1,8 +1,14 @@
-"""Simplified vectorized backtest over daily K-lines.
+"""Strategy backtest over daily K-lines — two modes, picked by the DSL shape.
 
-Selects the DSL-passing universe, holds it equal-weight, rebalances monthly
-(applying two-sided cost), and reports annualized return / max drawdown /
-Sharpe / win-rate / hit count plus a downsampled equity curve.
+事件驱动（含 technical 条件的策略）：对每只入围股票逐日滚动算信号，
+信号次日入场，按持有期 / 反向信号 / 止盈止损退出，单股同时只持一笔；
+统计事件数、胜率、平均收益、相对基准超额，曲线为事件的平均收益路径。
+
+组合模式（纯标量策略）：等权或市值加权持有，按调仓频率扣双边成本，
+输出年化 / 回撤 / 夏普 / 胜率与基准对比曲线。
+
+已知简化（前端明示）：成分/因子取自当前快照（存在前视偏差——因子历史
+落库后可消除）；组合模式不做逐期重选。所有参数服务端夹紧。
 """
 
 from __future__ import annotations
@@ -10,79 +16,279 @@ from __future__ import annotations
 import json
 import os
 from datetime import datetime
-from statistics import mean, pstdev
+from statistics import mean, median, pstdev
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.market import Kline
-from app.services.strategy_exec import run_dsl
+from app.services import technical
+from app.services.dsl import apply_universe, execute, validate_dsl
+from app.services.market import factor_rows
 
 TRADING_DAYS = 252
+_MAX_BARS = 760
+_BENCHMARKS = {"000300": "沪深300", "000905": "中证500", "399006": "创业板指"}
+_CHUNK = 400  # 每批加载 K 线的股票数，控制 ECS 内存峰值
 
 
-def _closes_by_code(db: Session, codes: list[str]) -> dict[str, list[tuple[datetime, float]]]:
-    out: dict[str, list[tuple[datetime, float]]] = {}
-    rows = db.execute(
-        select(Kline.code, Kline.ts, Kline.close)
-        .where(Kline.code.in_(codes), Kline.period == "1d")
-        .order_by(Kline.ts.asc())
-    ).all()
-    for code, ts, close in rows:
-        out.setdefault(code, []).append((ts, close))
+def _clean_params(params: dict[str, Any], dsl: dict[str, Any]) -> dict[str, Any]:
+    """夹紧所有用户参数到安全范围；非法枚举回退默认值。"""
+
+    def pick(key: str, options: tuple, default: str) -> str:
+        v = params.get(key)
+        return v if v in options else default
+
+    def num(key: str, default: float, lo: float, hi: float) -> float:
+        try:
+            return min(max(float(params.get(key, default)), lo), hi)
+        except (TypeError, ValueError):
+            return default
+
+    return {
+        "period": int(num("periodDays", 250, 60, _MAX_BARS)),
+        "hold": int(num("holdDays", 10, 1, 60)),
+        "entry": pick("entry", ("open", "close"), "open"),
+        "exit": pick("exitRule", ("hold", "signal", "stop"), "hold"),
+        "stop_gain": num("stopGain", 15.0, 1.0, 100.0),
+        "stop_loss": num("stopLoss", 8.0, 1.0, 50.0),
+        "rebalance": pick("rebalance", ("weekly", "monthly", "quarterly"), "monthly"),
+        "rate": num("costRate", float((dsl.get("cost") or {}).get("rate", 0.0005)), 0.0, 0.003),
+        "benchmark": pick("benchmark", tuple(_BENCHMARKS), "000300"),
+        "weighting": pick("weighting", ("equal", "cap"), "equal"),
+        "max_pos": int(num("maxPositions", 0, 0, 200)),
+    }
+
+
+def _bars_by_code(
+    db: Session, codes: list[str], bars: int
+) -> dict[str, list[tuple[datetime, float, float]]]:
+    """每只股票最近 `bars` 根 (ts, open, close)，升序。"""
+    if not codes:
+        return {}
+    rn = func.row_number().over(partition_by=Kline.code, order_by=Kline.ts.desc()).label("rn")
+    sub = (
+        select(Kline.code, Kline.ts, Kline.open, Kline.close, rn)
+        .where(Kline.period == "1d", Kline.code.in_(codes))
+        .subquery()
+    )
+    stmt = (
+        select(sub.c.code, sub.c.ts, sub.c.open, sub.c.close)
+        .where(sub.c.rn <= bars)
+        .order_by(sub.c.code, sub.c.ts.asc())
+    )
+    out: dict[str, list[tuple[datetime, float, float]]] = {}
+    for code, ts, open_, close in db.execute(stmt):
+        out.setdefault(code, []).append((ts, open_, close))
     return out
 
 
-def _empty_result(hit_count: int = 0) -> dict[str, Any]:
+_bench_cache: dict[str, tuple[str, dict[datetime, float]]] = {}
+
+
+def _benchmark_closes(code: str) -> dict[datetime, float]:
+    """基准指数收盘价（ts → close），按天缓存；数据源不支持时回退空。"""
+    from app.providers.factory import get_provider
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    cached = _bench_cache.get(code)
+    if cached and cached[0] == today:
+        return cached[1]
+    try:
+        candles = get_provider().get_index_kline(code, _MAX_BARS)
+    except Exception:  # noqa: BLE001 — 基准拿不到就只回策略曲线
+        return {}
+    out = {c.ts: c.close for c in candles}
+    _bench_cache[code] = (today, out)
+    return out
+
+
+def _chunks(items: list, size: int):
+    for i in range(0, len(items), size):
+        yield items[i : i + size]
+
+
+def _empty_result(mode: str, hit_count: int = 0) -> dict[str, Any]:
     return {
-        "metrics": {"annualizedReturn": 0.0, "maxDrawdown": 0.0, "sharpe": 0.0,
-                    "winRate": 0.0, "hitCount": hit_count},
+        "metrics": {"mode": mode, "hitCount": hit_count, "eventCount": 0,
+                    "annualizedReturn": 0.0, "maxDrawdown": 0.0, "sharpe": 0.0, "winRate": 0.0},
         "curve": [],
+        "benchmark": [],
     }
 
 
 def run(db: Session, dsl: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
-    passing = run_dsl(db, dsl)
-    hit_count = len(passing)
+    dsl = validate_dsl(dsl)
+    p = _clean_params(params or {}, dsl)
+    # 标量层先筛（今日快照）；纯技术策略只做 universe 过滤，
+    # 不能走 execute——technical 摘掉后会触发"双空"校验
+    if dsl["filters"]:
+        rows = execute({**dsl, "technical": []}, factor_rows(db))
+    else:
+        rows = apply_universe(dsl, factor_rows(db))
+    if dsl.get("technical"):
+        return _run_event(db, dsl, p, rows)
+    return _run_portfolio(db, dsl, p, rows)
 
-    series = _closes_by_code(db, [r["code"] for r in passing])
-    # 新上市 / 数据缺口的股票没有 K 线，跳过（此前 close_map[c] 直接 KeyError）
-    codes = [r["code"] for r in passing if series.get(r["code"])]
+
+# ---- 事件驱动模式 ---------------------------------------------------------------
+
+
+def _run_event(
+    db: Session, dsl: dict[str, Any], p: dict[str, Any], rows: list[dict[str, Any]]
+) -> dict[str, Any]:
+    tech = dsl["technical"]
+    codes = [r["code"] for r in rows]
+    need = technical.bars_needed(tech)
+    depth = min(_MAX_BARS, p["period"] + need + p["hold"] * 3 + 2)
+    rev = technical.reverse_signal(tech) if p["exit"] == "signal" else None
+
+    trades: list[dict[str, Any]] = []
+    paths: list[list[float]] = []
+    for chunk in _chunks(codes, _CHUNK):
+        for code, series in _bars_by_code(db, chunk, depth).items():
+            closes = [c for _, _, c in series]
+            n = len(series)
+            if n < need + 2:
+                continue
+            sig = technical.signal_series(tech, closes)
+            rev_sig = technical.signal_series(rev, closes) if rev else None
+            i = max(need, n - 1 - p["period"])  # 只取回测窗口内的信号
+            while i < n - 1:
+                if not sig[i]:
+                    i += 1
+                    continue
+                e_idx = i + 1
+                entry_px = series[e_idx][1] if p["entry"] == "open" else series[e_idx][2]
+                if entry_px <= 0:
+                    i += 1
+                    continue
+                cap_idx = min(e_idx + p["hold"], n - 1)
+                exit_idx = cap_idx
+                if p["exit"] == "signal" and rev_sig is not None:
+                    cap = min(e_idx + p["hold"] * 3, n - 1)  # 反向信号迟迟不来时的兜底
+                    exit_idx = cap
+                    for j in range(e_idx + 1, cap + 1):
+                        if rev_sig[j]:
+                            exit_idx = j
+                            break
+                elif p["exit"] == "stop":
+                    for j in range(e_idx, cap_idx + 1):
+                        r = series[j][2] / entry_px - 1
+                        if r >= p["stop_gain"] / 100 or r <= -p["stop_loss"] / 100:
+                            exit_idx = j
+                            break
+                exit_px = series[exit_idx][2]
+                trades.append(
+                    {
+                        "ret": exit_px / entry_px - 1 - 2 * p["rate"],
+                        "days": exit_idx - e_idx,
+                        "entry_ts": series[e_idx][0],
+                        "exit_ts": series[exit_idx][0],
+                    }
+                )
+                # 平均收益路径（按持有期对齐；实际提前退出的用退出价截断）
+                path = [
+                    series[j][2] / entry_px - 1
+                    for j in range(e_idx, min(e_idx + p["hold"], n - 1) + 1)
+                ]
+                paths.append(path)
+                i = exit_idx + 1  # 单股同时只持一笔
+
+    hit_count = len(codes)
+    if not trades:
+        return _empty_result("event", hit_count)
+
+    rets = [t["ret"] for t in trades]
+    bench = _benchmark_closes(p["benchmark"])
+    excesses = []
+    for t in trades:
+        b0, b1 = bench.get(t["entry_ts"]), bench.get(t["exit_ts"])
+        if b0 and b1:
+            excesses.append(t["ret"] - (b1 / b0 - 1))
+
+    # 曲线：所有事件的平均累计收益路径 D0..D{hold}（短路径用末值补齐）
+    horizon = p["hold"] + 1
+    curve = []
+    for k in range(horizon):
+        vals = [path[k] if k < len(path) else path[-1] for path in paths if path]
+        if not vals:
+            break
+        curve.append({"t": f"D{k}", "v": round(1 + mean(vals), 4)})
+
+    return {
+        "metrics": {
+            "mode": "event",
+            "hitCount": hit_count,
+            "eventCount": len(trades),
+            "winRate": round(sum(1 for r in rets if r > 0) / len(rets) * 100, 1),
+            "avgReturn": round(mean(rets) * 100, 2),
+            "medianReturn": round(median(rets) * 100, 2),
+            "avgHoldDays": round(mean(t["days"] for t in trades), 1),
+            "avgExcess": round(mean(excesses) * 100, 2) if excesses else None,
+            "benchmarkName": _BENCHMARKS[p["benchmark"]],
+        },
+        "curve": curve,
+        "benchmark": [],
+    }
+
+
+# ---- 组合模式 -------------------------------------------------------------------
+
+
+def _period_key(ts: datetime, freq: str) -> tuple:
+    if freq == "weekly":
+        iso = ts.isocalendar()
+        return (iso[0], iso[1])
+    if freq == "quarterly":
+        return (ts.year, (ts.month - 1) // 3)
+    return (ts.year, ts.month)
+
+
+def _run_portfolio(
+    db: Session, dsl: dict[str, Any], p: dict[str, Any], rows: list[dict[str, Any]]
+) -> dict[str, Any]:
+    if p["max_pos"]:
+        rows = sorted(rows, key=lambda r: r.get("market_cap") or 0, reverse=True)[: p["max_pos"]]
+    hit_count = len(rows)
+    weights = {
+        r["code"]: (r.get("market_cap") or 0.0) if p["weighting"] == "cap" else 1.0 for r in rows
+    }
+    codes = [r["code"] for r in rows if weights[r["code"]] > 0 or p["weighting"] == "equal"]
+
+    series = {}
+    for chunk in _chunks(codes, _CHUNK):
+        series.update(_bars_by_code(db, chunk, p["period"] + 1))
+    codes = [c for c in codes if series.get(c)]
     if not codes:
-        return _empty_result(hit_count)
+        return _empty_result("portfolio", hit_count)
 
-    # common trading calendar = dates of the constituent with the longest history
-    calendar = [ts for ts, _ in max(series.values(), key=len)]
-    close_map = {c: {ts: v for ts, v in s} for c, s in series.items()}
-
-    rate = float(params.get("cost", {}).get("rate", dsl.get("cost", {}).get("rate", 0.0005)))
+    calendar = [ts for ts, _, _ in max(series.values(), key=len)]
+    close_map = {c: {ts: close for ts, _, close in s} for c, s in series.items()}
 
     daily_returns: list[float] = []
     dates: list[datetime] = []
     for i in range(1, len(calendar)):
         d0, d1 = calendar[i - 1], calendar[i]
-        rets = []
+        num = den = 0.0
         for c in codes:
-            p0 = close_map[c].get(d0)
-            p1 = close_map[c].get(d1)
+            p0, p1 = close_map[c].get(d0), close_map[c].get(d1)
             if p0 and p1 and p0 > 0:
-                rets.append(p1 / p0 - 1)
-        if not rets:
+                w = weights[c] or 1.0
+                num += w * (p1 / p0 - 1)
+                den += w
+        if not den:
             continue
-        r = mean(rets)
-        # monthly rebalance cost on the first trading day of a new month
-        if d1.month != d0.month:
-            r -= 2 * rate
+        r = num / den
+        if _period_key(d1, p["rebalance"]) != _period_key(d0, p["rebalance"]):
+            r -= 2 * p["rate"]
         daily_returns.append(r)
         dates.append(d1)
 
-    # equity curve
-    equity = 1.0
+    equity, peak, max_dd = 1.0, 1.0, 0.0
     curve: list[dict[str, Any]] = [{"t": calendar[0].strftime("%Y-%m-%d"), "v": 1.0}]
-    peak = 1.0
-    max_dd = 0.0
     for r, d in zip(daily_returns, dates):
         equity *= 1 + r
         peak = max(peak, equity)
@@ -92,29 +298,50 @@ def run(db: Session, dsl: dict[str, Any], params: dict[str, Any]) -> dict[str, A
     n = len(daily_returns)
     annualized = (equity ** (TRADING_DAYS / n) - 1) if n else 0.0
     vol = pstdev(daily_returns) if n > 1 else 0.0
-    sharpe = (mean(daily_returns) / vol * (TRADING_DAYS ** 0.5)) if vol else 0.0
+    sharpe = (mean(daily_returns) / vol * (TRADING_DAYS**0.5)) if vol else 0.0
     win_rate = (sum(1 for r in daily_returns if r > 0) / n) if n else 0.0
 
-    # downsample curve to ~120 points
+    # 基准曲线对齐同一交易日历，起点归一
+    bench = _benchmark_closes(p["benchmark"])
+    bench_curve: list[dict[str, Any]] = []
+    base = bench.get(calendar[0])
+    if base:
+        for d in calendar:
+            v = bench.get(d)
+            if v:
+                bench_curve.append({"t": d.strftime("%Y-%m-%d"), "v": round(v / base, 4)})
+    bench_total = (bench_curve[-1]["v"] - 1) if bench_curve else None
+
     if len(curve) > 120:
         step = len(curve) // 120
         curve = curve[::step] + [curve[-1]]
+    if len(bench_curve) > 120:
+        step = len(bench_curve) // 120
+        bench_curve = bench_curve[::step] + [bench_curve[-1]]
 
     return {
         "metrics": {
+            "mode": "portfolio",
+            "hitCount": hit_count,
             "annualizedReturn": round(annualized * 100, 2),
             "maxDrawdown": round(max_dd * 100, 2),
             "sharpe": round(sharpe, 2),
             "winRate": round(win_rate * 100, 1),
-            "hitCount": hit_count,
+            "totalReturn": round((equity - 1) * 100, 2),
+            "benchmarkReturn": round(bench_total * 100, 2) if bench_total is not None else None,
+            "excessReturn": (
+                round((equity - 1 - bench_total) * 100, 2) if bench_total is not None else None
+            ),
+            "benchmarkName": _BENCHMARKS[p["benchmark"]],
         },
         "curve": curve,
+        "benchmark": bench_curve,
     }
 
 
-def write_curve(backtest_id: int, curve: list[dict[str, Any]]) -> str:
+def write_curve(backtest_id: int, payload: dict[str, Any]) -> str:
     os.makedirs(settings.reports_dir, exist_ok=True)
     path = os.path.join(settings.reports_dir, f"backtest-{backtest_id}.json")
     with open(path, "w", encoding="utf-8") as fh:
-        json.dump(curve, fh)
+        json.dump(payload, fh)
     return path

@@ -22,6 +22,9 @@ logger = logging.getLogger("kairos.collector")
 # China Standard Time = UTC+8; trading sessions 09:30–11:30 and 13:00–15:00.
 _CST_OFFSET_HOURS = 8
 
+# 日 K 目标深度（约 3 年交易日），供 bootstrap / 回补 / 加深共用。
+KLINE_DEPTH = 760
+
 
 def in_trading_session(now_utc: datetime | None = None) -> bool:
     now = now_utc or datetime.now(timezone.utc)
@@ -123,7 +126,7 @@ def bootstrap(db) -> None:
         for i, code in enumerate(codes, 1):
             sleep(0.05)  # pace the burst — thousands of rapid calls trip provider rate limits
             try:
-                candles = provider.get_kline(code, "1d", 250)
+                candles = provider.get_kline(code, "1d", KLINE_DEPTH)
             except Exception as exc:  # noqa: BLE001 — one bad ticker must not kill startup
                 logger.warning("Kline fetch failed for %s: %s", code, exc)
                 failed += 1
@@ -182,7 +185,7 @@ def refresh_reference() -> None:
         for code in missing:
             sleep(0.05)
             try:
-                candles = provider.get_kline(code, "1d", 250)
+                candles = provider.get_kline(code, "1d", KLINE_DEPTH)
             except Exception:  # noqa: BLE001 — one bad ticker must not kill the job
                 continue
             for c in candles:
@@ -196,10 +199,12 @@ def refresh_reference() -> None:
         db.commit()
 
         repaired = _repair_kline_gaps(db, provider)
+        deepened = _deepen_kline_history(db, provider)
         logger.info(
             "Reference refresh: industry for %d stocks, fundamentals updated, "
-            "klines backfilled for %d new stocks, gaps repaired for %d stocks",
-            n_ind, backfilled, repaired,
+            "klines backfilled for %d new stocks, gaps repaired for %d stocks, "
+            "history deepened for %d stocks",
+            n_ind, backfilled, repaired, deepened,
         )
     except Exception as exc:  # noqa: BLE001 — keep the scheduler alive
         logger.warning("Reference refresh failed: %s", exc)
@@ -258,6 +263,55 @@ def _repair_kline_gaps(db, provider, window: int = 40, cap: int = 6000) -> int:
             logger.info("Kline gap repair progress: %d", repaired)
     db.commit()
     return repaired
+
+
+def _deepen_kline_history(db, provider, cap: int = 3000) -> int:
+    """把存量股票的日 K 深度扩到 KLINE_DEPTH（约 3 年），支撑长区间回测。
+
+    早期 bootstrap 只拉了 250 根；这里对深度不足的股票重拉更长历史，
+    只插入库里没有的日期。上市不满 3 年的新股每天会被扫到但插不进新行，
+    属于少量无害的空转调用。
+    """
+    counts = {
+        code: n
+        for code, n in db.execute(
+            select(Kline.code, func.count()).where(Kline.period == "1d").group_by(Kline.code)
+        )
+    }
+    deepened = 0
+    for code, n in counts.items():
+        if n >= KLINE_DEPTH - 60:
+            continue
+        if deepened >= cap:
+            logger.warning("Kline deepen capped at %d stocks; continuing next run", cap)
+            break
+        sleep(0.05)
+        try:
+            candles = provider.get_kline(code, "1d", KLINE_DEPTH)
+        except Exception:  # noqa: BLE001 — one bad ticker must not kill the job
+            continue
+        if len(candles) <= n:
+            continue  # 新股：历史本来就这么长，不算加深
+        have = {
+            r[0]
+            for r in db.execute(
+                select(Kline.ts).where(Kline.code == code, Kline.period == "1d")
+            )
+        }
+        for c in candles:
+            if c.ts not in have:
+                db.add(
+                    Kline(
+                        code=code, period="1d", ts=c.ts,
+                        open=c.open, high=c.high, low=c.low, close=c.close, volume=c.volume,
+                    )
+                )
+        deepened += 1
+        if deepened % 500 == 0:
+            db.commit()
+            logger.info("Kline deepen progress: %d", deepened)
+    db.commit()
+    return deepened
 
 
 def collect_once(force: bool = False) -> None:

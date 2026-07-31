@@ -21,6 +21,14 @@ _scheduler: BackgroundScheduler | None = None
 async def lifespan(_app: FastAPI):
     # Create tables (Alembic manages migrations in prod; create_all is a safe no-op if current).
     Base.metadata.create_all(bind=engine)
+    # K 线到 4M+ 行后，_sparks / 回测的按股取数没有复合索引会全表扫
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        conn.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_kline_code_period_ts ON kline (code, period, ts)")
+        )
+        conn.commit()
 
     from app.jobs.collect import collect_once, refresh_reference, run_bootstrap_and_first_collect
 

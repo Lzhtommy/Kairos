@@ -205,8 +205,20 @@ class TencentProvider:
         return out
 
     def get_kline(self, code: str, period: str = "1d", limit: int = 250) -> list[Candle]:
+        return self._fetch_kline(_to_symbol(code), period, limit)
+
+    # 指数代码 → 腾讯 symbol（个股的 _to_symbol 规则对指数不适用）
+    _INDEX_SYMBOLS = {"000300": "sh000300", "000905": "sh000905", "399006": "sz399006",
+                      "000001i": "sh000001", "399001": "sz399001"}
+
+    def get_index_kline(self, code: str, limit: int = 760) -> list[Candle]:
+        symbol = self._INDEX_SYMBOLS.get(code)
+        if symbol is None:
+            return []
+        return self._fetch_kline(symbol, "1d", limit)
+
+    def _fetch_kline(self, symbol: str, period: str, limit: int) -> list[Candle]:
         freq = _KLINE_PERIOD.get(period, "day")
-        symbol = _to_symbol(code)
         if freq == "day" and time.monotonic() < self._ifzq_down_until:
             return self._kline_sina(symbol, limit)
         try:

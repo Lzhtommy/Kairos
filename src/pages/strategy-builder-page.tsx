@@ -22,37 +22,100 @@ import {
   chatStrategy,
   type Strategy,
 } from "@/api/strategies"
-import { submitBacktest, fetchBacktest, type BacktestResult } from "@/api/backtests"
+import {
+  submitBacktest,
+  fetchBacktest,
+  type BacktestParams,
+  type BacktestResult,
+} from "@/api/backtests"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { cn } from "@/lib/utils"
 
 type Message = { role: "user" | "assistant"; text: string; code?: string }
 
 const PLACEHOLDER_CODE = `# 在左侧用自然语言描述你的选股逻辑，\n# AI 会在这里生成可回测的策略代码。`
 
-function EquityCurve({ curve }: { curve: { t: string; v: number }[] }) {
+function EquityCurve({
+  curve,
+  benchmark = [],
+}: {
+  curve: { t: string; v: number }[]
+  benchmark?: { t: string; v: number }[]
+}) {
   if (curve.length < 2) return null
-  const values = curve.map((p) => p.v)
-  const min = Math.min(...values)
-  const max = Math.max(...values)
+  const all = [...curve.map((p) => p.v), ...benchmark.map((p) => p.v)]
+  const min = Math.min(...all)
+  const max = Math.max(...all)
   const range = max - min || 1
   const w = 100
   const h = 40
-  const pts = curve.map((p, i) => {
-    const x = (i / (curve.length - 1)) * w
-    const y = h - ((p.v - min) / range) * h
-    return `${x.toFixed(2)},${y.toFixed(2)}`
-  })
-  const up = values[values.length - 1] >= values[0]
+  const toPts = (series: { v: number }[]) =>
+    series
+      .map((p, i) => {
+        const x = (i / (series.length - 1)) * w
+        const y = h - ((p.v - min) / range) * h
+        return `${x.toFixed(2)},${y.toFixed(2)}`
+      })
+      .join(" ")
+  const up = curve[curve.length - 1].v >= curve[0].v
   return (
     <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="h-24 w-full">
+      {benchmark.length > 1 && (
+        <polyline
+          points={toPts(benchmark)}
+          fill="none"
+          stroke="var(--color-muted-foreground, #9ca3af)"
+          strokeWidth="1"
+          strokeDasharray="2 2"
+          opacity="0.6"
+          vectorEffect="non-scaling-stroke"
+        />
+      )}
       <polyline
-        points={pts.join(" ")}
+        points={toPts(curve)}
         fill="none"
         stroke={up ? "var(--color-up, #16a34a)" : "var(--color-down, #dc2626)"}
         strokeWidth="1"
         vectorEffect="non-scaling-stroke"
       />
     </svg>
+  )
+}
+
+function ParamSelect({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string
+  value: string
+  onChange: (v: string) => void
+  options: [string, string][]
+}) {
+  const labels = Object.fromEntries(options)
+  return (
+    <label className="flex items-center gap-1.5">
+      <span className="whitespace-nowrap text-xs text-muted-foreground">{label}</span>
+      <Select value={value} onValueChange={(v) => onChange(v as string)}>
+        <SelectTrigger size="sm" className="text-xs">
+          <SelectValue>{(v: string) => labels[v] ?? v}</SelectValue>
+        </SelectTrigger>
+        <SelectContent alignItemWithTrigger={false}>
+          {options.map(([v, l]) => (
+            <SelectItem key={v} value={v}>
+              {l}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </label>
   )
 }
 
@@ -72,8 +135,30 @@ export function StrategyBuilderPage() {
   const [saving, setSaving] = useState(false)
   const [backtest, setBacktest] = useState<BacktestResult | null>(null)
   const [btRunning, setBtRunning] = useState(false)
+  const [btParams, setBtParams] = useState<BacktestParams>({
+    periodDays: 250,
+    holdDays: 10,
+    entry: "open",
+    exitRule: "hold",
+    stopGain: 15,
+    stopLoss: 8,
+    rebalance: "monthly",
+    costRate: 0.0005,
+    benchmark: "000300",
+    weighting: "equal",
+    maxPositions: 0,
+  })
   const [tab, setTab] = useState("code")
   const scrollRef = useRef<HTMLDivElement>(null)
+
+  // 含技术形态的策略走事件驱动回测，参数面板按模式显隐
+  const isEventStrategy =
+    Array.isArray((draftDsl as { technical?: unknown[] } | null)?.technical) &&
+    ((draftDsl as { technical: unknown[] }).technical.length > 0)
+
+  function setParam<K extends keyof BacktestParams>(key: K, value: BacktestParams[K]) {
+    setBtParams((p) => ({ ...p, [key]: value }))
+  }
 
   async function send() {
     const text = input.trim()
@@ -159,8 +244,8 @@ export function StrategyBuilderPage() {
     setBacktest(null)
     setTab("backtest")
     try {
-      const { id: bid } = await submitBacktest(id)
-      for (let i = 0; i < 30; i++) {
+      const { id: bid } = await submitBacktest(id, btParams)
+      for (let i = 0; i < 120; i++) {
         const res = await fetchBacktest(bid)
         if (res.status === "done" || res.status === "failed") {
           setBacktest(res)
@@ -387,9 +472,83 @@ export function StrategyBuilderPage() {
             </div>
           </TabsContent>
           <TabsContent value="backtest" className="min-h-0 flex-1 overflow-y-auto px-4 pb-4 scrollbar-thin">
+            <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-border bg-muted/30 p-3">
+              <ParamSelect
+                label="区间"
+                value={String(btParams.periodDays)}
+                onChange={(v) => setParam("periodDays", Number(v))}
+                options={[["120", "近半年"], ["250", "近1年"], ["500", "近2年"], ["750", "近3年"]]}
+              />
+              <ParamSelect
+                label="费率"
+                value={String(btParams.costRate)}
+                onChange={(v) => setParam("costRate", Number(v))}
+                options={[["0.0005", "万5"], ["0.001", "千1"], ["0.002", "千2"]]}
+              />
+              <ParamSelect
+                label="基准"
+                value={btParams.benchmark!}
+                onChange={(v) => setParam("benchmark", v as BacktestParams["benchmark"])}
+                options={[["000300", "沪深300"], ["000905", "中证500"], ["399006", "创业板指"]]}
+              />
+              {isEventStrategy ? (
+                <>
+                  <ParamSelect
+                    label="持有"
+                    value={String(btParams.holdDays)}
+                    onChange={(v) => setParam("holdDays", Number(v))}
+                    options={[["5", "5天"], ["10", "10天"], ["20", "20天"], ["30", "30天"]]}
+                  />
+                  <ParamSelect
+                    label="入场"
+                    value={btParams.entry!}
+                    onChange={(v) => setParam("entry", v as BacktestParams["entry"])}
+                    options={[["open", "次日开盘"], ["close", "次日收盘"]]}
+                  />
+                  <ParamSelect
+                    label="退出"
+                    value={btParams.exitRule!}
+                    onChange={(v) => setParam("exitRule", v as BacktestParams["exitRule"])}
+                    options={[["hold", "持有到期"], ["signal", "反向信号"], ["stop", "止盈止损"]]}
+                  />
+                  {btParams.exitRule === "stop" && (
+                    <ParamSelect
+                      label="止盈/损"
+                      value={`${btParams.stopGain}/${btParams.stopLoss}`}
+                      onChange={(v) => {
+                        const [g, l] = v.split("/").map(Number)
+                        setBtParams((p) => ({ ...p, stopGain: g, stopLoss: l }))
+                      }}
+                      options={[["10/5", "+10%/-5%"], ["15/8", "+15%/-8%"], ["20/10", "+20%/-10%"], ["30/15", "+30%/-15%"]]}
+                    />
+                  )}
+                </>
+              ) : (
+                <>
+                  <ParamSelect
+                    label="调仓"
+                    value={btParams.rebalance!}
+                    onChange={(v) => setParam("rebalance", v as BacktestParams["rebalance"])}
+                    options={[["weekly", "每周"], ["monthly", "每月"], ["quarterly", "每季"]]}
+                  />
+                  <ParamSelect
+                    label="权重"
+                    value={btParams.weighting!}
+                    onChange={(v) => setParam("weighting", v as BacktestParams["weighting"])}
+                    options={[["equal", "等权"], ["cap", "市值加权"]]}
+                  />
+                  <ParamSelect
+                    label="持仓数"
+                    value={String(btParams.maxPositions)}
+                    onChange={(v) => setParam("maxPositions", Number(v))}
+                    options={[["0", "不限"], ["10", "前10"], ["20", "前20"], ["50", "前50"]]}
+                  />
+                </>
+              )}
+            </div>
             {!metrics && !btRunning && (
               <div className="rounded-lg border border-dashed border-border py-14 text-center text-sm text-muted-foreground">
-                点击「运行回测」查看历史表现
+                调好参数后点击「运行回测」查看历史表现
               </div>
             )}
             {btRunning && (
@@ -400,13 +559,24 @@ export function StrategyBuilderPage() {
             {metrics && (
               <div className="space-y-3">
                 <div className="grid grid-cols-3 gap-px overflow-hidden rounded-lg border border-border bg-border">
-                  {[
-                    { label: "年化收益", value: `${metrics.annualizedReturn > 0 ? "+" : ""}${metrics.annualizedReturn}%`, tone: metrics.annualizedReturn >= 0 ? "up" : "down" },
-                    { label: "最大回撤", value: `${metrics.maxDrawdown}%`, tone: "down" as const },
-                    { label: "夏普比率", value: `${metrics.sharpe}`, tone: "flat" as const },
-                    { label: "胜率", value: `${metrics.winRate}%`, tone: "flat" as const },
-                    { label: "命中股票数", value: `${metrics.hitCount}`, tone: "flat" as const },
-                  ].map((m) => (
+                  {(metrics.mode === "event"
+                    ? [
+                        { label: "信号次数", value: `${metrics.eventCount}`, tone: "flat" as const },
+                        { label: "胜率", value: `${metrics.winRate}%`, tone: "flat" as const },
+                        { label: "平均单次收益", value: `${(metrics.avgReturn ?? 0) > 0 ? "+" : ""}${metrics.avgReturn}%`, tone: (metrics.avgReturn ?? 0) >= 0 ? ("up" as const) : ("down" as const) },
+                        { label: "中位收益", value: `${metrics.medianReturn}%`, tone: "flat" as const },
+                        { label: "平均持有", value: `${metrics.avgHoldDays} 天`, tone: "flat" as const },
+                        { label: `超额 vs ${metrics.benchmarkName ?? "基准"}`, value: metrics.avgExcess == null ? "—" : `${metrics.avgExcess > 0 ? "+" : ""}${metrics.avgExcess}%`, tone: (metrics.avgExcess ?? 0) >= 0 ? ("up" as const) : ("down" as const) },
+                      ]
+                    : [
+                        { label: "年化收益", value: `${(metrics.annualizedReturn ?? 0) > 0 ? "+" : ""}${metrics.annualizedReturn}%`, tone: (metrics.annualizedReturn ?? 0) >= 0 ? ("up" as const) : ("down" as const) },
+                        { label: "最大回撤", value: `${metrics.maxDrawdown}%`, tone: "down" as const },
+                        { label: "夏普比率", value: `${metrics.sharpe}`, tone: "flat" as const },
+                        { label: "胜率", value: `${metrics.winRate}%`, tone: "flat" as const },
+                        { label: `${metrics.benchmarkName ?? "基准"}同期`, value: metrics.benchmarkReturn == null ? "—" : `${metrics.benchmarkReturn > 0 ? "+" : ""}${metrics.benchmarkReturn}%`, tone: "flat" as const },
+                        { label: "超额收益", value: metrics.excessReturn == null ? "—" : `${metrics.excessReturn > 0 ? "+" : ""}${metrics.excessReturn}%`, tone: (metrics.excessReturn ?? 0) >= 0 ? ("up" as const) : ("down" as const) },
+                      ]
+                  ).map((m) => (
                     <div key={m.label} className="bg-card px-3 py-3">
                       <p className="text-xs text-muted-foreground">{m.label}</p>
                       <p
@@ -422,9 +592,13 @@ export function StrategyBuilderPage() {
                     </div>
                   ))}
                 </div>
-                {backtest && <EquityCurve curve={backtest.curve} />}
+                {backtest && (
+                  <EquityCurve curve={backtest.curve} benchmark={backtest.benchmark} />
+                )}
                 <p className="text-xs text-muted-foreground">
-                  回测基于历史日线数据，等权持有、按月调仓，费率按双边 0.05% 计算。历史表现不代表未来收益。
+                  {metrics.mode === "event"
+                    ? "事件驱动回测：信号次日入场、按所选规则退出，同一股票同时只持一笔；曲线为全部信号的平均收益路径。成分按当前条件筛选，存在一定前视偏差。"
+                    : "组合回测：按当前条件选出的成分在区间内持有（虚线为基准指数）。成分与权重取自当前快照，存在前视偏差，历史表现不代表未来收益。"}
                 </p>
               </div>
             )}

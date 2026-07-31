@@ -21,7 +21,9 @@ def _run_backtest(backtest_id: int, dsl: dict, params: dict) -> None:
         db.commit()
         try:
             result = bt.run(db, dsl, params)
-            curve_ref = bt.write_curve(backtest_id, result["curve"])
+            curve_ref = bt.write_curve(
+                backtest_id, {"curve": result["curve"], "benchmark": result["benchmark"]}
+            )
             rec.metrics = result["metrics"]
             rec.curve_ref = curve_ref
             rec.status = "done"
@@ -46,7 +48,7 @@ def create_backtest(
     if not s.dsl:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "策略缺少 DSL，无法回测")
 
-    params = {"start": body.start, "rebalance": body.rebalance, "cost": {"rate": body.costRate}}
+    params = body.model_dump(exclude={"strategyId"})
     rec = Backtest(strategy_id=s.id, params=params, status="pending", metrics={})
     db.add(rec)
     db.commit()
@@ -63,18 +65,24 @@ def get_backtest(bid: int, db: Session = Depends(get_db), user: User = Depends(g
     s = db.get(Strategy, rec.strategy_id)
     if not s or s.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "回测不存在")
-    curve = []
+    curve, benchmark = [], []
     if rec.curve_ref:
         import json
         import os
 
         if os.path.exists(rec.curve_ref):
             with open(rec.curve_ref, encoding="utf-8") as fh:
-                curve = json.load(fh)
+                payload = json.load(fh)
+            if isinstance(payload, list):  # 旧格式：裸曲线数组
+                curve = payload
+            else:
+                curve = payload.get("curve", [])
+                benchmark = payload.get("benchmark", [])
     return {
         "id": rec.id,
         "status": rec.status,
         "metrics": rec.metrics,
         "curve": curve,
+        "benchmark": benchmark,
         "error": rec.error,
     }

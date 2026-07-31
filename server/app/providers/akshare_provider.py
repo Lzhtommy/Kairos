@@ -82,6 +82,9 @@ class AkShareProvider:
                 continue
         return out
 
+    def get_index_kline(self, code: str, limit: int = 760) -> list[Candle]:
+        return []  # 指数历史仅腾讯源提供；缺省时回测跳过基准对比
+
     def get_kline(self, code: str, period: str = "1d", limit: int = 250) -> list[Candle]:
         df = self._ak.stock_zh_a_hist(symbol=code, period="daily", adjust="qfq")
         df = df.tail(limit)

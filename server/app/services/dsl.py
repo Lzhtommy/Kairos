@@ -162,19 +162,22 @@ def _cmp(value: float, op: str, target: float) -> bool:
     return False
 
 
+def apply_universe(dsl: dict[str, Any], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """universe 过滤：市场范围 + ST 剔除（exclude 里带 "ST" 时生效）。"""
+    markets = set(dsl["universe"]["market"])
+    rows = [r for r in rows if r.get("market") in markets]
+    if any("ST" in e for e in dsl["universe"]["exclude"]):
+        rows = [r for r in rows if "ST" not in r.get("name", "")]
+    return rows
+
+
 def execute(dsl: dict[str, Any], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Return the subset of `rows` matching the DSL.
 
     Each row must carry the factor keys it references plus 'industry'.
     """
     dsl = validate_dsl(dsl)
-
-    # market universe filter
-    markets = set(dsl["universe"]["market"])
-    rows = [r for r in rows if r.get("market") in markets]
-    # exclude 里带 "ST" 时剔除 ST/*ST（此前这条约定从未真正生效）
-    if any("ST" in e for e in dsl["universe"]["exclude"]):
-        rows = [r for r in rows if "ST" not in r.get("name", "")]
+    rows = apply_universe(dsl, rows)
 
     # precompute industry medians for any ref-based numeric filter
     medians: dict[str, dict[str, float]] = {}

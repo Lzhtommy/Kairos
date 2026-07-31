@@ -69,10 +69,12 @@ def _ma_series(closes: list[float], window: int) -> list[float]:
 
 
 def _ma_trend(p: dict[str, Any], closes: list[float]) -> bool:
+    if len(closes) < p["lookback"]:
+        return False  # 上市时间不够长，无法检验（与 signal_series 语义一致）
     seg = closes[-p["lookback"] :]
     mas = _ma_series(seg, p["window"])
     if len(mas) < 2:
-        return False  # 上市时间不够长，无法检验
+        return False
     downs = sum(1 for prev, cur in zip(mas, mas[1:]) if cur < prev)
     if not mas[0]:
         return False
@@ -120,6 +122,111 @@ CHECKS = {
 
 def passes(technical: list[dict[str, Any]], closes: list[float]) -> bool:
     return all(CHECKS[t["type"]](t, closes) for t in technical)
+
+
+# ---- 滚动信号序列（事件驱动回测用） --------------------------------------------------
+#
+# signal_series(tech, closes)[t] 与 passes(tech, closes[:t+1]) 语义完全一致，
+# 但整条时间线一次算完：先铺 MA 数组（O(n)），ma_trend 的回调计数用前缀和，
+# 避免逐日重算导致的 O(n²)。
+
+
+def _ma_full(closes: list[float], window: int) -> list[float | None]:
+    """全长对齐的 MA 数组：前 window-1 位为 None。"""
+    out: list[float | None] = [None] * len(closes)
+    acc = 0.0
+    for i, c in enumerate(closes):
+        acc += c
+        if i >= window:
+            acc -= closes[i - window]
+        if i >= window - 1:
+            out[i] = acc / window
+    return out
+
+
+def signal_series(technical: list[dict[str, Any]], closes: list[float]) -> list[bool]:
+    n = len(closes)
+    ok = [True] * n
+    ma_cache: dict[int, list[float | None]] = {}
+
+    def ma(window: int) -> list[float | None]:
+        if window not in ma_cache:
+            ma_cache[window] = _ma_full(closes, window)
+        return ma_cache[window]
+
+    for t in technical:
+        typ = t["type"]
+        if typ == "ma_trend":
+            w, lb = t["window"], t["lookback"]
+            m = ma(w)
+            # downs[i] = m[i] < m[i-1]（两值都存在才算）；前缀和 O(1) 查任意区间回调数
+            downs = [0] * n
+            for i in range(1, n):
+                if m[i] is not None and m[i - 1] is not None and m[i] < m[i - 1]:
+                    downs[i] = 1
+            pref = [0] * (n + 1)
+            for i in range(n):
+                pref[i + 1] = pref[i] + downs[i]
+            span = lb - w  # 窗口内 MA 值数量 - 1 = 比较次数
+            for i in range(n):
+                # 与 point-in-time 版本一致：取 closes[i-lb+1..i] 内的 MA 序列
+                start = i - span
+                if i + 1 < lb or start < w - 1 or m[start] is None or m[i] is None or not m[start]:
+                    ok[i] = False
+                    continue
+                if pref[i + 1] - pref[start + 1] > t["max_down_days"]:
+                    ok[i] = False
+                    continue
+                if (m[i] / m[start] - 1) * 100 < t["min_gain_pct"]:
+                    ok[i] = False
+        elif typ == "ma_distance":
+            mf, mb = ma(t["fast"]), ma(t["base"])
+            for i in range(n):
+                if not ok[i]:
+                    continue
+                f, b = mf[i], mb[i]
+                if f is None or b is None or b <= 0:
+                    ok[i] = False
+                    continue
+                pct = (f / b - 1) * 100
+                if not (t["min_pct"] <= pct <= t["max_pct"]):
+                    ok[i] = False
+        elif typ == "ma_rising":
+            mas = [ma(w) for w in t["windows"]]
+            for i in range(n):
+                if not ok[i]:
+                    continue
+                for m in mas:
+                    if i == 0 or m[i] is None or m[i - 1] is None or m[i] <= m[i - 1]:
+                        ok[i] = False
+                        break
+        elif typ == "ma_cross":
+            mf, ms = ma(t["fast"]), ma(t["slow"])
+            death = t["direction"] == "death"
+            for i in range(n):
+                if not ok[i]:
+                    continue
+                if i == 0 or None in (mf[i], ms[i], mf[i - 1], ms[i - 1]):
+                    ok[i] = False
+                    continue
+                crossed = (
+                    (mf[i] < ms[i] and mf[i - 1] >= ms[i - 1])
+                    if death
+                    else (mf[i] > ms[i] and mf[i - 1] <= ms[i - 1])
+                )
+                if not crossed:
+                    ok[i] = False
+    return ok
+
+
+def reverse_signal(technical: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+    """退出规则 "signal" 用的反向条件：只对含 ma_cross 的策略有意义。"""
+    crosses = [t for t in technical if t["type"] == "ma_cross"]
+    if not crosses:
+        return None
+    return [
+        {**t, "direction": "golden" if t["direction"] == "death" else "death"} for t in crosses
+    ]
 
 
 def bars_needed(technical: list[dict[str, Any]]) -> int:
