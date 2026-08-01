@@ -64,6 +64,8 @@ export async function chatStrategy(
     text: string
     history?: ChatTurn[]
     currentDsl?: Record<string, unknown> | null
+    /** 最近一次回测的 metrics（含最差调仓期/最差交易），供 AI 诊断归因 */
+    lastBacktest?: Record<string, unknown> | null
   },
   onEvent: (e: ChatEvent) => void,
 ): Promise<void> {
@@ -77,6 +79,7 @@ export async function chatStrategy(
       text: params.text,
       history: params.history ?? [],
       currentDsl: params.currentDsl ?? null,
+      lastBacktest: params.lastBacktest ?? null,
     }),
   })
   if (!res.ok) throw new Error(`对话请求失败 (${res.status})`)

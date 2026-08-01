@@ -437,6 +437,17 @@ def _run_event(
             "skippedByLimit": skipped_limit,        # 一字涨停买不进而放弃的信号数
             "skippedByCapacity": skipped_capacity,  # 仓位满而放弃的信号数
             "tradesTruncated": len(executed) > _TRADES_CAP,
+            # AI 诊断用的归因摘要：亏得最狠的 5 笔
+            "worstTrades": [
+                {
+                    "code": t["code"],
+                    "name": t["name"],
+                    "ret": round(t["ret"] * 100, 2),
+                    "entryDate": t["entry_ts"].strftime("%Y-%m-%d"),
+                    "reason": t["reason"],
+                }
+                for t in sorted(executed, key=lambda t: t["ret"])[:5]
+            ],
         },
         "curve": curve,
         "benchmark": bench_curve,
@@ -729,6 +740,11 @@ def _run_portfolio(
             "benchmarkName": _BENCHMARKS[p["benchmark"]],
             "rebalances": len(period_sel),
             "pitPeriods": pit_periods,  # 用真实快照重选的期数（随归档积累增长）
+            # AI 诊断用的归因摘要：亏得最狠的 3 个调仓期
+            "worstPeriods": [
+                {"date": rec["date"], "ret": rec["periodReturn"], "holdings": rec["holdings"]}
+                for rec in sorted(rebalance_records, key=lambda r: r["periodReturn"])[:3]
+            ],
         },
         "curve": curve,
         "benchmark": bench_curve,

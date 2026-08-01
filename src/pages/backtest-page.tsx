@@ -469,10 +469,22 @@ export function BacktestPage() {
             <>
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-sm font-medium text-foreground">{active.name}</p>
-                <Button size="sm" className="gap-1.5" onClick={runBacktest} disabled={btRunning}>
-                  <Play weight="fill" className="size-3.5" />
-                  {btRunning ? "回测中…" : "运行回测"}
-                </Button>
+                <div className="flex gap-1.5">
+                  {backtest?.status === "done" && (
+                    <Link
+                      to={`/app/strategy?s=${active.id}&diagnose=${backtest.id}`}
+                      className={cn(buttonVariants({ variant: "outline", size: "sm" }), "gap-1.5")}
+                      title="让 AI 基于这次回测结果归因诊断，并给出改进后的策略"
+                    >
+                      <Sparkle className="size-3.5" />
+                      AI 诊断
+                    </Link>
+                  )}
+                  <Button size="sm" className="gap-1.5" onClick={runBacktest} disabled={btRunning}>
+                    <Play weight="fill" className="size-3.5" />
+                    {btRunning ? "回测中…" : "运行回测"}
+                  </Button>
+                </div>
               </div>
 
               <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-border bg-muted/30 p-3">

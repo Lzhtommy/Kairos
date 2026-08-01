@@ -369,6 +369,7 @@ async def chat_stream(
     history: list[dict[str, str]] | None = None,
     current_dsl: dict[str, Any] | None = None,
     industries: list[str] | None = None,
+    last_backtest: dict[str, Any] | None = None,
 ):
     """真流式多轮对话。逐个 yield {"type": "text", "delta": ...}，
     最后 yield {"type": "done", ["dsl": ..., "code": ...]}（纯闲聊时无 dsl/code）。
@@ -390,6 +391,14 @@ async def chat_stream(
         + _spec_doc(industries)
         + "【当前策略】："
         + (json.dumps(current_dsl, ensure_ascii=False) if current_dsl else "（无）")
+        + (
+            "\n【最近回测】：" + json.dumps(last_backtest, ensure_ascii=False)
+            + "\n用户询问回测结果或要求诊断/优化时：结合上面的指标与最差调仓期/最差交易做归因分析"
+            "（如回撤集中在哪段、哪类股票拖累），给出可执行的改进方向；若给出改进后的策略，"
+            "按第 2 条规则输出完整新 DSL。"
+            if last_backtest
+            else ""
+        )
     )
     messages: list[dict[str, str]] = [{"role": "system", "content": sys_prompt}]
     for h in (history or [])[-12:]:

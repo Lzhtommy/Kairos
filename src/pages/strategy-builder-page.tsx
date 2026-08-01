@@ -1,5 +1,5 @@
-import { useMemo, useRef, useState } from "react"
-import { useNavigate } from "react-router-dom"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { useNavigate, useSearchParams } from "react-router-dom"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import {
@@ -22,11 +22,15 @@ import {
   chatStrategy,
   type Strategy,
 } from "@/api/strategies"
+import { fetchBacktest } from "@/api/backtests"
 import { cn } from "@/lib/utils"
 
 type Message = { role: "user" | "assistant"; text: string; code?: string }
 
 const PLACEHOLDER_CODE = `# 在左侧用自然语言描述你的选股逻辑，\n# AI 会在这里生成可回测的策略代码。`
+
+const DIAGNOSE_PROMPT =
+  "请基于最近一次回测结果，诊断这个策略的主要问题（回撤来源、最差时段/标的的共性），并给出改进后的策略。"
 
 export function StrategyBuilderPage() {
   const qc = useQueryClient()
@@ -42,23 +46,71 @@ export function StrategyBuilderPage() {
   const [lastPrompt, setLastPrompt] = useState("")
   const [savedId, setSavedId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  // 最近一次回测的 metrics：从回测页深链带入后，后续追问也一直带着
+  const [lastBacktest, setLastBacktest] = useState<Record<string, unknown> | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+
+  // messages 的同步镜像：诊断深链等"非输入框触发"的发送需要拿到已提交的最新会话
+  const messagesRef = useRef<Message[]>([])
+  useEffect(() => {
+    messagesRef.current = messages
+  }, [messages])
+
+  // 深链 /app/strategy?s=<id>&diagnose=<backtestId>：从回测页跳来，自动发起 AI 诊断
+  const diagnoseFired = useRef(false)
+  useEffect(() => {
+    const sid = searchParams.get("s")
+    const bid = searchParams.get("diagnose")
+    if (!sid || !bid || strategies.length === 0 || diagnoseFired.current) return
+    const s = strategies.find((x) => x.id === sid)
+    if (!s) return
+    diagnoseFired.current = true
+    loadStrategy(s)
+    fetchBacktest(Number(bid))
+      .then((res) => {
+        const metrics = res.metrics as Record<string, unknown>
+        setLastBacktest(metrics)
+        setSearchParams({}, { replace: true })
+        // 等 loadStrategy 的 setMessages 提交后再发起
+        requestAnimationFrame(() =>
+          sendText(DIAGNOSE_PROMPT, { backtest: metrics, dsl: s.dsl }),
+        )
+      })
+      .catch(() => toast.error("载入回测结果失败"))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [strategies, searchParams])
 
   async function send() {
     const text = input.trim()
     if (!text || thinking) return
     setInput("")
-    setMessages((m) => [...m, { role: "user", text }])
+    await sendText(text)
+  }
+
+  async function sendText(
+    text: string,
+    extra?: { backtest?: Record<string, unknown> | null; dsl?: Record<string, unknown> | null },
+  ) {
+    if (!text || thinking) return
+    const base = messagesRef.current
+    setMessages([...base, { role: "user", text }, { role: "assistant", text: "" }])
     setThinking(true)
 
     // 本轮之前的会话作为上下文；当前草稿 DSL 一并带上，支持"把 PE 收紧到 20"式增量修改
-    const history = messages.slice(-12).map((m) => ({ role: m.role, content: m.text }))
-    const assistantIndex = messages.length + 1
-    setMessages((m) => [...m, { role: "assistant", text: "" }])
+    const history = base.slice(-12).map((m) => ({ role: m.role, content: m.text }))
+    const assistantIndex = base.length + 1
 
     try {
-      await chatStrategy({ text, history, currentDsl: draftDsl }, (ev) => {
+      await chatStrategy(
+        {
+          text,
+          history,
+          currentDsl: extra?.dsl !== undefined ? extra.dsl : draftDsl,
+          lastBacktest: extra?.backtest !== undefined ? extra.backtest : lastBacktest,
+        },
+        (ev) => {
         if (ev.type === "text") {
           setMessages((m) => {
             const next = [...m]

@@ -186,7 +186,8 @@ async def chat(
             emitted = False
             try:
                 async for ev in strategy_ai.chat_stream(
-                    body.text, history, body.currentDsl, industries or None
+                    body.text, history, body.currentDsl, industries or None,
+                    last_backtest=body.lastBacktest,
                 ):
                     emitted = True
                     yield sse(ev)

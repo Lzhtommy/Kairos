@@ -53,6 +53,8 @@ class ChatIn(BaseModel):
     # 多轮对话上下文：此前的会话记录 + 右侧面板当前草稿策略（供"把 PE 收紧到 20"这类增量修改）
     history: list[ChatTurn] = []
     currentDsl: dict[str, Any] | None = None
+    # 最近一次回测的 metrics 摘要（含 worstPeriods/worstTrades），供 AI 诊断归因
+    lastBacktest: dict[str, Any] | None = None
 
 
 class BacktestIn(BaseModel):
