@@ -23,7 +23,12 @@ def run_dsl(db: Session, dsl: dict[str, Any]) -> list[dict[str, Any]]:
     tech = dsl.get("technical") or []
     if not tech or not passing:
         return passing
-    closes = technical.closes_by_code(
+    series = technical.series_by_code(
         db, [r["code"] for r in passing], technical.bars_needed(tech)
     )
-    return [r for r in passing if technical.passes(tech, closes.get(r["code"], []))]
+    out = []
+    for r in passing:
+        closes, volumes = series.get(r["code"], ([], []))
+        if technical.passes(tech, closes, volumes):
+            out.append(r)
+    return out

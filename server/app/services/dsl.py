@@ -30,6 +30,10 @@ FACTORS: dict[str, tuple[str, str]] = {
 NUM_OPS = {"lt", "lte", "gt", "gte", "eq", "between"}
 CAT_OPS = {"eq", "in"}
 REFS = {"industry_median"}
+# 截面算子：在全市场/行业内做排名或分位筛选（只对数值因子有意义）。
+# rank_top/rank_bottom 的 value 是名次 N；pct_top/pct_bottom 的 value 是百分比 (0,100]
+CROSS_OPS = {"rank_top", "rank_bottom", "pct_top", "pct_bottom"}
+CROSS_SCOPES = {"market", "industry"}
 
 
 class DSLError(ValueError):
@@ -54,11 +58,27 @@ def validate_dsl(dsl: dict[str, Any]) -> dict[str, Any]:
         if factor not in FACTORS:
             raise DSLError(f"未知因子: {factor}（不在白名单内）")
         _label, kind = FACTORS[factor]
-        allowed = NUM_OPS if kind == "num" else CAT_OPS
+        allowed = (NUM_OPS | CROSS_OPS) if kind == "num" else CAT_OPS
         if op not in allowed:
             raise DSLError(f"因子 {factor} 不支持算子 {op}")
 
         entry: dict[str, Any] = {"factor": factor, "op": op}
+        if op in CROSS_OPS:
+            val = f.get("value")
+            if not _is_num(val) or val <= 0:
+                raise DSLError(f"filters[{i}] {op} 需要正数 value")
+            if op.startswith("pct"):
+                if val > 100:
+                    raise DSLError(f"filters[{i}] 分位取值范围 (0, 100]")
+                entry["value"] = float(val)
+            else:
+                entry["value"] = int(min(val, 5000))
+            scope = f.get("scope", "market")
+            if scope not in CROSS_SCOPES:
+                raise DSLError(f"filters[{i}] scope 只能是 market 或 industry")
+            entry["scope"] = scope
+            norm_filters.append(entry)
+            continue
         if "ref" in f and f["ref"] is not None:
             if f["ref"] not in REFS:
                 raise DSLError(f"未知引用值: {f['ref']}")
@@ -88,8 +108,9 @@ def validate_dsl(dsl: dict[str, Any]) -> dict[str, Any]:
         norm_filters.append(entry)
 
     norm_tech = _validate_technical(dsl.get("technical", []) or [])
-    if not norm_filters and not norm_tech:
-        raise DSLError("filters 与 technical 不能同时为空")
+    norm_score = _validate_score(dsl.get("score"))
+    if not norm_filters and not norm_tech and not norm_score:
+        raise DSLError("filters、technical 与 score 不能全为空")
 
     universe = dsl.get("universe", {}) or {}
     cost = dsl.get("cost", {}) or {}
@@ -100,12 +121,45 @@ def validate_dsl(dsl: dict[str, Any]) -> dict[str, Any]:
         },
         "filters": norm_filters,
         "technical": norm_tech,
+        "score": norm_score,
         "rebalance": dsl.get("rebalance", "monthly_first_trading_day"),
         "cost": {
             "side": cost.get("side", "both"),
             "rate": float(cost.get("rate", 0.0005)),
         },
     }
+
+
+def _validate_score(score: Any) -> dict[str, Any] | None:
+    """多因子打分节：截面 rank 归一后加权求和，取前 top_n。"""
+    if not score:
+        return None
+    if not isinstance(score, dict):
+        raise DSLError("score 必须是对象")
+    factors = score.get("factors")
+    if not isinstance(factors, list) or not factors:
+        raise DSLError("score.factors 需要非空数组")
+    norm = []
+    for i, f in enumerate(factors):
+        if not isinstance(f, dict):
+            raise DSLError(f"score.factors[{i}] 必须是对象")
+        factor = f.get("factor")
+        if factor not in FACTORS or FACTORS[factor][1] != "num":
+            raise DSLError(f"score.factors[{i}] 因子非法: {factor}")
+        weight = f.get("weight", 1.0)
+        if not _is_num(weight) or weight <= 0:
+            raise DSLError(f"score.factors[{i}] weight 需要正数")
+        direction = f.get("direction", "desc")
+        if direction not in ("asc", "desc"):
+            raise DSLError(f"score.factors[{i}] direction 只能是 asc（越小越好）或 desc（越大越好）")
+        norm.append({"factor": factor, "weight": float(weight), "direction": direction})
+    total = sum(f["weight"] for f in norm)
+    for f in norm:
+        f["weight"] = round(f["weight"] / total, 6)  # 权重归一
+    top_n = score.get("top_n", 30)
+    if not _is_num(top_n) or top_n < 1:
+        raise DSLError("score.top_n 需要 ≥1")
+    return {"factors": norm, "top_n": int(min(top_n, 500))}
 
 
 def _validate_technical(entries: Any) -> list[dict[str, Any]]:
@@ -131,7 +185,7 @@ def _validate_technical(entries: Any) -> list[dict[str, Any]]:
             if not isinstance(ws, list) or not ws or not all(_is_num(w) for w in ws):
                 raise DSLError(f"technical[{i}].windows 需要非空数值数组")
             entry["windows"] = sorted({int(min(max(w, 1), 120)) for w in ws})
-        if typ == "ma_cross":
+        if typ in ("ma_cross", "macd_cross"):
             direction = t.get("direction", "golden")
             if direction not in ("golden", "death"):
                 raise DSLError(f"technical[{i}].direction 只能是 golden 或 death")
@@ -140,6 +194,8 @@ def _validate_technical(entries: Any) -> list[dict[str, Any]]:
                 raise DSLError(f"technical[{i}] 要求 fast < slow")
         if typ == "ma_distance" and entry["min_pct"] > entry["max_pct"]:
             raise DSLError(f"technical[{i}] 要求 min_pct ≤ max_pct")
+        if typ == "rsi_range" and entry["min"] > entry["max"]:
+            raise DSLError(f"technical[{i}] 要求 min ≤ max")
         out.append(entry)
     return out
 
@@ -171,6 +227,53 @@ def apply_universe(dsl: dict[str, Any], rows: list[dict[str, Any]]) -> list[dict
     return rows
 
 
+def _cross_pass_codes(f: dict[str, Any], rows: list[dict[str, Any]]) -> set[str]:
+    """截面算子的通过集合：在 universe 全体（而非其他条件的交集）上排名/分位。"""
+    groups: dict[str, list[tuple[float, str]]] = {}
+    for r in rows:
+        v = r.get(f["factor"])
+        if not _is_num(v):
+            continue  # 缺值不参与排名也不通过
+        key = r.get("industry", "—") if f["scope"] == "industry" else "_"
+        groups.setdefault(key, []).append((v, r["code"]))
+
+    passed: set[str] = set()
+    top = f["op"] in ("rank_top", "pct_top")  # top = 数值大的那头
+    for vals in groups.values():
+        vals.sort(reverse=top)
+        if f["op"].startswith("rank"):
+            n = int(f["value"])
+        else:
+            n = max(1, int(len(vals) * f["value"] / 100))
+        passed.update(code for _v, code in vals[:n])
+    return passed
+
+
+def _apply_score(
+    score: dict[str, Any], rows: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """多因子打分：各因子截面 rank 归一（0..1，好=1）后加权求和，取前 top_n。
+
+    因子缺值按最差处理（rank 归一 0）。返回按得分降序的新行（带 score 字段）。
+    """
+    if not rows:
+        return rows
+    n = len(rows)
+    scores = [0.0] * n
+    for f in score["factors"]:
+        vals = [(r.get(f["factor"]), i) for i, r in enumerate(rows)]
+        known = [(v, i) for v, i in vals if _is_num(v)]
+        known.sort(key=lambda x: x[0], reverse=f["direction"] == "desc")
+        denom = max(len(known) - 1, 1)
+        for rank, (_v, i) in enumerate(known):
+            scores[i] += f["weight"] * (1 - rank / denom)
+    ranked = sorted(range(n), key=lambda i: (-scores[i], rows[i]["code"]))
+    out = []
+    for i in ranked[: score["top_n"]]:
+        out.append({**rows[i], "score": round(scores[i], 4)})
+    return out
+
+
 def execute(dsl: dict[str, Any], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Return the subset of `rows` matching the DSL.
 
@@ -190,10 +293,21 @@ def execute(dsl: dict[str, Any], rows: list[dict[str, Any]]) -> list[dict[str, A
                     by_ind.setdefault(r.get("industry", "—"), []).append(v)
             medians[f["factor"]] = {k: median(v) for k, v in by_ind.items() if v}
 
+    # 截面算子先在 universe 全体上算出通过集合，再与普通条件求交
+    cross_sets = [
+        _cross_pass_codes(f, rows) for f in dsl["filters"] if f["op"] in CROSS_OPS
+    ]
+    plain = [f for f in dsl["filters"] if f["op"] not in CROSS_OPS]
+
     out = []
     for r in rows:
-        if all(_match(f, r, medians) for f in dsl["filters"]):
+        if any(r["code"] not in s for s in cross_sets):
+            continue
+        if all(_match(f, r, medians) for f in plain):
             out.append(r)
+
+    if dsl.get("score"):
+        out = _apply_score(dsl["score"], out)
     return out
 
 

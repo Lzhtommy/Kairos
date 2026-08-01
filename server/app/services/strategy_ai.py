@@ -163,7 +163,39 @@ def _tech_desc(t: dict[str, Any]) -> str:
     if t["type"] == "ma_cross":
         word = "死叉" if t.get("direction") == "death" else "金叉"
         return f"MA{t['fast']} 刚{word} MA{t['slow']}（首日）"
+    if t["type"] == "vol_surge":
+        return f"成交量 ≥ {t['window']}日均量 × {t['ratio']}（放量）"
+    if t["type"] == "breakout":
+        return f"收盘创 {t['window']} 日新高（突破首日）"
+    if t["type"] == "macd_cross":
+        word = "死叉" if t.get("direction") == "death" else "金叉"
+        return f"MACD({t['fast']},{t['slow']},{t['signal']}) {word}首日"
+    if t["type"] == "rsi_range":
+        return f"RSI{t['window']} 在 {t['min']}~{t['max']} 区间"
     return t["type"]
+
+
+_SCOPE_LABEL = {"market": "全市场", "industry": "行业内"}
+_CROSS_DESC = {
+    "rank_top": ("最高前 {n} 名", "排名前{n}"),
+    "rank_bottom": ("最低前 {n} 名", "排名后{n}"),
+    "pct_top": ("最高 {n}%", "前{n}%"),
+    "pct_bottom": ("最低 {n}%", "后{n}%"),
+}
+
+
+def _cross_desc(f: dict[str, Any]) -> str:
+    label = FACTORS[f["factor"]][0]
+    n = int(f["value"]) if f["op"].startswith("rank") else f["value"]
+    return f"{label} {_SCOPE_LABEL[f['scope']]}{_CROSS_DESC[f['op']][0].format(n=n)}"
+
+
+def _score_desc(score: dict[str, Any]) -> str:
+    parts = "、".join(
+        f"{FACTORS[f['factor']][0]}({f['weight'] * 100:.0f}%{'，越小越好' if f['direction'] == 'asc' else ''})"
+        for f in score["factors"]
+    )
+    return f"按 {parts} 综合打分取前 {score['top_n']} 只"
 
 
 def _tech_call(t: dict[str, Any]) -> str:
@@ -176,7 +208,10 @@ def _render_code(dsl: dict[str, Any]) -> str:
     parts = []
     for f in dsl["filters"]:
         label = FACTORS[f["factor"]][0]
-        if f["factor"] == "industry":
+        if f["op"] in ("rank_top", "rank_bottom", "pct_top", "pct_bottom"):
+            scope = "" if f["scope"] == "market" else ', scope="industry"'
+            parts.append(f'{f["op"]}(stock.{f["factor"]}, {f["value"]}{scope})  # {_cross_desc(f)}')
+        elif f["factor"] == "industry":
             if f["op"] == "in":
                 opts = ", ".join(f'"{v}"' for v in f["value"])
                 parts.append(f"stock.industry in ({opts})  # {label}")
@@ -190,8 +225,18 @@ def _render_code(dsl: dict[str, Any]) -> str:
             parts.append(f'stock.{f["factor"]} {_op_sym(f["op"])} {f["value"]}  # {label}')
     for t in dsl.get("technical", []):
         parts.append(f"{_tech_call(t)}  # {_tech_desc(t)}")
+    if not parts:
+        parts.append("True  # 无过滤条件，仅按打分选优")
     lines.append("        " + "\n        and ".join(parts))
     lines.append("    )")
+    score = dsl.get("score")
+    if score:
+        lines.append("")
+        weights = ", ".join(
+            f'("{f["factor"]}", {f["weight"]}, "{f["direction"]}")' for f in score["factors"]
+        )
+        lines.append(f"# 多因子打分: rank_score([{weights}]) 取前 {score['top_n']} 只")
+        lines.append(f"# {_score_desc(score)}")
     lines.append("")
     lines.append(f"# 调仓频率: {dsl['rebalance']}")
     lines.append(f"# 费率: 双边 {dsl['cost']['rate'] * 100:.3f}%")
@@ -206,7 +251,9 @@ def _render_explanation(dsl: dict[str, Any]) -> str:
     descs = []
     for f in dsl["filters"]:
         label = FACTORS[f["factor"]][0]
-        if f["factor"] == "industry":
+        if f["op"] in ("rank_top", "rank_bottom", "pct_top", "pct_bottom"):
+            descs.append(_cross_desc(f))
+        elif f["factor"] == "industry":
             names = "、".join(f["value"]) if f["op"] == "in" else f["value"]
             descs.append(f"限定行业为「{names}」")
         elif "ref" in f:
@@ -218,6 +265,8 @@ def _render_explanation(dsl: dict[str, Any]) -> str:
             descs.append(f"{label} {word} {f['value']}")
     for t in dsl.get("technical", []):
         descs.append(_tech_desc(t))
+    if dsl.get("score"):
+        descs.append(_score_desc(dsl["score"]))
     return "根据你的描述，我生成了以下选股逻辑：" + "；".join(descs) + "。代码见右侧面板，可点击「运行回测」查看历史表现。"
 
 
@@ -237,8 +286,15 @@ def _spec_doc(industries: list[str] | None = None) -> str:
         "只能使用以下白名单因子：\n"
         f"{factor_doc}\n"
         "算子: 数值型 lt/lte/gt/gte/eq/between，类别型(industry) eq/in。\n"
+        "截面算子（数值因子）：rank_top/rank_bottom（value=名次 N）、pct_top/pct_bottom"
+        "（value=百分比，如最低 10% → {\"factor\":\"pe\",\"op\":\"pct_bottom\",\"value\":10}），"
+        "可加 \"scope\":\"industry\" 表示行业内排名（默认 market 全市场）。\n"
         f"{industry_doc}"
-        "涉及均线/K线形态时用 technical 数组，只有以下 4 种类型（参数可调）：\n"
+        "多因子选优（\"打分取前 N\"类需求）用顶层 score 节（与 filters 并列，可同时用）：\n"
+        "{\"score\":{\"factors\":[{\"factor\":\"roe\",\"weight\":0.6,\"direction\":\"desc\"},"
+        "{\"factor\":\"pe\",\"weight\":0.4,\"direction\":\"asc\"}],\"top_n\":30}}"
+        " → 各因子截面排名归一后加权求和取前 top_n；direction: desc=越大越好, asc=越小越好。\n"
+        "涉及均线/K线/量能形态时用 technical 数组，只有以下 8 种类型（参数可调）：\n"
         "- {\"type\":\"ma_trend\",\"window\":60,\"lookback\":120,\"max_down_days\":10,\"min_gain_pct\":1.5}"
         " → MA{window} 在最近 lookback 个交易日平滑上行：逐日滚动算 MA，"
         "下行天数≤max_down_days 且 MA 首尾累计涨幅≥min_gain_pct(%)\n"
@@ -248,17 +304,26 @@ def _spec_doc(industries: list[str] | None = None) -> str:
         " → windows 里每条均线今日值都高于昨日值（同步上翘）\n"
         "- {\"type\":\"ma_cross\",\"fast\":3,\"slow\":7,\"direction\":\"golden\"}"
         " → MA{fast} 今日刚上穿 MA{slow}（金叉首日；death 为死叉）\n"
+        "- {\"type\":\"vol_surge\",\"window\":20,\"ratio\":2.0}"
+        " → 当日成交量 ≥ 前 window 日均量 × ratio（放量）\n"
+        "- {\"type\":\"breakout\",\"window\":60}"
+        " → 收盘价创前 window 日新高（突破首日）\n"
+        "- {\"type\":\"macd_cross\",\"fast\":12,\"slow\":26,\"signal\":9,\"direction\":\"golden\"}"
+        " → MACD DIF 上穿 DEA（金叉首日；death 为死叉）\n"
+        "- {\"type\":\"rsi_range\",\"window\":14,\"min\":0,\"max\":30}"
+        " → RSI 落于 [min, max]（如超卖 [0,30]、超买 [70,100]）\n"
         "注意单位：市值/成交额单位为亿，换手率/涨跌幅/ROE 为百分数数值，股息率为小数(3% → 0.03)。\n"
     )
 
 
 def _build_dsl(payload: dict[str, Any]) -> dict[str, Any]:
-    """模型输出的 {filters, technical} → 完整 DSL（带 universe/调仓/费率默认值）并校验。"""
+    """模型输出的 {filters, technical, score} → 完整 DSL（带 universe/调仓/费率默认值）并校验。"""
     return validate_dsl(
         {
             "universe": {"exclude": ["ST", "停牌"], "market": ["SH", "SZ"]},
             "filters": payload.get("filters", []),
             "technical": payload.get("technical", []),
+            "score": payload.get("score"),
             "rebalance": "monthly_first_trading_day",
             "cost": {"side": "both", "rate": 0.0005},
         }
@@ -271,8 +336,8 @@ def _deepseek(text: str, industries: list[str] | None = None) -> dict[str, Any] 
     try:
         prompt = (
             "你是 A 股量化选股助手。把用户需求转成选股 DSL，"
-            "以 JSON 输出：{\"filters\": [...], \"technical\": [...], \"explanation\": \"一句话解释\"}"
-            "（filters/technical 用不到的可为空数组，但不能都为空）。\n"
+            "以 JSON 输出：{\"filters\": [...], \"technical\": [...], \"score\": {...}|null, "
+            "\"explanation\": \"一句话解释\"}（三者不能全为空）。\n"
             + _spec_doc(industries)
             + f"用户需求：{text}"
         )
@@ -317,7 +382,8 @@ async def chat_stream(
         "回复规则：\n"
         "1. 始终用简短自然的中文对话。问候、闲聊或与选股无关的问题直接回答即可，不要生成策略。\n"
         "2. 当用户提出或修改选股条件时：先用一两句话说明策略逻辑，"
-        "然后另起一行输出 <DSL>{\"name\": \"策略标题\", \"filters\": [...], \"technical\": [...]}</DSL>。"
+        "然后另起一行输出 <DSL>{\"name\": \"策略标题\", \"filters\": [...], \"technical\": [...],"
+        " \"score\": {...} 或 null}</DSL>。"
         "name 是给这个策略起的简短标题（中文，不超过 12 字，概括策略思路，如\"低估值高分红银行\"）。"
         "<DSL> 块内是严格 JSON；除该块外不要输出任何代码块或 JSON。\n"
         "3. 修改类请求（如\"把 PE 收紧到 20\"）要在【当前策略】基础上输出完整的新 DSL，而不是只给改动部分。\n"

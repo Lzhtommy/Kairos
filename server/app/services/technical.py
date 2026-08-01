@@ -40,88 +40,94 @@ SPECS: dict[str, dict[str, tuple[float, float, float]]] = {
         "fast": (3, 1, 120),
         "slow": (7, 2, 120),
     },
+    # 量能：当日成交量 ≥ 前 window 日均量 × ratio（放量）
+    "vol_surge": {
+        "window": (20, 2, 120),
+        "ratio": (2.0, 1.1, 10.0),
+    },
+    # 突破：收盘创前 window 日收盘新高
+    "breakout": {
+        "window": (60, 5, 240),
+    },
+    # MACD 金叉/死叉（direction 同 ma_cross，单独校验）
+    "macd_cross": {
+        "fast": (12, 3, 60),
+        "slow": (26, 5, 120),
+        "signal": (9, 2, 60),
+    },
+    # RSI 落于区间（超卖 [0,30] / 超买 [70,100] 等）
+    "rsi_range": {
+        "window": (14, 2, 60),
+        "min": (0.0, 0.0, 100.0),
+        "max": (30.0, 0.0, 100.0),
+    },
 }
 
-INT_PARAMS = {"window", "lookback", "max_down_days", "fast", "base", "slow"}
+INT_PARAMS = {"window", "lookback", "max_down_days", "fast", "base", "slow", "signal"}
 
 _MAX_BARS = 250  # 库里每只股票的日 K 上限
 
 
-def _ma_last(closes: list[float], window: int, offset: int = 0) -> float | None:
-    """以倒数第 1+offset 根 K 线收盘的 MA{window}；数据不足返回 None。"""
-    end = len(closes) - offset
-    if end < window:
-        return None
-    return sum(closes[end - window : end]) / window
-
-
-def _ma_series(closes: list[float], window: int) -> list[float]:
-    """整段收盘序列的滚动 MA{window}（长度 = len(closes) - window + 1）。"""
+def _ema_full(values: list[float], n: int) -> list[float]:
+    """全长 EMA（首值播种），alpha = 2/(n+1)。"""
     out: list[float] = []
-    acc = 0.0
-    for i, c in enumerate(closes):
-        acc += c
-        if i >= window:
-            acc -= closes[i - window]
-        if i >= window - 1:
-            out.append(acc / window)
+    alpha = 2 / (n + 1)
+    ema = values[0] if values else 0.0
+    for v in values:
+        ema = alpha * v + (1 - alpha) * ema
+        out.append(ema)
     return out
 
 
-def _ma_trend(p: dict[str, Any], closes: list[float]) -> bool:
-    if len(closes) < p["lookback"]:
-        return False  # 上市时间不够长，无法检验（与 signal_series 语义一致）
-    seg = closes[-p["lookback"] :]
-    mas = _ma_series(seg, p["window"])
-    if len(mas) < 2:
+def _rsi_full(closes: list[float], n: int) -> list[float | None]:
+    """Wilder RSI，前 n 位为 None。"""
+    m = len(closes)
+    out: list[float | None] = [None] * m
+    if m <= n:
+        return out
+    gains = losses = 0.0
+    for i in range(1, n + 1):
+        d = closes[i] - closes[i - 1]
+        gains += max(d, 0)
+        losses += max(-d, 0)
+    avg_g, avg_l = gains / n, losses / n
+    out[n] = 100.0 if avg_l == 0 else 100 - 100 / (1 + avg_g / avg_l)
+    for i in range(n + 1, m):
+        d = closes[i] - closes[i - 1]
+        avg_g = (avg_g * (n - 1) + max(d, 0)) / n
+        avg_l = (avg_l * (n - 1) + max(-d, 0)) / n
+        out[i] = 100.0 if avg_l == 0 else 100 - 100 / (1 + avg_g / avg_l)
+    return out
+
+
+def _rolling_max_prev(values: list[float], window: int) -> list[float | None]:
+    """rolling_max_prev[i] = max(values[i-window .. i-1])，不足 window 时 None。单调队列 O(n)。"""
+    from collections import deque
+
+    n = len(values)
+    out: list[float | None] = [None] * n
+    dq: deque[int] = deque()  # 存下标，值单调递减
+    for i in range(n):
+        # 窗口是 [i-window, i-1]：先给 out 取值，再把 i 推进队列
+        while dq and dq[0] < i - window:
+            dq.popleft()
+        if i >= window:
+            out[i] = values[dq[0]]
+        while dq and values[dq[-1]] <= values[i]:
+            dq.pop()
+        dq.append(i)
+    return out
+
+
+def passes(
+    technical: list[dict[str, Any]],
+    closes: list[float],
+    volumes: list[int] | None = None,
+) -> bool:
+    """point-in-time 判定 = 滚动信号序列的最后一位（单一实现杜绝语义漂移）。"""
+    if not closes:
         return False
-    downs = sum(1 for prev, cur in zip(mas, mas[1:]) if cur < prev)
-    if not mas[0]:
-        return False
-    gain_pct = (mas[-1] / mas[0] - 1) * 100
-    return downs <= p["max_down_days"] and gain_pct >= p["min_gain_pct"]
-
-
-def _ma_distance(p: dict[str, Any], closes: list[float]) -> bool:
-    fast = _ma_last(closes, p["fast"])
-    base = _ma_last(closes, p["base"])
-    if fast is None or base is None or base <= 0:
-        return False
-    pct = (fast / base - 1) * 100
-    return p["min_pct"] <= pct <= p["max_pct"]
-
-
-def _ma_rising(p: dict[str, Any], closes: list[float]) -> bool:
-    for w in p["windows"]:
-        today = _ma_last(closes, w)
-        prev = _ma_last(closes, w, offset=1)
-        if today is None or prev is None or today <= prev:
-            return False
-    return True
-
-
-def _ma_cross(p: dict[str, Any], closes: list[float]) -> bool:
-    ft = _ma_last(closes, p["fast"])
-    st = _ma_last(closes, p["slow"])
-    fy = _ma_last(closes, p["fast"], offset=1)
-    sy = _ma_last(closes, p["slow"], offset=1)
-    if ft is None or st is None or fy is None or sy is None:
-        return False
-    if p["direction"] == "death":
-        return ft < st and fy >= sy
-    return ft > st and fy <= sy  # 昨日仍在下方/重合，今日才算"刚金叉"
-
-
-CHECKS = {
-    "ma_trend": _ma_trend,
-    "ma_distance": _ma_distance,
-    "ma_rising": _ma_rising,
-    "ma_cross": _ma_cross,
-}
-
-
-def passes(technical: list[dict[str, Any]], closes: list[float]) -> bool:
-    return all(CHECKS[t["type"]](t, closes) for t in technical)
+    return signal_series(technical, closes, volumes)[-1]
 
 
 # ---- 滚动信号序列（事件驱动回测用） --------------------------------------------------
@@ -144,7 +150,11 @@ def _ma_full(closes: list[float], window: int) -> list[float | None]:
     return out
 
 
-def signal_series(technical: list[dict[str, Any]], closes: list[float]) -> list[bool]:
+def signal_series(
+    technical: list[dict[str, Any]],
+    closes: list[float],
+    volumes: list[int] | None = None,
+) -> list[bool]:
     n = len(closes)
     ok = [True] * n
     ma_cache: dict[int, list[float | None]] = {}
@@ -216,6 +226,53 @@ def signal_series(technical: list[dict[str, Any]], closes: list[float]) -> list[
                 )
                 if not crossed:
                     ok[i] = False
+        elif typ == "vol_surge":
+            w, ratio = t["window"], t["ratio"]
+            if volumes is None or len(volumes) != n:
+                ok = [False] * n
+                continue
+            for i in range(n):
+                if i < w:
+                    ok[i] = False
+                else:
+                    avg = sum(volumes[i - w : i]) / w  # 前 w 日均量（不含当日）
+                    if not (avg > 0 and volumes[i] >= avg * ratio):
+                        ok[i] = False
+        elif typ == "breakout":
+            prev_max = _rolling_max_prev(closes, t["window"])
+            for i in range(n):
+                if not ok[i]:
+                    continue
+                if prev_max[i] is None or closes[i] <= prev_max[i]:
+                    ok[i] = False
+        elif typ == "macd_cross":
+            fast_e = _ema_full(closes, t["fast"])
+            slow_e = _ema_full(closes, t["slow"])
+            dif = [f - s for f, s in zip(fast_e, slow_e)]
+            dea = _ema_full(dif, t["signal"])
+            warmup = t["slow"] + t["signal"]
+            death = t["direction"] == "death"
+            for i in range(n):
+                if not ok[i]:
+                    continue
+                if i < warmup:
+                    ok[i] = False
+                    continue
+                crossed = (
+                    (dif[i] < dea[i] and dif[i - 1] >= dea[i - 1])
+                    if death
+                    else (dif[i] > dea[i] and dif[i - 1] <= dea[i - 1])
+                )
+                if not crossed:
+                    ok[i] = False
+        elif typ == "rsi_range":
+            rsi = _rsi_full(closes, t["window"])
+            for i in range(n):
+                if not ok[i]:
+                    continue
+                v = rsi[i]
+                if v is None or not (t["min"] <= v <= t["max"]):
+                    ok[i] = False
     return ok
 
 
@@ -241,25 +298,35 @@ def bars_needed(technical: list[dict[str, Any]]) -> int:
             need = max(need, max(t["windows"]) + 1)
         elif t["type"] == "ma_cross":
             need = max(need, t["slow"] + 1)
+        elif t["type"] in ("vol_surge", "breakout"):
+            need = max(need, t["window"] + 1)
+        elif t["type"] == "macd_cross":
+            need = max(need, t["slow"] + t["signal"] + 10)  # EMA 预热
+        elif t["type"] == "rsi_range":
+            need = max(need, t["window"] * 3)  # Wilder 平滑预热
     return min(need, _MAX_BARS)
 
 
-def closes_by_code(db: Session, codes: list[str], bars: int) -> dict[str, list[float]]:
-    """每只股票最近 `bars` 根日 K 收盘价（升序），单条窗口函数查询。"""
+def series_by_code(
+    db: Session, codes: list[str], bars: int
+) -> dict[str, tuple[list[float], list[int]]]:
+    """每只股票最近 `bars` 根日 K 的 (收盘价, 成交量)（升序），单条窗口函数查询。"""
     if not codes:
         return {}
     rn = func.row_number().over(partition_by=Kline.code, order_by=Kline.ts.desc()).label("rn")
     sub = (
-        select(Kline.code, Kline.close, Kline.ts, rn)
+        select(Kline.code, Kline.close, Kline.volume, Kline.ts, rn)
         .where(Kline.period == "1d", Kline.code.in_(codes))
         .subquery()
     )
     stmt = (
-        select(sub.c.code, sub.c.close)
+        select(sub.c.code, sub.c.close, sub.c.volume)
         .where(sub.c.rn <= bars)
         .order_by(sub.c.code, sub.c.ts.asc())
     )
-    out: dict[str, list[float]] = {}
-    for code, close in db.execute(stmt):
-        out.setdefault(code, []).append(close)
+    out: dict[str, tuple[list[float], list[int]]] = {}
+    for code, close, volume in db.execute(stmt):
+        pair = out.setdefault(code, ([], []))
+        pair[0].append(close)
+        pair[1].append(volume or 0)
     return out
