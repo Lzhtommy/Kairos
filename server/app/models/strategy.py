@@ -39,6 +39,25 @@ class ChatMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
+class StrategyRun(Base):
+    """盘后自动运行的每日命中存档：diff 出新进/调出，驱动通知与卡片展示。"""
+
+    __tablename__ = "strategy_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    strategy_id: Mapped[int] = mapped_column(
+        ForeignKey("strategies.id", ondelete="CASCADE"), index=True
+    )
+    run_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)  # 交易日 00:00
+    hit_codes: Mapped[list] = mapped_column(JSON, default=list)      # 全量命中代码（diff 用）
+    added: Mapped[list] = mapped_column(JSON, default=list)          # [{code,name}]，截前 50
+    removed: Mapped[list] = mapped_column(JSON, default=list)
+    added_count: Mapped[int] = mapped_column(Integer, default=0)     # 计数保留全量
+    removed_count: Mapped[int] = mapped_column(Integer, default=0)
+    hit_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
 class Backtest(Base):
     __tablename__ = "backtests"
 

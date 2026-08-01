@@ -30,6 +30,17 @@ class Settings(BaseSettings):
     # CORS
     cors_origins: str = "*"
 
+    # Notifications (strategy-run pushes + data alerts). Email needs SMTP;
+    # 465/SSL because cloud providers block port 25.
+    smtp_host: str = ""
+    smtp_port: int = 465
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    # 数据断供告警的管理员渠道（"email" | "webhook"）
+    alert_channel: str = "none"
+    alert_target: str = ""
+
     # Where backtest curve files are written
     reports_dir: str = "./data/reports"
 

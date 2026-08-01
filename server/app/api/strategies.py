@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.db import get_db
 from app.core.security import get_current_user
-from app.models.strategy import Strategy
+from app.models.strategy import Strategy, StrategyRun
 from app.models.user import User
 from app.schemas import ChatIn, StrategyIn
 from app.services import strategy_ai
@@ -42,12 +42,63 @@ def _get_owned(db: Session, sid: int, user: User) -> Strategy:
     return s
 
 
+def _last_runs(db: Session, strategy_ids: list[int], n: int = 5) -> dict[int, list[StrategyRun]]:
+    """每个策略最近 n 次 run（新→旧），一次查询按策略分组。"""
+    if not strategy_ids:
+        return {}
+    out: dict[int, list[StrategyRun]] = {}
+    for r in db.execute(
+        select(StrategyRun)
+        .where(StrategyRun.strategy_id.in_(strategy_ids))
+        .order_by(StrategyRun.strategy_id, StrategyRun.run_date.desc())
+    ).scalars():
+        bucket = out.setdefault(r.strategy_id, [])
+        if len(bucket) < n:
+            bucket.append(r)
+    return out
+
+
+def _run_summary(r: StrategyRun) -> dict:
+    return {
+        "date": r.run_date.strftime("%Y-%m-%d"),
+        "hitCount": r.hit_count,
+        "addedCount": r.added_count,
+        "removedCount": r.removed_count,
+        "added": r.added or [],
+        "removed": r.removed or [],
+    }
+
+
 @router.get("")
 def list_strategies(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     rows = db.execute(
         select(Strategy).where(Strategy.user_id == user.id).order_by(Strategy.created_at.desc())
     ).scalars().all()
-    return [_public(s) for s in rows]
+    runs = _last_runs(db, [s.id for s in rows])
+    out = []
+    for s in rows:
+        item = _public(s)
+        latest = runs.get(s.id) or []
+        item["lastRun"] = _run_summary(latest[0]) if latest else None
+        # 最近 5 次命中数（旧→新），卡片上画迷你趋势
+        item["hitTrend"] = [r.hit_count for r in reversed(latest)]
+        out.append(item)
+    return out
+
+
+@router.get("/{sid}/runs")
+def strategy_runs(
+    sid: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
+    """最近 10 次盘后运行记录（新→旧）。"""
+    _get_owned(db, sid, user)
+    rows = db.execute(
+        select(StrategyRun)
+        .where(StrategyRun.strategy_id == sid)
+        .order_by(StrategyRun.run_date.desc())
+        .limit(10)
+    ).scalars().all()
+    return [_run_summary(r) for r in rows]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)

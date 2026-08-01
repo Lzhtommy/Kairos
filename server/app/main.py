@@ -36,6 +36,7 @@ async def lifespan(_app: FastAPI):
         run_bootstrap_and_first_collect,
         snapshot_factors,
     )
+    from app.jobs.strategy_runs import check_data_freshness, run_all_strategies
 
     run_bootstrap_and_first_collect()
 
@@ -72,6 +73,27 @@ async def lifespan(_app: FastAPI):
             max_instances=1,
             coalesce=True,
             next_run_time=datetime.now(timezone.utc),
+        )
+        # 盘后 15:25 CST（07:25 UTC）自动跑全部策略并推送命中变化；
+        # 启动时补跑一次（内部时间闸门保证只在"当日收盘后"真正执行，幂等）。
+        _scheduler.add_job(
+            run_all_strategies,
+            "cron",
+            hour=7,
+            minute=25,
+            id="strategy_runs",
+            max_instances=1,
+            coalesce=True,
+            next_run_time=datetime.now(timezone.utc),
+        )
+        # 数据断供告警：每 30 分钟自检一次（仅盘中生效，见函数内闸门）
+        _scheduler.add_job(
+            check_data_freshness,
+            "interval",
+            minutes=30,
+            id="data_freshness",
+            max_instances=1,
+            coalesce=True,
         )
         _scheduler.start()
         logger.info("Collector scheduled every %ds", settings.collect_interval_seconds)

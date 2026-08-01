@@ -19,6 +19,34 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 
+function HitTrend({ values }: { values: number[] }) {
+  // 最近几次盘后运行的命中数迷你趋势（旧→新）
+  const max = Math.max(...values)
+  const min = Math.min(...values)
+  const range = max - min || 1
+  const w = 36
+  const h = 12
+  const pts = values
+    .map((v, i) => {
+      const x = values.length > 1 ? (i / (values.length - 1)) * w : 0
+      const y = h - 1 - ((v - min) / range) * (h - 2)
+      return `${x.toFixed(1)},${y.toFixed(1)}`
+    })
+    .join(" ")
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} className="h-3 w-9" aria-hidden>
+      <polyline
+        points={pts}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1"
+        opacity="0.7"
+        vectorEffect="non-scaling-stroke"
+      />
+    </svg>
+  )
+}
+
 export function ScreenerPage() {
   const [mode, setMode] = useState<"classic" | "strategy">("strategy")
   const [industry, setIndustry] = useState<string>("all")
@@ -205,10 +233,25 @@ export function ScreenerPage() {
                         </span>
                       ))}
                     </div>
-                    <span className="font-mono text-[11px] text-muted-foreground">
+                    <span className="flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
+                      {(s.hitTrend?.length ?? 0) > 1 && <HitTrend values={s.hitTrend!} />}
                       命中 {s.hitCount}
                     </span>
                   </div>
+                  {s.lastRun && (
+                    <p className="mt-1.5 text-[11px] text-muted-foreground">
+                      {s.lastRun.date.slice(5)} 盘后
+                      {s.lastRun.addedCount + s.lastRun.removedCount > 0 ? (
+                        <>
+                          ：<span className="text-up">新进 {s.lastRun.addedCount}</span>
+                          {" · "}
+                          <span className="text-down">调出 {s.lastRun.removedCount}</span>
+                        </>
+                      ) : (
+                        "：命中无变化"
+                      )}
+                    </p>
+                  )}
                 </button>
               ))}
               <Link

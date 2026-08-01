@@ -12,7 +12,7 @@ import {
   List,
   X,
 } from "@phosphor-icons/react"
-import { SignOut } from "@phosphor-icons/react"
+import { GearSix, SignOut } from "@phosphor-icons/react"
 import { Logo } from "@/components/layout/logo"
 import { useTheme } from "@/lib/theme"
 import { useAuth } from "@/lib/auth"
@@ -30,6 +30,7 @@ const NAV_ITEMS = [
   { to: "/app/strategy", label: "策略工坊", icon: Sparkle },
   { to: "/app/backtest", label: "回测", icon: ChartBar },
   { to: "/app/watchlist", label: "自选", icon: Star },
+  { to: "/app/settings", label: "设置", icon: GearSix },
 ]
 
 export function AppShell({ children }: { children: ReactNode }) {

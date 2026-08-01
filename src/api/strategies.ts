@@ -1,6 +1,15 @@
 import { api, API_BASE_URL, getToken } from "@/api/client"
 import type { Stock } from "@/lib/mock-data"
 
+export type StrategyRunSummary = {
+  date: string
+  hitCount: number
+  addedCount: number
+  removedCount: number
+  added: { code: string; name: string }[]
+  removed: { code: string; name: string }[]
+}
+
 export type Strategy = {
   id: string
   name: string
@@ -10,6 +19,8 @@ export type Strategy = {
   code: string
   hitCount: number
   createdAt: string
+  lastRun?: StrategyRunSummary | null
+  hitTrend?: number[]
 }
 
 export function fetchStrategies(): Promise<Strategy[]> {
@@ -28,6 +39,10 @@ export function createStrategy(body: {
 
 export function deleteStrategy(id: string): Promise<unknown> {
   return api(`/strategies/${id}`, { method: "DELETE" })
+}
+
+export function fetchStrategyRuns(id: string): Promise<StrategyRunSummary[]> {
+  return api<StrategyRunSummary[]>(`/strategies/${id}/runs`)
 }
 
 export type StrategyHits = { total: number; items: Stock[] }
