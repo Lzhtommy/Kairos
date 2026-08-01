@@ -83,6 +83,31 @@ function ParamSelect({
   )
 }
 
+function HoldDaysInput({ value, onChange }: { value: number; onChange: (n: number) => void }) {
+  const [text, setText] = useState(String(value))
+  useEffect(() => setText(String(value)), [value])
+  return (
+    <label className="flex items-center gap-1.5" title="1-60 个交易日">
+      <span className="whitespace-nowrap text-xs text-muted-foreground">持有</span>
+      <input
+        type="number"
+        min={1}
+        max={60}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={() => {
+          const n = Math.round(Number(text))
+          const v = Number.isFinite(n) && n >= 1 ? Math.min(60, n) : value
+          setText(String(v))
+          onChange(v)
+        }}
+        className="h-7 w-14 rounded-[min(var(--radius-md),10px)] border border-input bg-transparent px-2 text-center font-mono text-xs tabular-nums outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30"
+      />
+      <span className="text-xs text-muted-foreground">天</span>
+    </label>
+  )
+}
+
 function summarizeBacktest(b: BacktestSummary): { params: string; result: string } {
   const p = b.params
   const m = b.metrics
@@ -470,11 +495,9 @@ export function BacktestPage() {
                 />
                 {isEventStrategy ? (
                   <>
-                    <ParamSelect
-                      label="持有"
-                      value={String(btParams.holdDays)}
-                      onChange={(v) => setParam("holdDays", Number(v))}
-                      options={[["5", "5天"], ["10", "10天"], ["20", "20天"], ["30", "30天"]]}
+                    <HoldDaysInput
+                      value={btParams.holdDays ?? 10}
+                      onChange={(n) => setParam("holdDays", n)}
                     />
                     <ParamSelect
                       label="入场"
