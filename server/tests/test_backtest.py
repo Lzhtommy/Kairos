@@ -87,16 +87,13 @@ class TestPortfolioMode:
         assert m["hitCount"] == 2
         assert m["rebalances"] == 2  # 首期建仓 + 2 月初一次
 
-        # 独立推导：等权日收益 = mean(+1%, -1%)，调仓日扣 2×rate
-        boundary_days = {days[0]}
-        for prev, cur in zip(days, days[1:]):
-            if cur.month != prev.month:
-                boundary_days.add(cur)
+        # 独立推导：等权日收益 = mean(+1%, -1%)；成本按实际换手——
+        # 首期建仓买入单边 rate（记在第一个计算日），月初调仓成分不变 → 0
         equity = 1.0
         for i in range(1, len(days)):
             r = mean([up[i] / up[i - 1] - 1, down[i] / down[i - 1] - 1])
-            if days[i] in boundary_days:
-                r -= 2 * rate
+            if i == 1:
+                r -= rate
             equity *= 1 + r
         assert m["totalReturn"] == pytest.approx(round((equity - 1) * 100, 2), abs=0.05)
 

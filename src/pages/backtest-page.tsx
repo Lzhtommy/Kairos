@@ -50,6 +50,7 @@ const DEFAULT_PARAMS: BacktestParams = {
   benchmark: "000300",
   weighting: "equal",
   maxPositions: 0,
+  maxConcurrent: 10,
 }
 
 function ParamSelect({
@@ -511,6 +512,12 @@ export function BacktestPage() {
                       onChange={(v) => setParam("exitRule", v as BacktestParams["exitRule"])}
                       options={[["hold", "持有到期"], ["signal", "反向信号"], ["stop", "止盈止损"]]}
                     />
+                    <ParamSelect
+                      label="持仓上限"
+                      value={String(btParams.maxConcurrent ?? 10)}
+                      onChange={(v) => setParam("maxConcurrent", Number(v))}
+                      options={[["5", "5 只"], ["10", "10 只"], ["20", "20 只"], ["50", "50 只"]]}
+                    />
                     {btParams.exitRule === "stop" && (
                       <ParamSelect
                         label="止盈/损"
@@ -562,14 +569,14 @@ export function BacktestPage() {
                   <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border sm:grid-cols-3 lg:grid-cols-6">
                     {(metrics.mode === "event"
                       ? [
-                          { label: "模拟总收益", value: `${(metrics.totalReturn ?? 0) > 0 ? "+" : ""}${metrics.totalReturn}%`, tone: (metrics.totalReturn ?? 0) >= 0 ? ("up" as const) : ("down" as const) },
+                          { label: "账户总收益", value: `${(metrics.totalReturn ?? 0) > 0 ? "+" : ""}${metrics.totalReturn}%`, tone: (metrics.totalReturn ?? 0) >= 0 ? ("up" as const) : ("down" as const) },
+                          { label: "年化收益", value: `${(metrics.annualizedReturn ?? 0) > 0 ? "+" : ""}${metrics.annualizedReturn ?? "—"}%`, tone: (metrics.annualizedReturn ?? 0) >= 0 ? ("up" as const) : ("down" as const) },
+                          { label: "最大回撤", value: `${metrics.maxDrawdown ?? "—"}%`, tone: "down" as const },
                           { label: `${metrics.benchmarkName ?? "基准"}同期`, value: metrics.benchmarkReturn == null ? "—" : `${metrics.benchmarkReturn > 0 ? "+" : ""}${metrics.benchmarkReturn}%`, tone: "flat" as const },
-                          { label: "信号次数", value: `${metrics.eventCount}`, tone: "flat" as const },
+                          { label: "成交信号", value: `${metrics.eventCount}`, tone: "flat" as const },
                           { label: "胜率", value: `${metrics.winRate}%`, tone: "flat" as const },
                           { label: "平均单次收益", value: `${(metrics.avgReturn ?? 0) > 0 ? "+" : ""}${metrics.avgReturn}%`, tone: (metrics.avgReturn ?? 0) >= 0 ? ("up" as const) : ("down" as const) },
-                          { label: "中位收益", value: `${metrics.medianReturn}%`, tone: "flat" as const },
                           { label: "平均持有", value: `${metrics.avgHoldDays} 天`, tone: "flat" as const },
-                          { label: `单次超额 vs ${metrics.benchmarkName ?? "基准"}`, value: metrics.avgExcess == null ? "—" : `${metrics.avgExcess > 0 ? "+" : ""}${metrics.avgExcess}%`, tone: (metrics.avgExcess ?? 0) >= 0 ? ("up" as const) : ("down" as const) },
                         ]
                       : [
                           { label: "年化收益", value: `${(metrics.annualizedReturn ?? 0) > 0 ? "+" : ""}${metrics.annualizedReturn}%`, tone: (metrics.annualizedReturn ?? 0) >= 0 ? ("up" as const) : ("down" as const) },
@@ -639,14 +646,27 @@ export function BacktestPage() {
                   {backtest?.status === "done" && (
                     <TradeDetails key={backtest.id} backtestId={backtest.id} />
                   )}
+                  {metrics.mode === "event" &&
+                    ((metrics.skippedByLimit ?? 0) > 0 || (metrics.skippedByCapacity ?? 0) > 0) && (
+                      <p className="text-xs text-muted-foreground">
+                        可交易性约束：
+                        {(metrics.skippedByLimit ?? 0) > 0 &&
+                          `${metrics.skippedByLimit} 个信号因连续一字涨停买不进而放弃`}
+                        {(metrics.skippedByLimit ?? 0) > 0 && (metrics.skippedByCapacity ?? 0) > 0 && "；"}
+                        {(metrics.skippedByCapacity ?? 0) > 0 &&
+                          `${metrics.skippedByCapacity} 个信号因持仓已满（${metrics.maxConcurrent} 只上限）未成交`}
+                        。
+                      </p>
+                    )}
                   <p className="text-xs text-muted-foreground">
                     {metrics.mode === "event"
-                      ? "事件驱动回测：信号次日入场、按所选规则退出，同一股票同时只持一笔。资金曲线为逐日等权持有全部在场信号的模拟（空仓日现金持平，虚线为基准）；信号平均路径为所有信号对齐入场日的平均累计收益。股票池按当前条件筛选，存在一定前视偏差。"
-                      : `组合回测：每个调仓期按当期时点数据重新选股（虚线为基准指数）。时点因子来自每日收盘快照${
+                      ? `事件驱动回测（账户口径）：信号次日入场、按所选规则退出，每笔占 1/${metrics.maxConcurrent ?? 10} 仓位，同日信号多于空位时按代码序取前 N。一字涨停顺延入场（3 日买不进放弃）、一字跌停顺延出场。资金曲线为账户净值（空仓部分现金持平，虚线为基准）。`
+                      : `组合回测：每个调仓期按当期时点数据重新选股（虚线为基准指数），调仓成本按实际换手比例计。时点因子来自每日收盘快照${
                           metrics.rebalances
                             ? `，本次 ${metrics.rebalances} 期中 ${metrics.pitPeriods ?? 0} 期有真实快照`
                             : ""
-                        }；快照未覆盖的日期用价格重构近似（ROE/股息率/行业按当前值）。历史表现不代表未来收益。`}
+                        }；快照未覆盖的日期用价格重构近似。`}
+                    股票池为当前上市股票，存在幸存者偏差——回测期内退市的股票不在池中，小市值/困境类策略收益会被高估。历史表现不代表未来收益。
                   </p>
                 </>
               )}

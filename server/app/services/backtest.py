@@ -59,30 +59,89 @@ def _clean_params(params: dict[str, Any], dsl: dict[str, Any]) -> dict[str, Any]
         "benchmark": pick("benchmark", tuple(_BENCHMARKS), "000300"),
         "weighting": pick("weighting", ("equal", "cap"), "equal"),
         "max_pos": int(num("maxPositions", 0, 0, 200)),
+        # 事件模式账户口径：最大同时持仓数，每笔占 1/max_concurrent 仓位
+        "max_concurrent": int(num("maxConcurrent", 10, 1, 50)),
     }
 
 
 def _bars_by_code(
     db: Session, codes: list[str], bars: int
-) -> dict[str, list[tuple[datetime, float, float]]]:
-    """每只股票最近 `bars` 根 (ts, open, close)，升序。"""
+) -> dict[str, list[tuple]]:
+    """每只股票最近 `bars` 根 (ts, open, close, high, low, volume)，升序。"""
     if not codes:
         return {}
     rn = func.row_number().over(partition_by=Kline.code, order_by=Kline.ts.desc()).label("rn")
     sub = (
-        select(Kline.code, Kline.ts, Kline.open, Kline.close, rn)
+        select(
+            Kline.code, Kline.ts, Kline.open, Kline.close, Kline.high, Kline.low,
+            Kline.volume, rn,
+        )
         .where(Kline.period == "1d", Kline.code.in_(codes))
         .subquery()
     )
     stmt = (
-        select(sub.c.code, sub.c.ts, sub.c.open, sub.c.close)
+        select(
+            sub.c.code, sub.c.ts, sub.c.open, sub.c.close, sub.c.high, sub.c.low, sub.c.volume
+        )
         .where(sub.c.rn <= bars)
         .order_by(sub.c.code, sub.c.ts.asc())
     )
-    out: dict[str, list[tuple[datetime, float, float]]] = {}
-    for code, ts, open_, close in db.execute(stmt):
-        out.setdefault(code, []).append((ts, open_, close))
+    out: dict[str, list[tuple]] = {}
+    for code, ts, open_, close, high, low, volume in db.execute(stmt):
+        out.setdefault(code, []).append((ts, open_, close, high, low, volume or 0))
     return out
+
+
+# ---- 可交易性（一字板）-----------------------------------------------------------
+
+
+def _limit_pct(code: str, name: str) -> float:
+    """涨跌停幅度：主板 10%，创业板/科创板 20%，ST 5%。"""
+    if "ST" in name:
+        return 0.05
+    if code.startswith(("30", "68")):
+        return 0.20
+    return 0.10
+
+
+def _one_word(
+    series: list[tuple], j: int, pct: float, direction: int
+) -> bool:
+    """第 j 根是否一字板（无法成交）：高低价相等且收于涨/跌停价附近。
+
+    direction=+1 判涨停（买不进），-1 判跌停（卖不出）。0.998 容差吸收
+    交易所按分报价的取整误差。
+    """
+    if j <= 0:
+        return False
+    close, high, low = series[j][2], series[j][3], series[j][4]
+    prev_close = series[j - 1][2]
+    if prev_close <= 0 or abs(high - low) > 1e-9:
+        return False
+    # 收盘须贴着涨/跌停价（±0.4% 容差吸收 0.01 元取整）——只超不贴不算：
+    # 一字板价格恰为 prev×(1±pct)，涨幅大于该值的平 bar 是新股/数据噪音
+    limit_px = prev_close * (1 + pct * direction)
+    return abs(close - limit_px) <= limit_px * 0.004
+
+
+def _rebalance_cost(
+    prev_weights: dict[str, float], new_weights: dict[str, float], rate: float
+) -> float:
+    """按实际换手计成本：卖出份额 × rate + 买入份额 × rate（权重先归一）。
+
+    成分不变 → 0；全换手 → 2×rate；首期建仓（prev 为空）→ 买入单边 rate。
+    """
+
+    def norm(w: dict[str, float]) -> dict[str, float]:
+        total = sum(w.values())
+        return {k: v / total for k, v in w.items()} if total > 0 else {}
+
+    a, b = norm(prev_weights), norm(new_weights)
+    if not b:
+        return 0.0
+    sold = sum(max(a.get(k, 0.0) - b.get(k, 0.0), 0.0) for k in a)
+    bought = sum(max(b.get(k, 0.0) - a.get(k, 0.0), 0.0) for k in b)
+    return (sold + bought) * rate
 
 
 _bench_cache: dict[str, tuple[str, dict[datetime, float]]] = {}
@@ -127,11 +186,11 @@ def run(db: Session, dsl: dict[str, Any], params: dict[str, Any]) -> dict[str, A
     p = _clean_params(params or {}, dsl)
     all_rows = factor_rows(db)
     if dsl.get("technical"):
-        # 事件模式：标量层作为股票池预筛（今日快照，已在 UI 披露）；
-        # 纯技术策略只做 universe 过滤，不能走 execute——会触发"双空"校验
+        # 事件模式：标量/打分层作为股票池预筛（今日快照，已在 UI 披露）；
+        # 纯技术策略只做 universe 过滤，不能走 execute——会触发"全空"校验
         pool = (
             execute({**dsl, "technical": []}, all_rows)
-            if dsl["filters"]
+            if dsl["filters"] or dsl.get("score")
             else apply_universe(dsl, all_rows)
         )
         return _run_event(db, dsl, p, pool)
@@ -143,6 +202,104 @@ def run(db: Session, dsl: dict[str, Any], params: dict[str, Any]) -> dict[str, A
 # ---- 事件驱动模式 ---------------------------------------------------------------
 
 
+def _candidates_for_stock(
+    code: str,
+    name: str,
+    series: list[tuple],
+    p: dict[str, Any],
+    tech: list[dict[str, Any]],
+    rev: list[dict[str, Any]] | None,
+    need: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """一只股票的候选交易（含一字板顺延/放弃）。返回 (candidates, 因涨停放弃的信号数)。"""
+    closes = [bar[2] for bar in series]
+    volumes = [bar[5] for bar in series]
+    n = len(series)
+    if n < need + 2:
+        return [], 0
+    pct = _limit_pct(code, name)
+    sig = technical.signal_series(tech, closes, volumes)
+    rev_sig = technical.signal_series(rev, closes, volumes) if rev else None
+
+    cands: list[dict[str, Any]] = []
+    skipped_limit = 0
+    i = max(need, n - 1 - p["period"])  # 只取回测窗口内的信号
+    while i < n - 1:
+        if not sig[i]:
+            i += 1
+            continue
+        # 入场：信号次日，一字涨停顺延，连续 3 日买不进则放弃该信号
+        e_idx = None
+        for e in range(i + 1, min(i + 4, n)):
+            if not _one_word(series, e, pct, +1):
+                e_idx = e
+                break
+        if e_idx is None:
+            skipped_limit += 1
+            i += 1
+            continue
+        entry_px = series[e_idx][1] if p["entry"] == "open" else series[e_idx][2]
+        if entry_px <= 0:
+            i += 1
+            continue
+
+        cap_idx = min(e_idx + p["hold"], n - 1)
+        exit_idx, reason = cap_idx, "hold"
+        if p["exit"] == "signal" and rev_sig is not None:
+            cap = min(e_idx + p["hold"] * 3, n - 1)  # 反向信号迟迟不来时的兜底
+            exit_idx = cap
+            for j in range(e_idx + 1, cap + 1):
+                if rev_sig[j]:
+                    exit_idx, reason = j, "signal"
+                    break
+        elif p["exit"] == "stop":
+            for j in range(e_idx, cap_idx + 1):
+                r = series[j][2] / entry_px - 1
+                if r >= p["stop_gain"] / 100:
+                    exit_idx, reason = j, "stop_gain"
+                    break
+                if r <= -p["stop_loss"] / 100:
+                    exit_idx, reason = j, "stop_loss"
+                    break
+        # 出场：一字跌停卖不出则顺延，最多 5 日后按当日收盘强平
+        moves = 0
+        while exit_idx < n - 1 and moves < 5 and _one_word(series, exit_idx, pct, -1):
+            exit_idx += 1
+            moves += 1
+
+        exit_px = series[exit_idx][2]
+        # 逐日收益：入场日为成交价→收盘（扣买入单边），此后 close-to-close，出场日扣卖出单边
+        daily: dict[datetime, float] = {
+            series[e_idx][0]: series[e_idx][2] / entry_px - 1 - p["rate"]
+        }
+        for j in range(e_idx + 1, exit_idx + 1):
+            rj = series[j][2] / series[j - 1][2] - 1
+            if j == exit_idx:
+                rj -= p["rate"]
+            daily[series[j][0]] = rj
+        cands.append(
+            {
+                "code": code,
+                "name": name,
+                "ret": exit_px / entry_px - 1 - 2 * p["rate"],
+                "days": exit_idx - e_idx,
+                "entry_ts": series[e_idx][0],
+                "exit_ts": series[exit_idx][0],
+                "entry_px": round(entry_px, 3),
+                "exit_px": round(exit_px, 3),
+                "reason": reason,
+                "daily": daily,
+                # 平均收益路径（按持有期对齐；提前退出的用退出价截断）
+                "path": [
+                    series[j][2] / entry_px - 1
+                    for j in range(e_idx, min(e_idx + p["hold"], n - 1) + 1)
+                ],
+            }
+        )
+        i = exit_idx + 1  # 单股同时只持一笔
+    return cands, skipped_limit
+
+
 def _run_event(
     db: Session, dsl: dict[str, Any], p: dict[str, Any], rows: list[dict[str, Any]]
 ) -> dict[str, Any]:
@@ -152,119 +309,93 @@ def _run_event(
     need = technical.bars_needed(tech)
     depth = min(_MAX_BARS, p["period"] + need + p["hold"] * 3 + 2)
     rev = technical.reverse_signal(tech) if p["exit"] == "signal" else None
+    max_c = p["max_concurrent"]
 
-    trades: list[dict[str, Any]] = []
-    paths: list[list[float]] = []
-    day_agg: dict[datetime, list[float]] = {}  # 日期 → [收益和, 在场笔数]，等权模拟资金曲线
+    candidates: list[dict[str, Any]] = []
+    skipped_limit = 0
     for chunk in _chunks(codes, _CHUNK):
         for code, series in _bars_by_code(db, chunk, depth).items():
-            closes = [c for _, _, c in series]
-            n = len(series)
-            if n < need + 2:
-                continue
-            sig = technical.signal_series(tech, closes)
-            rev_sig = technical.signal_series(rev, closes) if rev else None
-            i = max(need, n - 1 - p["period"])  # 只取回测窗口内的信号
-            while i < n - 1:
-                if not sig[i]:
-                    i += 1
-                    continue
-                e_idx = i + 1
-                entry_px = series[e_idx][1] if p["entry"] == "open" else series[e_idx][2]
-                if entry_px <= 0:
-                    i += 1
-                    continue
-                cap_idx = min(e_idx + p["hold"], n - 1)
-                exit_idx, reason = cap_idx, "hold"
-                if p["exit"] == "signal" and rev_sig is not None:
-                    cap = min(e_idx + p["hold"] * 3, n - 1)  # 反向信号迟迟不来时的兜底
-                    exit_idx = cap
-                    for j in range(e_idx + 1, cap + 1):
-                        if rev_sig[j]:
-                            exit_idx, reason = j, "signal"
-                            break
-                elif p["exit"] == "stop":
-                    for j in range(e_idx, cap_idx + 1):
-                        r = series[j][2] / entry_px - 1
-                        if r >= p["stop_gain"] / 100:
-                            exit_idx, reason = j, "stop_gain"
-                            break
-                        if r <= -p["stop_loss"] / 100:
-                            exit_idx, reason = j, "stop_loss"
-                            break
-                exit_px = series[exit_idx][2]
-                trades.append(
-                    {
-                        "code": code,
-                        "name": names.get(code, code),
-                        "ret": exit_px / entry_px - 1 - 2 * p["rate"],
-                        "days": exit_idx - e_idx,
-                        "entry_ts": series[e_idx][0],
-                        "exit_ts": series[exit_idx][0],
-                        "entry_px": round(entry_px, 3),
-                        "exit_px": round(exit_px, 3),
-                        "reason": reason,
-                    }
-                )
-                # 平均收益路径（按持有期对齐；实际提前退出的用退出价截断）
-                path = [
-                    series[j][2] / entry_px - 1
-                    for j in range(e_idx, min(e_idx + p["hold"], n - 1) + 1)
-                ]
-                paths.append(path)
-                # 资金曲线贡献：入场日为成交价→收盘，此后逐日 close-to-close，进出各扣单边费率
-                r0 = series[e_idx][2] / entry_px - 1 - p["rate"]
-                acc = day_agg.setdefault(series[e_idx][0], [0.0, 0])
-                acc[0] += r0
-                acc[1] += 1
-                for j in range(e_idx + 1, exit_idx + 1):
-                    rj = series[j][2] / series[j - 1][2] - 1
-                    if j == exit_idx:
-                        rj -= p["rate"]
-                    acc = day_agg.setdefault(series[j][0], [0.0, 0])
-                    acc[0] += rj
-                    acc[1] += 1
-                i = exit_idx + 1  # 单股同时只持一笔
+            cands, skipped = _candidates_for_stock(
+                code, names.get(code, code), series, p, tech, rev, need
+            )
+            candidates.extend(cands)
+            skipped_limit += skipped
 
     hit_count = len(codes)
-    if not trades:
-        return _empty_result("event", hit_count)
-
-    rets = [t["ret"] for t in trades]
     bench = _benchmark_closes(p["benchmark"])
-    excesses = []
-    for t in trades:
-        b0, b1 = bench.get(t["entry_ts"]), bench.get(t["exit_ts"])
-        if b0 and b1:
-            excesses.append(t["ret"] - (b1 / b0 - 1))
-
-    # 主曲线（日期轴）：逐日等权持有全部在场信号的模拟资金曲线，空仓日现金持平
     calendar = _trading_calendar(db, bench, p["period"])
+
+    # 账户口径模拟：每笔占 1/max_concurrent 仓位，同日信号多于空位按代码序取前 N；
+    # 当日退出的仓位收盘才腾出，次日方可复用
+    by_entry: dict[datetime, list[dict[str, Any]]] = {}
+    for c in sorted(candidates, key=lambda c: (c["entry_ts"], c["code"])):
+        by_entry.setdefault(c["entry_ts"], []).append(c)
+    active: dict[str, dict[str, Any]] = {}
+    executed: list[dict[str, Any]] = []
+    skipped_capacity = 0
     equity = 1.0
+    daily_returns: list[float] = []
     curve: list[dict[str, Any]] = []
     bench_curve: list[dict[str, Any]] = []
     base = bench.get(calendar[0]) if calendar else None
     for d in calendar:
-        agg = day_agg.get(d)
-        if agg and agg[1]:
-            equity *= 1 + agg[0] / agg[1]
+        for cand in by_entry.get(d, ()):  # 入场（占用空位）
+            if len(active) >= max_c:
+                skipped_capacity += 1
+                continue
+            active[cand["code"]] = cand
+            executed.append(cand)
+        r_day = (
+            sum(cand["daily"].get(d, 0.0) for cand in active.values()) / max_c
+            if active
+            else 0.0
+        )
+        equity *= 1 + r_day
+        daily_returns.append(r_day)
         curve.append({"t": d.strftime("%Y-%m-%d"), "v": round(equity, 4)})
         if base:
             v = bench.get(d)
             if v:
                 bench_curve.append({"t": d.strftime("%Y-%m-%d"), "v": round(v / base, 4)})
-    total_return = curve[-1]["v"] - 1 if curve else 0.0
+        for code in [c for c, cd in active.items() if cd["exit_ts"] == d]:
+            del active[code]
+
+    if not executed:
+        empty = _empty_result("event", hit_count)
+        empty["metrics"]["skippedByLimit"] = skipped_limit
+        empty["metrics"]["skippedByCapacity"] = skipped_capacity
+        return empty
+
+    rets = [t["ret"] for t in executed]
+    excesses = []
+    for t in executed:
+        b0, b1 = bench.get(t["entry_ts"]), bench.get(t["exit_ts"])
+        if b0 and b1:
+            excesses.append(t["ret"] - (b1 / b0 - 1))
+
+    total_return = equity - 1
+    peak, max_dd = 1.0, 0.0
+    eq = 1.0
+    for r in daily_returns:
+        eq *= 1 + r
+        peak = max(peak, eq)
+        max_dd = min(max_dd, eq / peak - 1)
+    n_days = len(daily_returns)
+    annualized = (equity ** (TRADING_DAYS / n_days) - 1) if n_days else 0.0
+    vol = pstdev(daily_returns) if n_days > 1 else 0.0
+    sharpe = (mean(daily_returns) / vol * (TRADING_DAYS**0.5)) if vol else 0.0
+
     bench_total = (bench_curve[-1]["v"] - 1) if bench_curve else None
     for series_ in (curve, bench_curve):
         if len(series_) > 120:
             step = len(series_) // 120
             series_[:] = series_[::step] + [series_[-1]]
 
-    # 次曲线（对齐入场日）：所有事件的平均累计收益路径 D0..D{hold}（短路径用末值补齐）
+    # 次曲线（对齐入场日）：已执行事件的平均累计收益路径 D0..D{hold}
     horizon = p["hold"] + 1
     avg_path = []
     for k in range(horizon):
-        vals = [path[k] if k < len(path) else path[-1] for path in paths if path]
+        vals = [t["path"][k] if k < len(t["path"]) else t["path"][-1] for t in executed if t["path"]]
         if not vals:
             break
         avg_path.append({"t": f"D{k}", "v": round(1 + mean(vals), 4)})
@@ -283,23 +414,29 @@ def _run_event(
             "days": t["days"],
             "reason": t["reason"],
         }
-        for t in trades[:_TRADES_CAP]
+        for t in executed[:_TRADES_CAP]
     ]
 
     return {
         "metrics": {
             "mode": "event",
             "hitCount": hit_count,
-            "eventCount": len(trades),
+            "eventCount": len(executed),
             "winRate": round(sum(1 for r in rets if r > 0) / len(rets) * 100, 1),
             "avgReturn": round(mean(rets) * 100, 2),
             "medianReturn": round(median(rets) * 100, 2),
-            "avgHoldDays": round(mean(t["days"] for t in trades), 1),
+            "avgHoldDays": round(mean(t["days"] for t in executed), 1),
             "avgExcess": round(mean(excesses) * 100, 2) if excesses else None,
             "benchmarkName": _BENCHMARKS[p["benchmark"]],
             "totalReturn": round(total_return * 100, 2),
+            "annualizedReturn": round(annualized * 100, 2),
+            "maxDrawdown": round(max_dd * 100, 2),
+            "sharpe": round(sharpe, 2),
             "benchmarkReturn": round(bench_total * 100, 2) if bench_total is not None else None,
-            "tradesTruncated": len(trades) > _TRADES_CAP,
+            "maxConcurrent": max_c,
+            "skippedByLimit": skipped_limit,        # 一字涨停买不进而放弃的信号数
+            "skippedByCapacity": skipped_capacity,  # 仓位满而放弃的信号数
+            "tradesTruncated": len(executed) > _TRADES_CAP,
         },
         "curve": curve,
         "benchmark": bench_curve,
@@ -411,7 +548,8 @@ def _run_portfolio(
     db: Session, dsl: dict[str, Any], p: dict[str, Any], rows_today: list[dict[str, Any]]
 ) -> dict[str, Any]:
     scalar_dsl = {**dsl, "technical": []}
-    hit_count = len(execute(scalar_dsl, rows_today)) if dsl["filters"] else len(rows_today)
+    has_scalar = bool(dsl["filters"] or dsl.get("score"))
+    hit_count = len(execute(scalar_dsl, rows_today)) if has_scalar else len(rows_today)
 
     bench = _benchmark_closes(p["benchmark"])
     calendar = _trading_calendar(db, bench, p["period"])
@@ -456,11 +594,14 @@ def _run_portfolio(
             rows_d = _reconstructed_rows(
                 rows_today, ref_bars, bar_lookup.get(d, {}), bar_lookup.get(prev_of.get(d), {})
             )
-        picked = execute(scalar_dsl, rows_d) if dsl["filters"] else apply_universe(dsl, rows_d)
+        picked = execute(scalar_dsl, rows_d) if has_scalar else apply_universe(dsl, rows_d)
         if p["max_pos"]:
-            picked = sorted(picked, key=lambda r: r.get("market_cap") or 0, reverse=True)[
-                : p["max_pos"]
-            ]
+            if dsl.get("score"):
+                picked = picked[: p["max_pos"]]  # execute 已按得分降序
+            else:
+                picked = sorted(picked, key=lambda r: r.get("market_cap") or 0, reverse=True)[
+                    : p["max_pos"]
+                ]
         period_sel.append(
             {
                 r["code"]: (r.get("market_cap") or 0.0) if p["weighting"] == "cap" else 1.0
@@ -476,7 +617,13 @@ def _run_portfolio(
     close_map: dict[str, dict[datetime, float]] = {}
     for chunk in _chunks(union_codes, _CHUNK):
         for code, s in _bars_by_code(db, chunk, p["period"] + 1).items():
-            close_map[code] = {ts: close for ts, _, close in s}
+            close_map[code] = {ts: close for ts, _o, close, *_rest in s}
+
+    # 调仓成本按实际换手：每期与上期权重向量的差额 × 费率（首期是建仓买入单边）
+    period_cost = [
+        _rebalance_cost(period_sel[k - 1] if k else {}, period_sel[k], p["rate"])
+        for k in range(len(period_sel))
+    ]
 
     # 日收益：用当日所属调仓期的成分与权重；顺带累计每期收益
     boundary_set = set(boundaries)
@@ -484,6 +631,7 @@ def _run_portfolio(
     dates: list[datetime] = []
     period_equity = [1.0] * len(period_sel)
     active = 0
+    first_day = True
     for i in range(1, len(calendar)):
         if i in boundary_set:
             active = boundaries.index(i)
@@ -503,7 +651,10 @@ def _run_portfolio(
             continue
         r = num / den
         if i in boundary_set:
-            r -= 2 * p["rate"]  # 调仓成本
+            r -= period_cost[active]  # 换手成本
+        elif first_day:
+            r -= period_cost[0]  # 首期建仓成本记在第一个计算日
+        first_day = False
         period_equity[active] *= 1 + r
         daily_returns.append(r)
         dates.append(d1)

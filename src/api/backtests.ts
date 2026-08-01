@@ -13,6 +13,8 @@ export type BacktestParams = {
   benchmark?: "000300" | "000905" | "399006"
   weighting?: "equal" | "cap"
   maxPositions?: number
+  /** 事件模式账户口径：最大同时持仓数（每笔占 1/N 仓位），默认 10 */
+  maxConcurrent?: number
 }
 
 /** 指标按模式区分：event（事件驱动）与 portfolio（组合持有）字段不同。 */
@@ -36,6 +38,11 @@ export type BacktestMetrics = {
   medianReturn?: number
   avgHoldDays?: number
   avgExcess?: number | null
+  maxConcurrent?: number
+  /** 一字涨停买不进而放弃的信号数 */
+  skippedByLimit?: number
+  /** 仓位满（maxConcurrent）而放弃的信号数 */
+  skippedByCapacity?: number
 }
 
 export type BacktestResult = {
