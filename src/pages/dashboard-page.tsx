@@ -1,10 +1,12 @@
 import { useState } from "react"
 import { useQuery } from "@tanstack/react-query"
+import { MagnifyingGlass } from "@phosphor-icons/react"
 import { useLiveQuotes } from "@/lib/use-live-quotes"
 import { fetchRanking } from "@/api/market"
 import { fetchWatchlist } from "@/api/watchlist"
 import { IndexStrip } from "@/components/market/index-strip"
 import { QuoteTable } from "@/components/market/quote-table"
+import { Input } from "@/components/ui/input"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 
 type Tab = "all" | "watchlist" | "gainers" | "active"
@@ -12,6 +14,7 @@ type Tab = "all" | "watchlist" | "gainers" | "active"
 export function DashboardPage() {
   const { stocks, indices } = useLiveQuotes()
   const [tab, setTab] = useState<Tab>("all")
+  const [query, setQuery] = useState("")
 
   const gainersQ = useQuery({
     queryKey: ["ranking", "gainers"],
@@ -40,6 +43,11 @@ export function DashboardPage() {
           ? watchQ.data?.items ?? []
           : stocks
 
+  const q = query.trim().toLowerCase()
+  const filtered = q
+    ? data.filter((s) => s.code.includes(q) || s.name.toLowerCase().includes(q))
+    : data
+
   return (
     <div className="mx-auto max-w-[1600px] space-y-6 px-4 py-6 lg:px-6">
       <div>
@@ -52,7 +60,7 @@ export function DashboardPage() {
       <IndexStrip indices={indices} />
 
       <div>
-        <div className="mb-3 flex items-center justify-between">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
           <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
             <TabsList>
               <TabsTrigger value="all">全部 A 股</TabsTrigger>
@@ -61,16 +69,29 @@ export function DashboardPage() {
               <TabsTrigger value="active">成交活跃</TabsTrigger>
             </TabsList>
           </Tabs>
+          <div className="relative w-full max-w-60">
+            <MagnifyingGlass className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="搜索代码 / 名称"
+              className="h-8 border-transparent bg-muted/60 pl-8 focus-visible:bg-background"
+            />
+          </div>
         </div>
-        {data.length > 0 ? (
+        {filtered.length > 0 ? (
           <div className="rounded-lg border border-border">
-            {/* key 让换 tab 时分页/排序回到初始状态 */}
-            <QuoteTable key={tab} data={data} />
+            {/* key 让换 tab / 改搜索词时分页回到第一页 */}
+            <QuoteTable key={`${tab}-${q}`} data={filtered} />
           </div>
         ) : (
           <div className="rounded-lg border border-dashed border-border py-14 text-center">
             <p className="text-sm text-muted-foreground">
-              {tab === "watchlist" ? "还没有自选股，点击星标添加" : "加载中…"}
+              {q
+                ? `没有匹配「${query.trim()}」的股票`
+                : tab === "watchlist"
+                  ? "还没有自选股，点击星标添加"
+                  : "加载中…"}
             </p>
           </div>
         )}

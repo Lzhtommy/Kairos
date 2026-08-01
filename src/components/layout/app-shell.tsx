@@ -8,7 +8,6 @@ import {
   Star,
   Sun,
   Moon,
-  MagnifyingGlass,
   Bell,
   List,
   X,
@@ -18,7 +17,6 @@ import { Logo } from "@/components/layout/logo"
 import { useTheme } from "@/lib/theme"
 import { useAuth } from "@/lib/auth"
 import { cn } from "@/lib/utils"
-import { Input } from "@/components/ui/input"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import {
   Tooltip,
@@ -153,13 +151,6 @@ export function AppShell({ children }: { children: ReactNode }) {
           >
             <List className="size-5.5 text-foreground" />
           </button>
-          <div className="relative w-full max-w-sm">
-            <MagnifyingGlass className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              placeholder="搜索股票代码 / 名称"
-              className="h-9 bg-muted/60 pl-8 border-transparent focus-visible:bg-background"
-            />
-          </div>
           <div className="ml-auto flex items-center gap-1.5">
             <Tooltip>
               <TooltipTrigger
