@@ -40,6 +40,21 @@ def _try_tencent() -> DataProvider | None:
         return None
 
 
+def _try_eastmoney() -> DataProvider | None:
+    try:
+        from app.providers.eastmoney_provider import EastmoneyProvider
+
+        provider = EastmoneyProvider()
+        # Quick connectivity probe — one small call.
+        if not provider.get_indices():
+            raise RuntimeError("empty index response")
+        logger.info("Using EastmoneyProvider (live A-share data via EastMoney delayed feed)")
+        return provider
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("EastMoney unavailable (%s)", exc)
+        return None
+
+
 def get_provider() -> DataProvider:
     global _provider
     if _provider is not None:
@@ -52,8 +67,10 @@ def get_provider() -> DataProvider:
         _provider = _try_akshare() or SeedProvider()
     elif choice == "tencent":
         _provider = _try_tencent() or SeedProvider()
+    elif choice == "eastmoney":
+        _provider = _try_eastmoney() or SeedProvider()
     else:  # auto
-        _provider = _try_akshare() or _try_tencent() or SeedProvider()
+        _provider = _try_akshare() or _try_tencent() or _try_eastmoney() or SeedProvider()
 
     logger.info("Data provider resolved to: %s", _provider.name)
     return _provider
