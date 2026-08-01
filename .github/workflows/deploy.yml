@@ -10,7 +10,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Run backend tests
+        working-directory: server
+        run: |
+          uv venv --python 3.12
+          uv pip install -r requirements.txt pytest
+          .venv/bin/python -m pytest tests/ -q
+
   deploy:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
