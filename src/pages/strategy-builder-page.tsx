@@ -10,6 +10,8 @@ import {
   Plus,
   Robot,
   Trash,
+  Check,
+  X,
 } from "@phosphor-icons/react"
 import { CodeBlock } from "@/components/strategy/code-block"
 import { Button } from "@/components/ui/button"
@@ -25,7 +27,14 @@ import {
 import { fetchBacktest } from "@/api/backtests"
 import { cn } from "@/lib/utils"
 
-type Message = { role: "user" | "assistant"; text: string; code?: string }
+type Message = {
+  role: "user" | "assistant"
+  text: string
+  code?: string
+  /** AI 本回合产出的策略修改建议——需用户手动应用/忽略，不直接改草稿 */
+  proposal?: { dsl: Record<string, unknown>; code: string; name?: string; prompt: string }
+  proposalState?: "pending" | "accepted" | "rejected"
+}
 
 const PLACEHOLDER_CODE = `# 在左侧用自然语言描述你的选股逻辑，\n# AI 会在这里生成可回测的策略代码。`
 
@@ -54,6 +63,15 @@ export function StrategyBuilderPage() {
 
   // messages 的同步镜像：诊断深链等"非输入框触发"的发送需要拿到已提交的最新会话
   const messagesRef = useRef<Message[]>([])
+
+  // 流式输出时跟随滚动到底部；用户正翻看历史（离底部较远）时不打扰
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 120) {
+      el.scrollTo({ top: el.scrollHeight })
+    }
+  }, [messages])
   useEffect(() => {
     messagesRef.current = messages
   }, [messages])
@@ -119,17 +137,18 @@ export function StrategyBuilderPage() {
             return next
           })
         } else if (ev.type === "done" && ev.dsl && ev.code) {
-          // 只有产出策略的回合才更新右侧面板；纯闲聊不动当前草稿
-          const { dsl, code } = ev
-          setDraftDsl(dsl)
-          setDraftCode(code)
-          if (ev.name) setDraftName(ev.name)
-          setLastPrompt(text)
-          setSavedId(null)
+          // 产出策略的回合只挂"待确认建议"，等用户手动应用/忽略，不直接改草稿
+          const { dsl, code, name } = ev
           setMessages((m) => {
             const next = [...m]
             const cur = next[assistantIndex]
-            if (cur) next[assistantIndex] = { ...cur, code }
+            if (cur)
+              next[assistantIndex] = {
+                ...cur,
+                code,
+                proposal: { dsl, code, name, prompt: text },
+                proposalState: "pending",
+              }
             return next
           })
         }
@@ -142,6 +161,23 @@ export function StrategyBuilderPage() {
         scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
       })
     }
+  }
+
+  function acceptProposal(index: number) {
+    const msg = messagesRef.current[index]
+    if (!msg?.proposal || msg.proposalState !== "pending") return
+    const { dsl, code, name, prompt } = msg.proposal
+    setDraftDsl(dsl)
+    setDraftCode(code)
+    if (name) setDraftName(name)
+    setLastPrompt(prompt)
+    setSavedId(null) // 草稿变了，视为未保存的新版本
+    setMessages((m) => m.map((x, i) => (i === index ? { ...x, proposalState: "accepted" as const } : x)))
+    toast.success("已应用到策略草稿")
+  }
+
+  function rejectProposal(index: number) {
+    setMessages((m) => m.map((x, i) => (i === index ? { ...x, proposalState: "rejected" as const } : x)))
   }
 
   async function save(): Promise<string | null> {
@@ -213,7 +249,7 @@ export function StrategyBuilderPage() {
   return (
     <div className="grid h-[calc(100dvh-4rem)] grid-cols-1 lg:grid-cols-[240px_1fr_440px]">
       {/* Strategy list */}
-      <aside className="hidden border-r border-border lg:flex lg:flex-col">
+      <aside className="hidden min-h-0 border-r border-border lg:flex lg:flex-col">
         <div className="flex items-center justify-between p-3">
           <span className="text-sm font-medium text-foreground">我的策略</span>
           <Button
@@ -231,7 +267,7 @@ export function StrategyBuilderPage() {
             <Plus className="size-4" />
           </Button>
         </div>
-        <div className="flex-1 space-y-1 overflow-y-auto px-2 pb-3 scrollbar-thin">
+        <div className="min-h-0 flex-1 space-y-1 overflow-y-auto px-2 pb-3 scrollbar-thin">
           {strategies.length === 0 && (
             <p className="px-2.5 py-2 text-xs text-muted-foreground">还没有策略</p>
           )}
@@ -264,11 +300,12 @@ export function StrategyBuilderPage() {
       </aside>
 
       {/* Chat */}
-      <div className="flex min-w-0 flex-col border-r border-border">
+      <div className="flex min-h-0 min-w-0 flex-col border-r border-border">
         <div className="flex h-12 shrink-0 items-center px-4">
           <p className="text-sm font-medium text-foreground">策略工坊</p>
         </div>
-        <div ref={scrollRef} className="flex-1 space-y-5 overflow-y-auto px-4 py-4 scrollbar-thin">
+        {/* min-h-0 让长对话在本栏内滚动，输入框常驻底部，不再把整页撑出滚动条 */}
+        <div ref={scrollRef} className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-4 scrollbar-thin">
           {messages.length === 0 && (
             <div className="mx-auto mt-10 max-w-sm text-center">
               <Sparkle weight="fill" className="mx-auto size-8 text-primary/70" />
@@ -305,6 +342,35 @@ export function StrategyBuilderPage() {
                     <CodeBlock code={m.code} className="overflow-x-auto" />
                   </div>
                 )}
+                {m.proposal &&
+                  (m.proposalState === "pending" ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        size="sm"
+                        className="h-7 gap-1 px-2.5 text-xs"
+                        onClick={() => acceptProposal(i)}
+                      >
+                        <Check className="size-3.5" />
+                        应用到草稿
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 gap-1 px-2.5 text-xs"
+                        onClick={() => rejectProposal(i)}
+                      >
+                        <X className="size-3.5" />
+                        忽略
+                      </Button>
+                      <span className="text-[11px] text-muted-foreground">
+                        应用后将替换右侧策略草稿
+                      </span>
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-muted-foreground">
+                      {m.proposalState === "accepted" ? "✓ 已应用到草稿" : "已忽略此建议"}
+                    </p>
+                  ))}
               </div>
             </div>
           ))}
@@ -353,7 +419,7 @@ export function StrategyBuilderPage() {
       </div>
 
       {/* Code panel */}
-      <div className="flex min-w-0 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-col">
         <div className="flex h-12 shrink-0 items-center justify-between px-4">
           <p className="text-sm font-medium text-foreground">策略代码</p>
           <div className="flex gap-1.5">
