@@ -21,24 +21,38 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "${{ secrets.SERVER_HOST }}" >> ~/.ssh/known_hosts
 
-      - name: Run backfill (api stopped for memory headroom)
+      # 执行体在服务器侧脚本里（停 api → 一次性容器 → 拉回 api），nohup 脱离
+      # SSH 会话：长时间无输出时中间链路掐 SSH（上次 Broken pipe 导致 api 没被
+      # 拉回）也不影响执行；workflow 只负责拉起和轮询完成标记。
+      - name: Kick off detached backfill
         run: |
-          # 896MB 主机容不下 uvicorn + 回补两个 Python 进程（已两次 OOM 连坐容器）。
-          # 停掉 api，用一次性容器跑脚本（CMD 覆盖，不走 entrypoint 的 uvicorn），
-          # 无论成败都把 api 拉回来，退出码如实上抛。
-          ssh -i ~/.ssh/id_ed25519 "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" '
-            set -o pipefail
-            cd /opt/kairos
-            docker compose stop api
-            status=0
-            docker compose run --rm -T api \
-              python -m scripts.backfill_factors --days ${{ inputs.days }} 2>&1 \
-              | grep -v "HTTP Request" || status=$?
-            docker compose start api
-            exit $status
-          '
+          ssh -o ServerAliveInterval=30 -i ~/.ssh/id_ed25519 \
+            "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" \
+            "chmod +x /opt/kairos/server/scripts/run_backfill.sh && \
+             nohup /opt/kairos/server/scripts/run_backfill.sh ${{ inputs.days }} \
+               > /tmp/kairos-backfill.nohup 2>&1 & echo kicked"
+
+      - name: Wait for completion (up to 30 min)
+        run: |
+          for i in $(seq 1 60); do
+            sleep 30
+            st=$(ssh -o ServerAliveInterval=30 -i ~/.ssh/id_ed25519 \
+              "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" \
+              "cat /tmp/kairos-backfill.done 2>/dev/null" || true)
+            if [ -n "$st" ]; then
+              echo "backfill exit: $st"
+              ssh -i ~/.ssh/id_ed25519 \
+                "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" \
+                "grep -v 'HTTP Request' /tmp/kairos-backfill.log | tail -25"
+              exit "$st"
+            fi
+            echo "waiting... ($i/60)"
+          done
+          echo "30 分钟未完成" >&2
+          exit 1
 
       - name: Verify service healthy after backfill
+        if: always()
         run: |
           for i in $(seq 1 20); do
             sleep 10
