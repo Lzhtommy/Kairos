@@ -21,14 +21,28 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "${{ secrets.SERVER_HOST }}" >> ~/.ssh/known_hosts
 
-      - name: Run backfill in api container
+      - name: Run backfill (api stopped for memory headroom)
         run: |
-          # pipefail：容器/进程半路挂掉时不能被 grep 吞掉退出码
-          ssh -i ~/.ssh/id_ed25519 "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" \
-            "set -o pipefail && cd /opt/kairos && docker compose exec -T api \
-             python -m scripts.backfill_factors --days ${{ inputs.days }} 2>&1 | grep -v 'HTTP Request'"
+          # 896MB 主机容不下 uvicorn + 回补两个 Python 进程（已两次 OOM 连坐容器）。
+          # 停掉 api，用一次性容器跑脚本（CMD 覆盖，不走 entrypoint 的 uvicorn），
+          # 无论成败都把 api 拉回来，退出码如实上抛。
+          ssh -i ~/.ssh/id_ed25519 "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" '
+            set -o pipefail
+            cd /opt/kairos
+            docker compose stop api
+            status=0
+            docker compose run --rm -T api \
+              python -m scripts.backfill_factors --days ${{ inputs.days }} 2>&1 \
+              | grep -v "HTTP Request" || status=$?
+            docker compose start api
+            exit $status
+          '
 
       - name: Verify service healthy after backfill
         run: |
-          sleep 5
-          curl -sf --max-time 15 "http://${{ secrets.SERVER_HOST }}/api/health/data"
+          for i in $(seq 1 20); do
+            sleep 10
+            curl -sf --max-time 10 "http://${{ secrets.SERVER_HOST }}/api/health/data" && exit 0
+          done
+          echo "api 未在 200 秒内恢复" >&2
+          exit 1
