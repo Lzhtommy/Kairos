@@ -1,0 +1,28 @@
+name: Backfill Factors
+
+# 手动触发：在生产容器里回补历史因子快照（PIT 数据）。
+# 幂等——已有快照的日期自动跳过，重复运行无副作用。
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "回补最近 N 个交易日"
+        default: "500"
+        required: true
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "${{ secrets.SERVER_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Run backfill in api container
+        run: |
+          ssh -i ~/.ssh/id_ed25519 "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" \
+            "cd /opt/kairos && docker compose exec -T api \
+             python -m scripts.backfill_factors --days ${{ inputs.days }} 2>&1 | grep -v 'HTTP Request'"
