@@ -47,11 +47,15 @@ def _quarter_ends(start: datetime, end: datetime) -> list[str]:
     return out
 
 
-def fetch_roe_history(start: datetime, end: datetime) -> dict[str, dict[str, float]]:
+def fetch_roe_history(
+    start: datetime, end: datetime, wanted: set[str] | None = None
+) -> dict[str, dict[str, float]]:
     """code → {报告期 'YYYY-MM-DD': YTD 加权 ROE}。抓取失败只记日志，不中断回补。
 
     注意东财季报 ROE 是"年初至今"口径，与行情源的年化/TTM 不同——
     取值时在 _roe_asof 里拼成 TTM 再落库，保证与当前 quotes 的量纲一致。
+    wanted 用于把结果裁剪到股票池内（东财季报含 B 股/北交所，全收会
+    白占约一倍内存——生产 ECS 只有 896MB，省着点）。
     """
     out: dict[str, dict[str, float]] = {}
     client = httpx.Client(timeout=20, headers={"User-Agent": "Mozilla/5.0"}, trust_env=False)
@@ -73,9 +77,10 @@ def fetch_roe_history(start: datetime, end: datetime) -> dict[str, dict[str, flo
                 rows = data.get("data") or []
                 for row in rows:
                     roe = row.get("WEIGHTAVG_ROE")
-                    if roe is None:
+                    code = str(row["SECURITY_CODE"])
+                    if roe is None or (wanted is not None and code not in wanted):
                         continue
-                    out.setdefault(str(row["SECURITY_CODE"]), {})[report_date] = float(roe)
+                    out.setdefault(code, {})[report_date] = float(roe)
                 if page >= int(data.get("pages") or 1):
                     break
                 page += 1
@@ -161,7 +166,9 @@ def main(days: int, with_roe_history: bool) -> None:
         if with_roe_history:
             # 多取 ~500 天：TTM 拼接需要上年年报与上年同期
             roe_hist = fetch_roe_history(
-                targets[0] - timedelta(days=560), ref_date
+                targets[0] - timedelta(days=560),
+                ref_date,
+                wanted={r["code"] for r in rows_today},
             )
             logger.info("季频 ROE 覆盖 %d 只", len(roe_hist))
 
