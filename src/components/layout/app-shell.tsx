@@ -122,7 +122,8 @@ export function AppShell({ children }: { children: ReactNode }) {
     end ? location.pathname === to : location.pathname.startsWith(to)
 
   return (
-    <div className="flex min-h-[100dvh] bg-background">
+    // 固定视口高度：滚动发生在 main 内部，侧栏（含底部登录信息）常驻不随内容卷走
+    <div className="flex h-[100dvh] overflow-hidden bg-background">
       {/* Sidebar - desktop */}
       <aside className="hidden lg:flex w-56 shrink-0 flex-col border-r border-border bg-sidebar">
         <div className="flex h-16 items-center pl-5 pr-3">
@@ -133,7 +134,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <QuickActions />
           </div>
         </div>
-        <nav className="flex-1 space-y-1 px-3 py-2">
+        <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto px-3 py-2">
           {NAV_ITEMS.map((item) => {
             const active = isActive(item.to, item.end)
             return (
