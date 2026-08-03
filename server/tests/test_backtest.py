@@ -69,6 +69,34 @@ class TestEventMode:
         result = backtest.run(db, _event_dsl(), {})
         assert result["metrics"]["eventCount"] == 0
 
+    def test_day_filter_blocks_hot_signal(self, db):
+        """日级价格条件必须按信号日检查：金叉当天大涨 10% 的信号要被
+        "涨幅≤3%" 拦掉，而不是拿回测运行当天的快照值放行。"""
+        days = trading_days("2026-01-05", 30)
+        # 下行 10 日 → 第 11 日 +10% 制造金叉 → 此后温和 +0.5%/日
+        closes = [20 - i * 0.5 for i in range(10)]
+        closes.append(round(closes[-1] * 1.10, 3))
+        while len(closes) < 30:
+            closes.append(round(closes[-1] * 1.005, 3))
+        add_stock(db, "600519", days, closes)
+
+        base = backtest.run(db, _event_dsl(), {})
+        assert base["metrics"]["eventCount"] > 0, "无日级条件时金叉信号应成交"
+
+        dsl = {
+            "filters": [{"factor": "change_pct", "op": "lte", "value": 3}],
+            "technical": GOLDEN,
+        }
+        result = backtest.run(db, dsl, {})
+        assert result["metrics"]["eventCount"] == 0  # 信号日涨 10% > 3%，被拦
+
+        # 最高价口径同理：信号日 high 相对前收 +10% > 5%
+        dsl_high = {
+            "filters": [{"factor": "high_change_pct", "op": "lte", "value": 5}],
+            "technical": GOLDEN,
+        }
+        assert backtest.run(db, dsl_high, {})["metrics"]["eventCount"] == 0
+
 
 class TestPortfolioMode:
     def test_equal_weight_equity_math(self, db):

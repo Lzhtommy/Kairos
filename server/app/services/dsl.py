@@ -337,6 +337,11 @@ def execute(dsl: dict[str, Any], rows: list[dict[str, Any]]) -> list[dict[str, A
     return out
 
 
+def match_filter(f: dict[str, Any], row: dict[str, Any]) -> bool:
+    """单条（非引用值）filter 对一行因子值的判定，供回测按信号日逐日复核。"""
+    return _match(f, row, {})
+
+
 def _match(f: dict[str, Any], row: dict[str, Any], medians: dict[str, dict[str, float]]) -> bool:
     factor = f["factor"]
     op = f["op"]

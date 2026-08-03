@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.market import FactorSnapshot, Kline, StockInfo
 from app.services import technical
-from app.services.dsl import apply_universe, execute, validate_dsl
+from app.services.dsl import CROSS_OPS, apply_universe, execute, match_filter, validate_dsl
 from app.services.market import factor_rows
 
 TRADING_DAYS = 252
@@ -181,19 +181,41 @@ def _empty_result(mode: str, hit_count: int = 0) -> dict[str, Any]:
     }
 
 
+# 可从 K 线逐日复算的日级价格因子：事件模式按信号日检查，
+# 而不是拿"回测运行当天"的快照值冒充历史（如"剔除涨幅>3%"须看信号日的涨幅）
+_DAY_FACTORS = {"change_pct", "high_change_pct", "low_change_pct", "open_change_pct"}
+
+
+def _split_day_filters(
+    dsl: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """filters → (信号日逐日检查的日级条件, 留在池预筛的其余条件)。
+
+    截面算子/行业中位数引用无法按单股单日复算，仍留在预筛。
+    """
+    day: list[dict[str, Any]] = []
+    rest: list[dict[str, Any]] = []
+    for f in dsl["filters"]:
+        eligible = f["factor"] in _DAY_FACTORS and "ref" not in f and f["op"] not in CROSS_OPS
+        (day if eligible else rest).append(f)
+    return day, rest
+
+
 def run(db: Session, dsl: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
     dsl = validate_dsl(dsl)
     p = _clean_params(params or {}, dsl)
     all_rows = factor_rows(db)
     if dsl.get("technical"):
-        # 事件模式：标量/打分层作为股票池预筛（今日快照，已在 UI 披露）；
-        # 纯技术策略只做 universe 过滤，不能走 execute——会触发"全空"校验
+        # 事件模式：日级价格条件按信号日逐日检查；其余标量/打分层作为
+        # 股票池预筛（今日快照，已在 UI 披露）。
+        # 无预筛条件时只做 universe 过滤，不能走 execute——会触发"全空"校验
+        day_filters, pool_filters = _split_day_filters(dsl)
         pool = (
-            execute({**dsl, "technical": []}, all_rows)
-            if dsl["filters"] or dsl.get("score")
+            execute({**dsl, "filters": pool_filters, "technical": []}, all_rows)
+            if pool_filters or dsl.get("score")
             else apply_universe(dsl, all_rows)
         )
-        return _run_event(db, dsl, p, pool)
+        return _run_event(db, dsl, p, pool, day_filters)
     # 组合模式：传全市场行，内部按各调仓时点重选（今天不满足条件的
     # 股票，历史时点可能满足）
     return _run_portfolio(db, dsl, p, all_rows)
@@ -235,6 +257,20 @@ def _stop_exit(
     return None
 
 
+def _day_row(series: list[tuple], i: int) -> dict[str, float | None] | None:
+    """第 i 根 K 线的日级价格因子（相对前收的涨跌幅）；无前收时 None。"""
+    prev_close = series[i - 1][2] if i > 0 else 0.0
+    if not prev_close:
+        return None
+    _ts, o, c, high, low, _v = series[i]
+    return {
+        "change_pct": (c / prev_close - 1) * 100,
+        "high_change_pct": (high / prev_close - 1) * 100 if high else None,
+        "low_change_pct": (low / prev_close - 1) * 100 if low else None,
+        "open_change_pct": (o / prev_close - 1) * 100 if o else None,
+    }
+
+
 def _candidates_for_stock(
     code: str,
     name: str,
@@ -243,6 +279,7 @@ def _candidates_for_stock(
     tech: list[dict[str, Any]],
     rev: list[dict[str, Any]] | None,
     need: int,
+    day_filters: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], int]:
     """一只股票的候选交易（含一字板顺延/放弃）。返回 (candidates, 因涨停放弃的信号数)。"""
     closes = [bar[2] for bar in series]
@@ -261,6 +298,12 @@ def _candidates_for_stock(
         if not sig[i]:
             i += 1
             continue
+        # 日级价格条件按信号日的 K 线判定（与实盘"盘后选股看当天值"同口径）
+        if day_filters:
+            row = _day_row(series, i)
+            if row is None or not all(match_filter(f, row) for f in day_filters):
+                i += 1
+                continue
         # 入场：信号次日，一字涨停顺延，连续 3 日买不进则放弃该信号
         e_idx = None
         for e in range(i + 1, min(i + 4, n)):
@@ -337,7 +380,11 @@ def _candidates_for_stock(
 
 
 def _run_event(
-    db: Session, dsl: dict[str, Any], p: dict[str, Any], rows: list[dict[str, Any]]
+    db: Session,
+    dsl: dict[str, Any],
+    p: dict[str, Any],
+    rows: list[dict[str, Any]],
+    day_filters: list[dict[str, Any]],
 ) -> dict[str, Any]:
     tech = dsl["technical"]
     codes = [r["code"] for r in rows]
@@ -352,7 +399,7 @@ def _run_event(
     for chunk in _chunks(codes, _CHUNK):
         for code, series in _bars_by_code(db, chunk, depth).items():
             cands, skipped = _candidates_for_stock(
-                code, names.get(code, code), series, p, tech, rev, need
+                code, names.get(code, code), series, p, tech, rev, need, day_filters
             )
             candidates.extend(cands)
             skipped_limit += skipped
