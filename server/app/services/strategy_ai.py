@@ -34,6 +34,7 @@ _FACTOR_KEYWORDS: list[tuple[str, str]] = [
     ("最高涨幅", "high_change_pct"), ("冲高", "high_change_pct"),
     ("最低价涨跌幅", "low_change_pct"), ("盘中跌幅", "low_change_pct"),
     ("最大回落", "low_change_pct"), ("下探", "low_change_pct"),
+    ("开盘涨跌幅", "open_change_pct"), ("高开", "open_change_pct"), ("低开", "open_change_pct"),
     ("涨跌幅", "change_pct"), ("涨幅", "change_pct"),
     ("股息率", "dividend_yield"), ("股息", "dividend_yield"), ("分红", "dividend_yield"),
     ("股价", "price"), ("价格", "price"), ("最新价", "price"),
@@ -81,6 +82,17 @@ def _parse_clause(clause: str) -> dict[str, Any] | None:
             if len(boards) == 1:
                 return {"factor": "industry", "op": "eq", "value": boards[0]}
             return {"factor": "industry", "op": "in", "value": boards}
+
+    # 高开/低开：带幅度按幅度筛，不带幅度按 0 分界（低开的幅度在负半轴，通用路径会解析反）
+    if "高开" in clause or "低开" in clause:
+        num = _find_number(clause)
+        if "低开" in clause:
+            if num is not None:
+                return {"factor": "open_change_pct", "op": "lte", "value": -num}
+            return {"factor": "open_change_pct", "op": "lt", "value": 0}
+        if num is not None:
+            return {"factor": "open_change_pct", "op": "gte", "value": num}
+        return {"factor": "open_change_pct", "op": "gt", "value": 0}
 
     factor = _find_factor(clause)
     if factor is None:
@@ -336,9 +348,10 @@ def _spec_doc(industries: list[str] | None = None) -> str:
         " → MACD DIF 上穿 DEA（金叉首日；death 为死叉）\n"
         "- {\"type\":\"rsi_range\",\"window\":14,\"min\":0,\"max\":30}"
         " → RSI 落于 [min, max]（如超卖 [0,30]、超买 [70,100]）\n"
-        "change_pct 是收盘（盘中为最新价）相对前收的涨跌幅；high_change_pct/low_change_pct "
-        "是当日最高/最低价相对前收的涨跌幅（\"盘中一度涨超 5%\" → high_change_pct gte 5，"
-        "\"盘中最多跌 3% 以内\" → low_change_pct gte -3）。\n"
+        "change_pct 是收盘（盘中为最新价）相对前收的涨跌幅；high_change_pct/low_change_pct/"
+        "open_change_pct 是当日最高/最低/开盘价相对前收的涨跌幅（\"盘中一度涨超 5%\" → "
+        "high_change_pct gte 5，\"盘中最多跌 3% 以内\" → low_change_pct gte -3，"
+        "\"高开\" → open_change_pct gt 0，\"低开 2% 以上\" → open_change_pct lte -2）。\n"
         "注意单位：市值/成交额单位为亿，换手率/涨跌幅/ROE 为百分数数值，股息率为小数(3% → 0.03)。\n"
         "涉及板块范围时输出 \"board\": [...]，可选值 main(主板)/chinext(创业板)/star(科创板)/bj(北交所)；"
         "如\"排除创业板和科创板\" → [\"main\",\"bj\"]，\"只要主板\" → [\"main\"]；不限板块则省略该字段。\n"

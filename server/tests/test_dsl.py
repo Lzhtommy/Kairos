@@ -14,7 +14,8 @@ def _row(code="600000", **kw) -> dict:
         "code": code, "name": f"股票{code}", "market": "SH", "industry": "白酒",
         "pe": 10.0, "pb": 2.0, "roe": 15.0, "turnover_rate": 1.0, "turnover": 5.0,
         "market_cap": 100.0, "change_pct": 1.0, "high_change_pct": 2.0,
-        "low_change_pct": -1.0, "price": 10.0, "dividend_yield": 0.02,
+        "low_change_pct": -1.0, "open_change_pct": 0.5,
+        "price": 10.0, "dividend_yield": 0.02,
     }
     base.update(kw)
     return base
@@ -76,6 +77,16 @@ class TestExecute:
             _row("C", low_change_pct=None),
         ]
         got = execute(_dsl([{"factor": "low_change_pct", "op": "gte", "value": -2}]), rows)
+        assert [r["code"] for r in got] == ["A"]
+
+    def test_open_change_pct(self):
+        # 高开：open_change_pct > 0
+        rows = [
+            _row("A", open_change_pct=2.1),
+            _row("B", open_change_pct=-0.8),
+            _row("C", open_change_pct=None),  # 未开盘 / 缺 K 线
+        ]
+        got = execute(_dsl([{"factor": "open_change_pct", "op": "gt", "value": 0}]), rows)
         assert [r["code"] for r in got] == ["A"]
 
     def test_industry_in(self):

@@ -100,7 +100,8 @@ def factor_rows(db: Session, codes: list[str] | None = None) -> list[dict[str, A
                 "turnover": q.turnover,
                 "market_cap": q.market_cap,
                 "change_pct": change_pct(q.price, q.prev_close),
-                # 盘中最高/最低相对前收；开盘前 high/low 为 0 时视为缺值（不通过数值筛）
+                # 开盘/盘中最高/最低相对前收；未开盘时为 0 视为缺值（不通过数值筛）
+                "open_change_pct": change_pct(q.open, q.prev_close) if q.open else None,
                 "high_change_pct": change_pct(q.high, q.prev_close) if q.high else None,
                 "low_change_pct": change_pct(q.low, q.prev_close) if q.low else None,
                 "price": q.price,

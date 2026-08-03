@@ -520,53 +520,53 @@ def _trading_calendar(db: Session, bench: dict[datetime, float], period: int) ->
     return cal[-(period + 1) :]
 
 
-def _bar_lookup(
-    db: Session, dates: list[datetime]
-) -> dict[datetime, dict[str, tuple[float, float, float, float]]]:
-    """指定日期集的全市场 (close, volume, high, low)，按日期分组。"""
-    out: dict[datetime, dict[str, tuple[float, float, float, float]]] = {}
+_Bar = tuple[float, float, float, float, float]  # (close, volume, high, low, open)
+
+
+def _bar_lookup(db: Session, dates: list[datetime]) -> dict[datetime, dict[str, _Bar]]:
+    """指定日期集的全市场日 K 关键字段，按日期分组。"""
+    out: dict[datetime, dict[str, _Bar]] = {}
     if not dates:
         return out
-    for code, ts, close, vol, high, low in db.execute(
-        select(Kline.code, Kline.ts, Kline.close, Kline.volume, Kline.high, Kline.low).where(
-            Kline.period == "1d", Kline.ts.in_(dates)
-        )
+    for code, ts, close, vol, high, low, open_ in db.execute(
+        select(
+            Kline.code, Kline.ts, Kline.close, Kline.volume, Kline.high, Kline.low, Kline.open
+        ).where(Kline.period == "1d", Kline.ts.in_(dates))
     ):
-        out.setdefault(ts, {})[code] = (close, vol, high, low)
+        out.setdefault(ts, {})[code] = (close, vol, high, low, open_)
     return out
 
 
-def _hl_change_pct(
-    code: str,
-    day_bars: dict[str, tuple[float, float, float, float]],
-    prev_bars: dict[str, tuple[float, float, float, float]],
-) -> tuple[float | None, float | None]:
-    """当日最高/最低价相对前收的涨跌幅；缺 K 线时为 None（不通过数值筛）。"""
+def _hlo_change_pct(
+    code: str, day_bars: dict[str, _Bar], prev_bars: dict[str, _Bar]
+) -> tuple[float | None, float | None, float | None]:
+    """当日最高/最低/开盘价相对前收的涨跌幅；缺 K 线时为 None（不通过数值筛）。"""
     day = day_bars.get(code)
     prev = prev_bars.get(code)
     if not day or not prev or not prev[0]:
-        return None, None
+        return None, None, None
     return (
         round((day[2] / prev[0] - 1) * 100, 2) if day[2] else None,
         round((day[3] / prev[0] - 1) * 100, 2) if day[3] else None,
+        round((day[4] / prev[0] - 1) * 100, 2) if day[4] else None,
     )
 
 
 def _snapshot_rows(
     db: Session,
     ts: datetime,
-    day_bars: dict[str, tuple[float, float, float, float]],
-    prev_bars: dict[str, tuple[float, float, float, float]],
+    day_bars: dict[str, _Bar],
+    prev_bars: dict[str, _Bar],
 ) -> list[dict[str, Any]]:
     """factor_history 某日快照 → DSL 因子行（name/market 用当前值，ST 状态近似）。
 
-    快照表不存 high/low，最高/最低价涨跌幅从当日/前日 K 线补算。
+    快照表不存 high/low/open，相应涨跌幅从当日/前日 K 线补算。
     """
     info = {s.code: s for s in db.execute(select(StockInfo)).scalars().all()}
     rows = []
     for s in db.execute(select(FactorSnapshot).where(FactorSnapshot.ts == ts)).scalars():
         meta = info.get(s.code)
-        hi, lo = _hl_change_pct(s.code, day_bars, prev_bars)
+        hi, lo, opn = _hlo_change_pct(s.code, day_bars, prev_bars)
         rows.append(
             {
                 "code": s.code,
@@ -576,7 +576,7 @@ def _snapshot_rows(
                 "pe": s.pe, "pb": s.pb, "roe": s.roe,
                 "turnover_rate": s.turnover_rate, "turnover": s.turnover,
                 "market_cap": s.market_cap, "change_pct": s.change_pct,
-                "high_change_pct": hi, "low_change_pct": lo,
+                "high_change_pct": hi, "low_change_pct": lo, "open_change_pct": opn,
                 "price": s.price, "dividend_yield": s.dividend_yield,
             }
         )
@@ -585,9 +585,9 @@ def _snapshot_rows(
 
 def _reconstructed_rows(
     rows_today: list[dict[str, Any]],
-    ref_bars: dict[str, tuple[float, float, float, float]],
-    day_bars: dict[str, tuple[float, float, float, float]],
-    prev_bars: dict[str, tuple[float, float, float, float]],
+    ref_bars: dict[str, _Bar],
+    day_bars: dict[str, _Bar],
+    prev_bars: dict[str, _Bar],
 ) -> list[dict[str, Any]]:
     """无快照日期的近似因子行：价格相关因子按当日收盘缩放（股本/盈利视为不变），
     成交额按当日量价直算；ROE/股息率/行业取当前值（季度级慢变）。"""
@@ -600,7 +600,7 @@ def _reconstructed_rows(
             continue  # 当时未上市 / 无数据
         k = day[0] / ref[0]
         prev = prev_bars.get(code)
-        hi, lo = _hl_change_pct(code, day_bars, prev_bars)
+        hi, lo, opn = _hlo_change_pct(code, day_bars, prev_bars)
         out.append(
             {
                 **r,
@@ -609,7 +609,7 @@ def _reconstructed_rows(
                 "pe": round(r["pe"] * k, 2) if r["pe"] else None,
                 "pb": round(r["pb"] * k, 3),
                 "change_pct": round((day[0] / prev[0] - 1) * 100, 2) if prev and prev[0] else 0.0,
-                "high_change_pct": hi, "low_change_pct": lo,
+                "high_change_pct": hi, "low_change_pct": lo, "open_change_pct": opn,
                 "turnover": round(day[1] * 100 * day[0] / 1e8, 2),
                 "turnover_rate": (
                     round(r["turnover_rate"] * day[1] / ref[1], 2) if ref[1] else r["turnover_rate"]
