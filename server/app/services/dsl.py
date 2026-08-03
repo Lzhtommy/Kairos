@@ -28,6 +28,19 @@ FACTORS: dict[str, tuple[str, str]] = {
 }
 
 NUM_OPS = {"lt", "lte", "gt", "gte", "eq", "between"}
+
+# 板块（按代码前缀识别）
+BOARDS = {"main": "主板", "chinext": "创业板", "star": "科创板", "bj": "北交所"}
+
+
+def board_of(code: str) -> str:
+    if code.startswith("68"):
+        return "star"
+    if code.startswith("30"):
+        return "chinext"
+    if code.startswith(("4", "8", "9")):
+        return "bj"
+    return "main"
 CAT_OPS = {"eq", "in"}
 REFS = {"industry_median"}
 # 截面算子：在全市场/行业内做排名或分位筛选（只对数值因子有意义）。
@@ -113,11 +126,17 @@ def validate_dsl(dsl: dict[str, Any]) -> dict[str, Any]:
         raise DSLError("filters、technical 与 score 不能全为空")
 
     universe = dsl.get("universe", {}) or {}
+    raw_board = universe.get("board")
+    board = (
+        [b for b in raw_board if b in BOARDS] if isinstance(raw_board, list) else []
+    )
     cost = dsl.get("cost", {}) or {}
     return {
         "universe": {
             "exclude": list(universe.get("exclude", ["ST", "停牌"])),
             "market": list(universe.get("market", ["SH", "SZ"])),
+            # 板块限定：省略/空 = 不限
+            **({"board": sorted(set(board))} if board else {}),
         },
         "filters": norm_filters,
         "technical": norm_tech,
@@ -219,9 +238,13 @@ def _cmp(value: float, op: str, target: float) -> bool:
 
 
 def apply_universe(dsl: dict[str, Any], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """universe 过滤：市场范围 + ST 剔除（exclude 里带 "ST" 时生效）。"""
+    """universe 过滤：市场范围 + 板块限定 + ST 剔除（exclude 里带 "ST" 时生效）。"""
     markets = set(dsl["universe"]["market"])
     rows = [r for r in rows if r.get("market") in markets]
+    boards = dsl["universe"].get("board")
+    if boards:
+        allowed = set(boards)
+        rows = [r for r in rows if board_of(r["code"]) in allowed]
     if any("ST" in e for e in dsl["universe"]["exclude"]):
         rows = [r for r in rows if "ST" not in r.get("name", "")]
     return rows

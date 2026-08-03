@@ -18,7 +18,7 @@ from typing import Any
 import httpx
 
 from app.core.config import settings
-from app.services.dsl import FACTORS, validate_dsl
+from app.services.dsl import BOARDS, FACTORS, validate_dsl
 
 # ---- factor / operator lexicons (Chinese) -------------------------------------------------
 
@@ -124,6 +124,15 @@ def _parse_technical(text: str) -> list[dict[str, Any]]:
     return tech
 
 
+def _parse_board(text: str) -> list[str] | None:
+    """板块的正向限定兜底（"只要主板/创业板"）；含否定词的复杂表达交给模型。"""
+    if any(neg in text for neg in ("排除", "不要", "剔除", "不含", "去掉")):
+        return None
+    hits = [b for kw, b in (("主板", "main"), ("创业板", "chinext"),
+                            ("科创板", "star"), ("北交所", "bj")) if kw in text]
+    return sorted(set(hits)) or None
+
+
 def rule_based(text: str) -> dict[str, Any]:
     filters = []
     for clause in _split_clauses(text):
@@ -139,8 +148,13 @@ def rule_based(text: str) -> dict[str, Any]:
             {"factor": "roe", "op": "gte", "value": 10},
         ]
 
+    universe: dict[str, Any] = {"exclude": ["ST", "停牌"], "market": ["SH", "SZ"]}
+    board = _parse_board(text)
+    if board:
+        universe["board"] = board
+
     dsl = {
-        "universe": {"exclude": ["ST", "停牌"], "market": ["SH", "SZ"]},
+        "universe": universe,
         "filters": filters,
         "technical": technical,
         "rebalance": "monthly_first_trading_day",
@@ -238,6 +252,9 @@ def _render_code(dsl: dict[str, Any]) -> str:
         lines.append(f"# 多因子打分: rank_score([{weights}]) 取前 {score['top_n']} 只")
         lines.append(f"# {_score_desc(score)}")
     lines.append("")
+    if dsl["universe"].get("board"):
+        names = "、".join(BOARDS[b] for b in dsl["universe"]["board"])
+        lines.append(f"# 板块范围: {names}")
     lines.append(f"# 调仓频率: {dsl['rebalance']}")
     lines.append(f"# 费率: 双边 {dsl['cost']['rate'] * 100:.3f}%")
     return "\n".join(lines)
@@ -267,6 +284,8 @@ def _render_explanation(dsl: dict[str, Any]) -> str:
         descs.append(_tech_desc(t))
     if dsl.get("score"):
         descs.append(_score_desc(dsl["score"]))
+    if dsl["universe"].get("board"):
+        descs.insert(0, "限定" + "、".join(BOARDS[b] for b in dsl["universe"]["board"]))
     return "根据你的描述，我生成了以下选股逻辑：" + "；".join(descs) + "。代码见右侧面板，可点击「运行回测」查看历史表现。"
 
 
@@ -313,14 +332,19 @@ def _spec_doc(industries: list[str] | None = None) -> str:
         "- {\"type\":\"rsi_range\",\"window\":14,\"min\":0,\"max\":30}"
         " → RSI 落于 [min, max]（如超卖 [0,30]、超买 [70,100]）\n"
         "注意单位：市值/成交额单位为亿，换手率/涨跌幅/ROE 为百分数数值，股息率为小数(3% → 0.03)。\n"
+        "涉及板块范围时输出 \"board\": [...]，可选值 main(主板)/chinext(创业板)/star(科创板)/bj(北交所)；"
+        "如\"排除创业板和科创板\" → [\"main\",\"bj\"]，\"只要主板\" → [\"main\"]；不限板块则省略该字段。\n"
     )
 
 
 def _build_dsl(payload: dict[str, Any]) -> dict[str, Any]:
-    """模型输出的 {filters, technical, score} → 完整 DSL（带 universe/调仓/费率默认值）并校验。"""
+    """模型输出的 {filters, technical, score, board} → 完整 DSL（带 universe/调仓/费率默认值）并校验。"""
+    universe: dict[str, Any] = {"exclude": ["ST", "停牌"], "market": ["SH", "SZ"]}
+    if payload.get("board"):
+        universe["board"] = payload["board"]
     return validate_dsl(
         {
-            "universe": {"exclude": ["ST", "停牌"], "market": ["SH", "SZ"]},
+            "universe": universe,
             "filters": payload.get("filters", []),
             "technical": payload.get("technical", []),
             "score": payload.get("score"),
@@ -384,7 +408,7 @@ async def chat_stream(
         "1. 始终用简短自然的中文对话。问候、闲聊或与选股无关的问题直接回答即可，不要生成策略。\n"
         "2. 当用户提出或修改选股条件时：先用一两句话说明策略逻辑，"
         "然后另起一行输出 <DSL>{\"name\": \"策略标题\", \"filters\": [...], \"technical\": [...],"
-        " \"score\": {...} 或 null}</DSL>。"
+        " \"score\": {...} 或 null, \"board\": [...] 或省略}</DSL>。"
         "name 是给这个策略起的简短标题（中文，不超过 12 字，概括策略思路，如\"低估值高分红银行\"）。"
         "<DSL> 块内是严格 JSON；除该块外不要输出任何代码块或 JSON。\n"
         "3. 修改类请求（如\"把 PE 收紧到 20\"）要在【当前策略】基础上输出完整的新 DSL，而不是只给改动部分。\n"

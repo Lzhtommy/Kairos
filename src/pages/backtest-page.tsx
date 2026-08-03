@@ -84,27 +84,41 @@ function ParamSelect({
   )
 }
 
-function HoldDaysInput({ value, onChange }: { value: number; onChange: (n: number) => void }) {
+function NumInput({
+  label,
+  value,
+  min,
+  max,
+  suffix,
+  onChange,
+}: {
+  label: string
+  value: number
+  min: number
+  max: number
+  suffix: string
+  onChange: (n: number) => void
+}) {
   const [text, setText] = useState(String(value))
   useEffect(() => setText(String(value)), [value])
   return (
-    <label className="flex items-center gap-1.5" title="1-60 个交易日">
-      <span className="whitespace-nowrap text-xs text-muted-foreground">持有</span>
+    <label className="flex items-center gap-1.5" title={`${min}-${max}${suffix}`}>
+      <span className="whitespace-nowrap text-xs text-muted-foreground">{label}</span>
       <input
         type="number"
-        min={1}
-        max={60}
+        min={min}
+        max={max}
         value={text}
         onChange={(e) => setText(e.target.value)}
         onBlur={() => {
           const n = Math.round(Number(text))
-          const v = Number.isFinite(n) && n >= 1 ? Math.min(60, n) : value
+          const v = Number.isFinite(n) && n >= min ? Math.min(max, n) : value
           setText(String(v))
           onChange(v)
         }}
         className="h-7 w-14 rounded-[min(var(--radius-md),10px)] border border-input bg-transparent px-2 text-center font-mono text-xs tabular-nums outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30"
       />
-      <span className="text-xs text-muted-foreground">天</span>
+      <span className="text-xs text-muted-foreground">{suffix}</span>
     </label>
   )
 }
@@ -114,7 +128,12 @@ function summarizeBacktest(b: BacktestSummary): { params: string; result: string
   const m = b.metrics
   const bits = [PERIOD_LABEL[p.periodDays ?? 250] ?? `${p.periodDays}日`]
   if (m.mode === "event") {
-    bits.push(`持有${p.holdDays}天`, EXIT_LABEL[p.exitRule ?? "hold"])
+    bits.push(
+      `持有${p.holdDays}天`,
+      p.exitRule === "stop"
+        ? `止盈+${p.stopGain}%/止损-${p.stopLoss}%`
+        : EXIT_LABEL[p.exitRule ?? "hold"],
+    )
   } else {
     bits.push(REB_LABEL[p.rebalance ?? "monthly"], p.weighting === "cap" ? "市值加权" : "等权")
     if (p.maxPositions) bits.push(`前${p.maxPositions}`)
@@ -508,8 +527,12 @@ export function BacktestPage() {
                 />
                 {isEventStrategy ? (
                   <>
-                    <HoldDaysInput
+                    <NumInput
+                      label="持有"
                       value={btParams.holdDays ?? 10}
+                      min={1}
+                      max={60}
+                      suffix="天"
                       onChange={(n) => setParam("holdDays", n)}
                     />
                     <ParamSelect
@@ -531,15 +554,24 @@ export function BacktestPage() {
                       options={[["5", "5 只"], ["10", "10 只"], ["20", "20 只"], ["50", "50 只"]]}
                     />
                     {btParams.exitRule === "stop" && (
-                      <ParamSelect
-                        label="止盈/损"
-                        value={`${btParams.stopGain}/${btParams.stopLoss}`}
-                        onChange={(v) => {
-                          const [g, l] = v.split("/").map(Number)
-                          setBtParams((p) => ({ ...p, stopGain: g, stopLoss: l }))
-                        }}
-                        options={[["10/5", "+10%/-5%"], ["15/8", "+15%/-8%"], ["20/10", "+20%/-10%"], ["30/15", "+30%/-15%"]]}
-                      />
+                      <>
+                        <NumInput
+                          label="止盈"
+                          value={btParams.stopGain ?? 15}
+                          min={1}
+                          max={100}
+                          suffix="%"
+                          onChange={(n) => setParam("stopGain", n)}
+                        />
+                        <NumInput
+                          label="止损"
+                          value={btParams.stopLoss ?? 8}
+                          min={1}
+                          max={50}
+                          suffix="%"
+                          onChange={(n) => setParam("stopLoss", n)}
+                        />
+                      </>
                     )}
                   </>
                 ) : (
@@ -672,7 +704,7 @@ export function BacktestPage() {
                     )}
                   <p className="text-xs text-muted-foreground">
                     {metrics.mode === "event"
-                      ? `事件驱动回测（账户口径）：信号次日入场、按所选规则退出，每笔占 1/${metrics.maxConcurrent ?? 10} 仓位，同日信号多于空位时按代码序取前 N。一字涨停顺延入场（3 日买不进放弃）、一字跌停顺延出场。资金曲线为账户净值（空仓部分现金持平，虚线为基准）。`
+                      ? `事件驱动回测（账户口径）：信号次日入场、按所选规则退出，每笔占 1/${metrics.maxConcurrent ?? 10} 仓位，同日信号多于空位时按代码序取前 N。止盈止损按盘中高低价触发、按触发价成交（跳空按开盘价，同日双触发保守计为止损）。一字涨停顺延入场（3 日买不进放弃）、一字跌停顺延出场。资金曲线为账户净值（空仓部分现金持平，虚线为基准）。`
                       : `组合回测：每个调仓期按当期时点数据重新选股（虚线为基准指数），调仓成本按实际换手比例计。时点因子来自每日收盘快照${
                           metrics.rebalances
                             ? `，本次 ${metrics.rebalances} 期中 ${metrics.pitPeriods ?? 0} 期有真实快照`

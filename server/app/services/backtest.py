@@ -202,6 +202,39 @@ def run(db: Session, dsl: dict[str, Any], params: dict[str, Any]) -> dict[str, A
 # ---- 事件驱动模式 ---------------------------------------------------------------
 
 
+def _stop_exit(
+    series: list[tuple],
+    e_idx: int,
+    cap_idx: int,
+    entry_px: float,
+    stop_gain: float,
+    stop_loss: float,
+    entry_mode: str,
+) -> tuple[int, float, str] | None:
+    """盘中止盈止损：按当日 high/low 触发、按触发价成交。
+
+    - 跳空越过阈值：按开盘价成交（止损更差、止盈更好，符合真实委托）
+    - 同日高低价双触发：日线无法排序盘中先后，保守计为止损
+    - entry="close" 时入场日盘中已过，从次日起判；entry="open" 入场日全天有效
+    - 到 cap_idx 未触发返回 None（按持有到期处理）
+    """
+    gain_px = entry_px * (1 + stop_gain / 100)
+    loss_px = entry_px * (1 - stop_loss / 100)
+    start = e_idx if entry_mode == "open" else e_idx + 1
+    for j in range(start, cap_idx + 1):
+        _ts, o, _c, high, low, _v = series[j]
+        open_px = entry_px if j == e_idx else o  # 入场日从成交价起算
+        if open_px <= loss_px:
+            return j, open_px, "stop_loss"
+        if open_px >= gain_px:
+            return j, open_px, "stop_gain"
+        if low <= loss_px:
+            return j, loss_px, "stop_loss"
+        if high >= gain_px:
+            return j, gain_px, "stop_gain"
+    return None
+
+
 def _candidates_for_stock(
     code: str,
     name: str,
@@ -245,6 +278,7 @@ def _candidates_for_stock(
 
         cap_idx = min(e_idx + p["hold"], n - 1)
         exit_idx, reason = cap_idx, "hold"
+        stop_px: float | None = None
         if p["exit"] == "signal" and rev_sig is not None:
             cap = min(e_idx + p["hold"] * 3, n - 1)  # 反向信号迟迟不来时的兜底
             exit_idx = cap
@@ -253,30 +287,32 @@ def _candidates_for_stock(
                     exit_idx, reason = j, "signal"
                     break
         elif p["exit"] == "stop":
-            for j in range(e_idx, cap_idx + 1):
-                r = series[j][2] / entry_px - 1
-                if r >= p["stop_gain"] / 100:
-                    exit_idx, reason = j, "stop_gain"
-                    break
-                if r <= -p["stop_loss"] / 100:
-                    exit_idx, reason = j, "stop_loss"
-                    break
-        # 出场：一字跌停卖不出则顺延，最多 5 日后按当日收盘强平
+            hit = _stop_exit(
+                series, e_idx, cap_idx, entry_px, p["stop_gain"], p["stop_loss"], p["entry"]
+            )
+            if hit:
+                exit_idx, stop_px, reason = hit[0], hit[1], hit[2]
+        # 出场：一字跌停卖不出则顺延，最多 5 日后按当日收盘强平；
+        # 被顺延的止盈/止损单拿不到触发价，按实际卖出日收盘计
         moves = 0
         while exit_idx < n - 1 and moves < 5 and _one_word(series, exit_idx, pct, -1):
             exit_idx += 1
             moves += 1
 
-        exit_px = series[exit_idx][2]
-        # 逐日收益：入场日为成交价→收盘（扣买入单边），此后 close-to-close，出场日扣卖出单边
-        daily: dict[datetime, float] = {
-            series[e_idx][0]: series[e_idx][2] / entry_px - 1 - p["rate"]
-        }
-        for j in range(e_idx + 1, exit_idx + 1):
-            rj = series[j][2] / series[j - 1][2] - 1
-            if j == exit_idx:
-                rj -= p["rate"]
-            daily[series[j][0]] = rj
+        exit_px = stop_px if (stop_px is not None and moves == 0) else series[exit_idx][2]
+        # 逐日收益：入场日为成交价→收盘（扣买入单边），此后 close-to-close，
+        # 出场日按实际出场价并扣卖出单边；入场当日即触发止盈止损则单日结清
+        daily: dict[datetime, float] = {}
+        if exit_idx == e_idx:
+            daily[series[e_idx][0]] = exit_px / entry_px - 1 - 2 * p["rate"]
+        else:
+            daily[series[e_idx][0]] = series[e_idx][2] / entry_px - 1 - p["rate"]
+            for j in range(e_idx + 1, exit_idx + 1):
+                px = exit_px if j == exit_idx else series[j][2]
+                rj = px / series[j - 1][2] - 1
+                if j == exit_idx:
+                    rj -= p["rate"]
+                daily[series[j][0]] = rj
         cands.append(
             {
                 "code": code,
