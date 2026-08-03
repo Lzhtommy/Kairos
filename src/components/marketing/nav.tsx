@@ -3,6 +3,8 @@ import { Link } from "react-router-dom"
 import { List, X } from "@phosphor-icons/react"
 import { Logo } from "@/components/layout/logo"
 import { buttonVariants } from "@/components/ui/button"
+import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { useAuth } from "@/lib/auth"
 import { cn } from "@/lib/utils"
 
 const LINKS = [
@@ -13,6 +15,7 @@ const LINKS = [
 
 export function MarketingNav() {
   const [open, setOpen] = useState(false)
+  const { user } = useAuth()
 
   return (
     <header className="sticky top-0 z-40 border-b border-border/60 bg-background/80 backdrop-blur-md">
@@ -28,11 +31,25 @@ export function MarketingNav() {
           ))}
         </nav>
         <div className="ml-auto hidden items-center gap-2 md:flex">
-          <Link to="/app" className={cn(buttonVariants({ variant: "ghost", size: "sm" }))}>
-            登录
-          </Link>
+          {user ? (
+            <Link
+              to="/app"
+              className="flex items-center gap-2 rounded-md py-1 pl-1.5 pr-2.5 transition-colors hover:bg-muted"
+            >
+              <Avatar className="size-7">
+                <AvatarFallback className="bg-primary/15 text-primary text-xs font-medium">
+                  {user.nickname?.[0] ?? "K"}
+                </AvatarFallback>
+              </Avatar>
+              <span className="text-sm font-medium text-foreground">{user.nickname}</span>
+            </Link>
+          ) : (
+            <Link to="/login" className={cn(buttonVariants({ variant: "ghost", size: "sm" }))}>
+              登录
+            </Link>
+          )}
           <Link to="/app" className={cn(buttonVariants({ size: "sm" }))}>
-            开始使用
+            {user ? "进入应用" : "开始使用"}
           </Link>
         </div>
         <button
@@ -52,7 +69,7 @@ export function MarketingNav() {
               </a>
             ))}
             <Link to="/app" className={cn(buttonVariants({ size: "sm" }), "mt-1 w-full")}>
-              开始使用
+              {user ? `进入应用（${user.nickname}）` : "开始使用"}
             </Link>
           </nav>
         </div>

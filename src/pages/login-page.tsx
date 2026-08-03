@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { useNavigate, Link } from "react-router-dom"
+import { useNavigate, Link, Navigate } from "react-router-dom"
 import { toast } from "sonner"
 import { Logo } from "@/components/layout/logo"
 import { Button } from "@/components/ui/button"
@@ -11,12 +11,15 @@ import { useAuth } from "@/lib/auth"
 
 export function LoginPage() {
   const navigate = useNavigate()
-  const { setUser } = useAuth()
+  const { user, setUser } = useAuth()
   const [mode, setMode] = useState<"login" | "register">("login")
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [nickname, setNickname] = useState("")
   const [busy, setBusy] = useState(false)
+
+  // 已登录还访问 /login → 直接回应用
+  if (user) return <Navigate to="/app" replace />
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()

@@ -33,12 +33,90 @@ const NAV_ITEMS = [
   { to: "/app/settings", label: "设置", icon: GearSix },
 ]
 
+function QuickActions() {
+  const { theme, toggle } = useTheme()
+  return (
+    <>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <button
+              className="flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+              aria-label="通知"
+            >
+              <Bell className="size-4.5" />
+            </button>
+          }
+        />
+        <TooltipContent>通知</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <button
+              onClick={toggle}
+              className="flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+              aria-label="切换主题"
+            >
+              {theme === "dark" ? (
+                <Sun className="size-4.5" />
+              ) : (
+                <Moon className="size-4.5" />
+              )}
+            </button>
+          }
+        />
+        <TooltipContent>切换{theme === "dark" ? "浅色" : "深色"}模式</TooltipContent>
+      </Tooltip>
+    </>
+  )
+}
+
+/** 登录信息区：头像 + 昵称/套餐 + 退出，桌面侧栏与移动端抽屉共用 */
+function UserFooter() {
+  const { user, logout } = useAuth()
+  const initial = user?.nickname?.[0] ?? "K"
+  return (
+    <div className="flex items-center gap-2.5 rounded-md px-2 py-2">
+      <Avatar className="size-7">
+        <AvatarFallback className="bg-primary/15 text-primary text-xs font-medium">
+          {initial}
+        </AvatarFallback>
+      </Avatar>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-xs font-medium text-foreground">
+          {user?.nickname ?? "未登录"}
+        </p>
+        <p className="truncate text-[11px] text-muted-foreground">
+          {user?.email ?? ""}
+        </p>
+      </div>
+      {user?.tier && (
+        <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+          {user.tier}
+        </span>
+      )}
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <button
+              onClick={logout}
+              className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+              aria-label="退出登录"
+            >
+              <SignOut className="size-4" />
+            </button>
+          }
+        />
+        <TooltipContent>退出登录</TooltipContent>
+      </Tooltip>
+    </div>
+  )
+}
+
 export function AppShell({ children }: { children: ReactNode }) {
   const location = useLocation()
-  const { theme, toggle } = useTheme()
-  const { user, logout } = useAuth()
   const [mobileOpen, setMobileOpen] = useState(false)
-  const initial = user?.nickname?.[0] ?? "K"
 
   const isActive = (to: string, end?: boolean) =>
     end ? location.pathname === to : location.pathname.startsWith(to)
@@ -47,10 +125,13 @@ export function AppShell({ children }: { children: ReactNode }) {
     <div className="flex min-h-[100dvh] bg-background">
       {/* Sidebar - desktop */}
       <aside className="hidden lg:flex w-56 shrink-0 flex-col border-r border-border bg-sidebar">
-        <div className="flex h-16 items-center px-5">
+        <div className="flex h-16 items-center pl-5 pr-3">
           <Link to="/">
             <Logo />
           </Link>
+          <div className="ml-auto flex items-center gap-0.5">
+            <QuickActions />
+          </div>
         </div>
         <nav className="flex-1 space-y-1 px-3 py-2">
           {NAV_ITEMS.map((item) => {
@@ -73,33 +154,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           })}
         </nav>
         <div className="border-t border-border p-3">
-          <div className="flex items-center gap-2.5 rounded-md px-2 py-2">
-            <Avatar className="size-7">
-              <AvatarFallback className="bg-primary/15 text-primary text-xs font-medium">
-                {initial}
-              </AvatarFallback>
-            </Avatar>
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-xs font-medium text-foreground">
-                {user?.nickname ?? "未登录"}
-              </p>
-              <p className="truncate text-[11px] text-muted-foreground">{user?.tier ?? ""}</p>
-            </div>
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <button
-                    onClick={logout}
-                    className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-                    aria-label="退出登录"
-                  >
-                    <SignOut className="size-4" />
-                  </button>
-                }
-              />
-              <TooltipContent>退出登录</TooltipContent>
-            </Tooltip>
-          </div>
+          <UserFooter />
         </div>
       </aside>
 
@@ -110,14 +165,14 @@ export function AppShell({ children }: { children: ReactNode }) {
             className="absolute inset-0 bg-background/80 backdrop-blur-sm"
             onClick={() => setMobileOpen(false)}
           />
-          <aside className="absolute inset-y-0 left-0 w-64 border-r border-border bg-sidebar p-3">
+          <aside className="absolute inset-y-0 left-0 flex w-64 flex-col border-r border-border bg-sidebar p-3">
             <div className="mb-4 flex h-10 items-center justify-between px-2">
               <Logo />
               <button onClick={() => setMobileOpen(false)} aria-label="关闭菜单">
                 <X className="size-5 text-muted-foreground" />
               </button>
             </div>
-            <nav className="space-y-1">
+            <nav className="flex-1 space-y-1">
               {NAV_ITEMS.map((item) => {
                 const active = isActive(item.to, item.end)
                 return (
@@ -138,52 +193,25 @@ export function AppShell({ children }: { children: ReactNode }) {
                 )
               })}
             </nav>
+            <div className="border-t border-border pt-2">
+              <UserFooter />
+            </div>
           </aside>
         </div>
       )}
 
       {/* Main column */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-16 shrink-0 items-center gap-3 border-b border-border px-4 lg:px-6">
+        {/* 桌面端图标已并入侧栏 logo 行，此顶栏只服务移动端（汉堡菜单 + 快捷图标） */}
+        <header className="flex h-16 shrink-0 items-center gap-3 border-b border-border px-4 lg:hidden">
           <button
-            className="lg:hidden"
             onClick={() => setMobileOpen(true)}
             aria-label="打开菜单"
           >
             <List className="size-5.5 text-foreground" />
           </button>
           <div className="ml-auto flex items-center gap-1.5">
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <button
-                    className="flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-                    aria-label="通知"
-                  >
-                    <Bell className="size-4.5" />
-                  </button>
-                }
-              />
-              <TooltipContent>通知</TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <button
-                    onClick={toggle}
-                    className="flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-                    aria-label="切换主题"
-                  >
-                    {theme === "dark" ? (
-                      <Sun className="size-4.5" />
-                    ) : (
-                      <Moon className="size-4.5" />
-                    )}
-                  </button>
-                }
-              />
-              <TooltipContent>切换{theme === "dark" ? "浅色" : "深色"}模式</TooltipContent>
-            </Tooltip>
+            <QuickActions />
           </div>
         </header>
         <main className="min-w-0 flex-1 overflow-y-auto">{children}</main>

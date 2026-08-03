@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react"
 import { toast } from "sonner"
-import { BellRinging, PaperPlaneTilt } from "@phosphor-icons/react"
+import { BellRinging, PaperPlaneTilt, SignOut, UserCircle } from "@phosphor-icons/react"
+import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { useAuth } from "@/lib/auth"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -30,6 +32,7 @@ const TARGET_PLACEHOLDER: Record<string, string> = {
 }
 
 export function SettingsPage() {
+  const { user, logout } = useAuth()
   const [settings, setSettings] = useState<UserSettings | null>(null)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -76,6 +79,35 @@ export function SettingsPage() {
         <h1 className="text-lg font-semibold text-foreground">设置</h1>
         <p className="mt-0.5 text-sm text-muted-foreground">通知与账户偏好</p>
       </div>
+
+      <section className="space-y-4 rounded-lg border border-border p-5">
+        <div className="flex items-center gap-2">
+          <UserCircle className="size-4 text-primary" />
+          <h2 className="text-sm font-medium text-foreground">账户</h2>
+        </div>
+        <div className="flex items-center gap-3">
+          <Avatar className="size-10">
+            <AvatarFallback className="bg-primary/15 text-primary text-sm font-medium">
+              {user?.nickname?.[0] ?? "K"}
+            </AvatarFallback>
+          </Avatar>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <p className="truncate text-sm font-medium text-foreground">{user?.nickname}</p>
+              {user?.tier && (
+                <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+                  {user.tier}
+                </span>
+              )}
+            </div>
+            <p className="truncate text-xs text-muted-foreground">{user?.email}</p>
+          </div>
+          <Button variant="outline" size="sm" className="gap-1.5" onClick={logout}>
+            <SignOut className="size-3.5" />
+            退出登录
+          </Button>
+        </div>
+      </section>
 
       <section className="space-y-5 rounded-lg border border-border p-5">
         <div className="flex items-center gap-2">
