@@ -37,6 +37,19 @@ export function createStrategy(body: {
   return api<Strategy>("/strategies", { method: "POST", body })
 }
 
+export function updateStrategy(
+  id: string,
+  body: {
+    name: string
+    description?: string
+    tags?: string[]
+    dsl?: Record<string, unknown>
+    code?: string
+  },
+): Promise<Strategy> {
+  return api<Strategy>(`/strategies/${id}`, { method: "PUT", body })
+}
+
 export function deleteStrategy(id: string): Promise<unknown> {
   return api(`/strategies/${id}`, { method: "DELETE" })
 }

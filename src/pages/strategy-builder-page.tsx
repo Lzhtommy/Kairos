@@ -20,6 +20,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import {
   fetchStrategies,
   createStrategy,
+  updateStrategy,
   deleteStrategy,
   chatStrategy,
   type Strategy,
@@ -54,6 +55,8 @@ export function StrategyBuilderPage() {
   const [draftName, setDraftName] = useState<string>("")
   const [lastPrompt, setLastPrompt] = useState("")
   const [savedId, setSavedId] = useState<string | null>(null)
+  // 草稿相对已保存版本有改动（保存 = 更新该策略，而不是新建）
+  const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
   // 最近一次回测的 metrics：从回测页深链带入后，后续追问也一直带着
   const [lastBacktest, setLastBacktest] = useState<Record<string, unknown> | null>(null)
@@ -171,7 +174,7 @@ export function StrategyBuilderPage() {
     setDraftCode(code)
     if (name) setDraftName(name)
     setLastPrompt(prompt)
-    setSavedId(null) // 草稿变了，视为未保存的新版本
+    setDirty(true) // 草稿变了；保存时更新当前策略（未关联策略则新建）
     setMessages((m) => m.map((x, i) => (i === index ? { ...x, proposalState: "accepted" as const } : x)))
     toast.success("已应用到策略草稿")
   }
@@ -189,17 +192,21 @@ export function StrategyBuilderPage() {
     try {
       // AI 起的标题优先；降级路径（规则解析）没有标题时退回截断的用户描述
       const name = draftName || lastPrompt.slice(0, 16) || "未命名策略"
-      const created = await createStrategy({
+      const body = {
         name,
         description: lastPrompt,
         tags: ["AI"],
         dsl: draftDsl,
         code: draftCode,
-      })
-      setSavedId(created.id)
+      }
+      // 已关联策略 → 原地更新；否则新建
+      const saved = savedId ? await updateStrategy(savedId, body) : await createStrategy(body)
+      setSavedId(saved.id)
+      setDirty(false)
       qc.invalidateQueries({ queryKey: ["strategies"] })
-      toast.success(`已保存策略「${created.name}」，命中 ${created.hitCount} 只`)
-      return created.id
+      qc.removeQueries({ queryKey: ["strategyHits", saved.id] })
+      toast.success(`已保存策略「${saved.name}」`)
+      return saved.id
     } catch {
       toast.error("保存失败")
       return null
@@ -210,7 +217,7 @@ export function StrategyBuilderPage() {
 
   async function goBacktest() {
     let id = savedId
-    if (!id) id = await save()
+    if (!id || dirty) id = await save()
     if (id) navigate(`/app/backtest?s=${id}`)
   }
 
@@ -225,7 +232,10 @@ export function StrategyBuilderPage() {
       await deleteStrategy(s.id)
       qc.invalidateQueries({ queryKey: ["strategies"] })
       qc.removeQueries({ queryKey: ["strategyHits", s.id] })
-      if (savedId === s.id) setSavedId(null) // 当前载入的被删了，退回未保存草稿
+      if (savedId === s.id) {
+        setSavedId(null) // 当前载入的被删了，退回未保存草稿
+        setDirty(false)
+      }
       toast.success(`已删除「${s.name}」`)
     } catch {
       toast.error("删除失败，请重试")
@@ -237,6 +247,7 @@ export function StrategyBuilderPage() {
     setDraftCode(s.code)
     setDraftName(s.name)
     setSavedId(s.id)
+    setDirty(false)
     setLastPrompt(s.description)
     setMessages([
       { role: "user", text: s.description || s.name },
@@ -262,6 +273,7 @@ export function StrategyBuilderPage() {
               setDraftCode("")
               setDraftName("")
               setSavedId(null)
+              setDirty(false)
             }}
           >
             <Plus className="size-4" />

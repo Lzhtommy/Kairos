@@ -105,10 +105,9 @@ def strategy_runs(
 def create_strategy(
     body: StrategyIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)
 ):
+    # 保存不跑选股（技术条件要全市场算 K 线，会卡住请求）；
+    # hit_count 由 /hits 惰性刷新或盘后任务补齐
     dsl = validate_dsl(body.dsl) if body.dsl else {}
-    hit_count = 0
-    if dsl:
-        hit_count = len(run_dsl(db, dsl))
     s = Strategy(
         user_id=user.id,
         name=body.name,
@@ -116,7 +115,7 @@ def create_strategy(
         tags=body.tags,
         dsl=dsl,
         code=body.code,
-        hit_count=hit_count,
+        hit_count=0,
     )
     db.add(s)
     db.commit()
@@ -133,8 +132,7 @@ def update_strategy(
     s.description = body.description
     s.tags = body.tags
     if body.dsl:
-        s.dsl = validate_dsl(body.dsl)
-        s.hit_count = len(run_dsl(db, s.dsl))
+        s.dsl = validate_dsl(body.dsl)  # hit_count 不同步重算，等 /hits 或盘后任务
     s.code = body.code
     db.commit()
     db.refresh(s)
