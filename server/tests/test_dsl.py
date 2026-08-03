@@ -13,7 +13,8 @@ def _row(code="600000", **kw) -> dict:
     base = {
         "code": code, "name": f"股票{code}", "market": "SH", "industry": "白酒",
         "pe": 10.0, "pb": 2.0, "roe": 15.0, "turnover_rate": 1.0, "turnover": 5.0,
-        "market_cap": 100.0, "change_pct": 1.0, "price": 10.0, "dividend_yield": 0.02,
+        "market_cap": 100.0, "change_pct": 1.0, "high_change_pct": 2.0,
+        "low_change_pct": -1.0, "price": 10.0, "dividend_yield": 0.02,
     }
     base.update(kw)
     return base
@@ -57,6 +58,25 @@ class TestExecute:
         rows = [_row("A", pe=5), _row("B", pe=15), _row("C", pe=None)]
         got = execute(_dsl([{"factor": "pe", "op": "lte", "value": 10}]), rows)
         assert [r["code"] for r in got] == ["A"]  # None（亏损）不通过数值筛
+
+    def test_high_change_pct(self):
+        rows = [
+            _row("A", high_change_pct=6.2),
+            _row("B", high_change_pct=3.0),
+            _row("C", high_change_pct=None),  # 缺 K 线 / 开盘前
+        ]
+        got = execute(_dsl([{"factor": "high_change_pct", "op": "gte", "value": 5}]), rows)
+        assert [r["code"] for r in got] == ["A"]
+
+    def test_low_change_pct(self):
+        # 盘中最多跌 2% 以内：low_change_pct >= -2
+        rows = [
+            _row("A", low_change_pct=-1.5),
+            _row("B", low_change_pct=-5.0),
+            _row("C", low_change_pct=None),
+        ]
+        got = execute(_dsl([{"factor": "low_change_pct", "op": "gte", "value": -2}]), rows)
+        assert [r["code"] for r in got] == ["A"]
 
     def test_industry_in(self):
         rows = [_row("A", industry="白酒"), _row("B", industry="证券")]

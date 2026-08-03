@@ -29,6 +29,11 @@ _FACTOR_KEYWORDS: list[tuple[str, str]] = [
     ("换手率", "turnover_rate"),
     ("成交额", "turnover"), ("成交量", "turnover"),
     ("总市值", "market_cap"), ("市值", "market_cap"),
+    # 更长的关键词放前面：按序匹配，"最高价涨跌幅"不能落进"涨跌幅"
+    ("最高价涨跌幅", "high_change_pct"), ("盘中涨幅", "high_change_pct"),
+    ("最高涨幅", "high_change_pct"), ("冲高", "high_change_pct"),
+    ("最低价涨跌幅", "low_change_pct"), ("盘中跌幅", "low_change_pct"),
+    ("最大回落", "low_change_pct"), ("下探", "low_change_pct"),
     ("涨跌幅", "change_pct"), ("涨幅", "change_pct"),
     ("股息率", "dividend_yield"), ("股息", "dividend_yield"), ("分红", "dividend_yield"),
     ("股价", "price"), ("价格", "price"), ("最新价", "price"),
@@ -331,6 +336,9 @@ def _spec_doc(industries: list[str] | None = None) -> str:
         " → MACD DIF 上穿 DEA（金叉首日；death 为死叉）\n"
         "- {\"type\":\"rsi_range\",\"window\":14,\"min\":0,\"max\":30}"
         " → RSI 落于 [min, max]（如超卖 [0,30]、超买 [70,100]）\n"
+        "change_pct 是收盘（盘中为最新价）相对前收的涨跌幅；high_change_pct/low_change_pct "
+        "是当日最高/最低价相对前收的涨跌幅（\"盘中一度涨超 5%\" → high_change_pct gte 5，"
+        "\"盘中最多跌 3% 以内\" → low_change_pct gte -3）。\n"
         "注意单位：市值/成交额单位为亿，换手率/涨跌幅/ROE 为百分数数值，股息率为小数(3% → 0.03)。\n"
         "涉及板块范围时输出 \"board\": [...]，可选值 main(主板)/chinext(创业板)/star(科创板)/bj(北交所)；"
         "如\"排除创业板和科创板\" → [\"main\",\"bj\"]，\"只要主板\" → [\"main\"]；不限板块则省略该字段。\n"

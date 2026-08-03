@@ -522,26 +522,51 @@ def _trading_calendar(db: Session, bench: dict[datetime, float], period: int) ->
 
 def _bar_lookup(
     db: Session, dates: list[datetime]
-) -> dict[datetime, dict[str, tuple[float, float]]]:
-    """指定日期集的全市场 (close, volume)，按日期分组。"""
-    out: dict[datetime, dict[str, tuple[float, float]]] = {}
+) -> dict[datetime, dict[str, tuple[float, float, float, float]]]:
+    """指定日期集的全市场 (close, volume, high, low)，按日期分组。"""
+    out: dict[datetime, dict[str, tuple[float, float, float, float]]] = {}
     if not dates:
         return out
-    for code, ts, close, vol in db.execute(
-        select(Kline.code, Kline.ts, Kline.close, Kline.volume).where(
+    for code, ts, close, vol, high, low in db.execute(
+        select(Kline.code, Kline.ts, Kline.close, Kline.volume, Kline.high, Kline.low).where(
             Kline.period == "1d", Kline.ts.in_(dates)
         )
     ):
-        out.setdefault(ts, {})[code] = (close, vol)
+        out.setdefault(ts, {})[code] = (close, vol, high, low)
     return out
 
 
-def _snapshot_rows(db: Session, ts: datetime) -> list[dict[str, Any]]:
-    """factor_history 某日快照 → DSL 因子行（name/market 用当前值，ST 状态近似）。"""
+def _hl_change_pct(
+    code: str,
+    day_bars: dict[str, tuple[float, float, float, float]],
+    prev_bars: dict[str, tuple[float, float, float, float]],
+) -> tuple[float | None, float | None]:
+    """当日最高/最低价相对前收的涨跌幅；缺 K 线时为 None（不通过数值筛）。"""
+    day = day_bars.get(code)
+    prev = prev_bars.get(code)
+    if not day or not prev or not prev[0]:
+        return None, None
+    return (
+        round((day[2] / prev[0] - 1) * 100, 2) if day[2] else None,
+        round((day[3] / prev[0] - 1) * 100, 2) if day[3] else None,
+    )
+
+
+def _snapshot_rows(
+    db: Session,
+    ts: datetime,
+    day_bars: dict[str, tuple[float, float, float, float]],
+    prev_bars: dict[str, tuple[float, float, float, float]],
+) -> list[dict[str, Any]]:
+    """factor_history 某日快照 → DSL 因子行（name/market 用当前值，ST 状态近似）。
+
+    快照表不存 high/low，最高/最低价涨跌幅从当日/前日 K 线补算。
+    """
     info = {s.code: s for s in db.execute(select(StockInfo)).scalars().all()}
     rows = []
     for s in db.execute(select(FactorSnapshot).where(FactorSnapshot.ts == ts)).scalars():
         meta = info.get(s.code)
+        hi, lo = _hl_change_pct(s.code, day_bars, prev_bars)
         rows.append(
             {
                 "code": s.code,
@@ -551,6 +576,7 @@ def _snapshot_rows(db: Session, ts: datetime) -> list[dict[str, Any]]:
                 "pe": s.pe, "pb": s.pb, "roe": s.roe,
                 "turnover_rate": s.turnover_rate, "turnover": s.turnover,
                 "market_cap": s.market_cap, "change_pct": s.change_pct,
+                "high_change_pct": hi, "low_change_pct": lo,
                 "price": s.price, "dividend_yield": s.dividend_yield,
             }
         )
@@ -559,9 +585,9 @@ def _snapshot_rows(db: Session, ts: datetime) -> list[dict[str, Any]]:
 
 def _reconstructed_rows(
     rows_today: list[dict[str, Any]],
-    ref_bars: dict[str, tuple[float, float]],
-    day_bars: dict[str, tuple[float, float]],
-    prev_bars: dict[str, tuple[float, float]],
+    ref_bars: dict[str, tuple[float, float, float, float]],
+    day_bars: dict[str, tuple[float, float, float, float]],
+    prev_bars: dict[str, tuple[float, float, float, float]],
 ) -> list[dict[str, Any]]:
     """无快照日期的近似因子行：价格相关因子按当日收盘缩放（股本/盈利视为不变），
     成交额按当日量价直算；ROE/股息率/行业取当前值（季度级慢变）。"""
@@ -574,6 +600,7 @@ def _reconstructed_rows(
             continue  # 当时未上市 / 无数据
         k = day[0] / ref[0]
         prev = prev_bars.get(code)
+        hi, lo = _hl_change_pct(code, day_bars, prev_bars)
         out.append(
             {
                 **r,
@@ -582,6 +609,7 @@ def _reconstructed_rows(
                 "pe": round(r["pe"] * k, 2) if r["pe"] else None,
                 "pb": round(r["pb"] * k, 3),
                 "change_pct": round((day[0] / prev[0] - 1) * 100, 2) if prev and prev[0] else 0.0,
+                "high_change_pct": hi, "low_change_pct": lo,
                 "turnover": round(day[1] * 100 * day[0] / 1e8, 2),
                 "turnover_rate": (
                     round(r["turnover_rate"] * day[1] / ref[1], 2) if ref[1] else r["turnover_rate"]
@@ -622,10 +650,10 @@ def _run_portfolio(
             select(FactorSnapshot.ts).where(FactorSnapshot.ts.in_(sel_dates)).distinct()
         )
     }
-    # 重构需要：各选股日及其前一日的收盘/量 + 今日参照价
+    # 各选股日及其前一日的 K 线（重构因子 + 最高价涨跌幅）+ 今日参照价
     prev_of = {d: all_cal[all_cal.index(d) - 1] for d in sel_dates if all_cal.index(d) > 0}
     ref_date = calendar[-1]
-    lookup_dates = sorted({*sel_dates, *prev_of.values(), ref_date} - snap_days | {ref_date})
+    lookup_dates = sorted({*sel_dates, *prev_of.values(), ref_date})
     bar_lookup = _bar_lookup(db, lookup_dates)
     ref_bars = bar_lookup.get(ref_date, {})
 
@@ -635,7 +663,9 @@ def _run_portfolio(
     pit_periods = 0
     for d in sel_dates:
         if d in snap_days:
-            rows_d = _snapshot_rows(db, d)
+            rows_d = _snapshot_rows(
+                db, d, bar_lookup.get(d, {}), bar_lookup.get(prev_of.get(d), {})
+            )
             pit_periods += 1
         else:
             rows_d = _reconstructed_rows(

@@ -100,6 +100,9 @@ def factor_rows(db: Session, codes: list[str] | None = None) -> list[dict[str, A
                 "turnover": q.turnover,
                 "market_cap": q.market_cap,
                 "change_pct": change_pct(q.price, q.prev_close),
+                # 盘中最高/最低相对前收；开盘前 high/low 为 0 时视为缺值（不通过数值筛）
+                "high_change_pct": change_pct(q.high, q.prev_close) if q.high else None,
+                "low_change_pct": change_pct(q.low, q.prev_close) if q.low else None,
                 "price": q.price,
                 "dividend_yield": fund.dividend_yield if fund else 0.0,
             }

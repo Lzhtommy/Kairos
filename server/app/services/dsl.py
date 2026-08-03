@@ -22,6 +22,8 @@ FACTORS: dict[str, tuple[str, str]] = {
     "turnover": ("成交额(亿)", "num"),
     "market_cap": ("总市值(亿)", "num"),
     "change_pct": ("涨跌幅(%)", "num"),
+    "high_change_pct": ("最高价涨跌幅(%)", "num"),
+    "low_change_pct": ("最低价涨跌幅(%)", "num"),
     "price": ("最新价", "num"),
     "dividend_yield": ("股息率", "num"),
     "industry": ("行业", "cat"),
