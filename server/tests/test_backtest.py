@@ -98,6 +98,16 @@ class TestEventMode:
         assert backtest.run(db, dsl_high, {})["metrics"]["eventCount"] == 0
 
 
+def test_backtest_in_forwards_max_concurrent():
+    """maxConcurrent 必须能穿过 API schema 到达引擎——pydantic 会静默丢弃
+    未声明字段，漏声明时前端改持仓上限不生效（回退默认 10）。"""
+    from app.schemas import BacktestIn
+
+    body = BacktestIn(strategyId=1, maxConcurrent=50)
+    p = backtest._clean_params(body.model_dump(exclude={"strategyId"}), {"cost": {}})
+    assert p["max_concurrent"] == 50
+
+
 class TestPortfolioMode:
     def test_equal_weight_equity_math(self, db):
         days = trading_days("2026-01-05", 40)  # 跨 1 月/2 月 → 一次月度调仓

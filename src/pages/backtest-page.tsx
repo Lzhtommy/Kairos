@@ -547,11 +547,13 @@ export function BacktestPage() {
                       onChange={(v) => setParam("exitRule", v as BacktestParams["exitRule"])}
                       options={[["hold", "持有到期"], ["signal", "反向信号"], ["stop", "止盈止损"]]}
                     />
-                    <ParamSelect
+                    <NumInput
                       label="持仓上限"
-                      value={String(btParams.maxConcurrent ?? 10)}
-                      onChange={(v) => setParam("maxConcurrent", Number(v))}
-                      options={[["5", "5 只"], ["10", "10 只"], ["20", "20 只"], ["50", "50 只"]]}
+                      value={btParams.maxConcurrent ?? 10}
+                      min={1}
+                      max={50}
+                      suffix="只"
+                      onChange={(n) => setParam("maxConcurrent", n)}
                     />
                     {btParams.exitRule === "stop" && (
                       <>
@@ -588,11 +590,13 @@ export function BacktestPage() {
                       onChange={(v) => setParam("weighting", v as BacktestParams["weighting"])}
                       options={[["equal", "等权"], ["cap", "市值加权"]]}
                     />
-                    <ParamSelect
-                      label="持仓数"
-                      value={String(btParams.maxPositions)}
-                      onChange={(v) => setParam("maxPositions", Number(v))}
-                      options={[["0", "不限"], ["10", "前10"], ["20", "前20"], ["50", "前50"]]}
+                    <NumInput
+                      label="持仓数（0=不限）"
+                      value={btParams.maxPositions ?? 0}
+                      min={0}
+                      max={200}
+                      suffix="只"
+                      onChange={(n) => setParam("maxPositions", n)}
                     />
                   </>
                 )}

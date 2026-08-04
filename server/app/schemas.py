@@ -72,3 +72,4 @@ class BacktestIn(BaseModel):
     benchmark: str = "000300"      # 000300|000905|399006
     weighting: str = "equal"       # 组合模式：equal|cap
     maxPositions: int = 0          # 组合模式：0=不限，否则按市值取前 N
+    maxConcurrent: int = 10        # 事件模式：最大同时持仓数（每笔占 1/N 仓位）
