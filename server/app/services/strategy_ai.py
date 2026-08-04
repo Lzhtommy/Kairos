@@ -272,6 +272,8 @@ def _tech_desc(t: dict[str, Any]) -> str:
         return f"最近{t['days']}日每日涨跌幅都在 {t['min']}%~{t['max']}% 区间"
     if t["type"] == "cum_change":
         return f"近{t['days']}日累计涨跌幅（今收对窗口首日开盘）在 {t['min']}%~{t['max']}% 区间"
+    if t["type"] == "expr":
+        return t.get("desc") or f"公式条件: {t['formula']}"
     return t["type"]
 
 
@@ -399,7 +401,7 @@ def _spec_doc(industries: list[str] | None = None) -> str:
         "{\"score\":{\"factors\":[{\"factor\":\"roe\",\"weight\":0.6,\"direction\":\"desc\"},"
         "{\"factor\":\"pe\",\"weight\":0.4,\"direction\":\"asc\"}],\"top_n\":30}}"
         " → 各因子截面排名归一后加权求和取前 top_n；direction: desc=越大越好, asc=越小越好。\n"
-        "涉及均线/K线/量能形态时用 technical 数组，只有以下 10 种类型（参数可调）：\n"
+        "涉及均线/K线/量能形态时用 technical 数组，优先使用以下 10 种白名单类型（参数可调）：\n"
         "- {\"type\":\"ma_trend\",\"window\":60,\"lookback\":120,\"max_down_days\":10,\"min_gain_pct\":1.5}"
         " → MA{window} 在最近 lookback 个交易日平滑上行：逐日滚动算 MA，"
         "下行天数≤max_down_days 且 MA 首尾累计涨幅≥min_gain_pct(%)\n"
@@ -424,6 +426,19 @@ def _spec_doc(industries: list[str] | None = None) -> str:
         " → 近 days 日累计涨跌幅（今收相对窗口首日开盘，窗口含今日共 days 个交易日，%）在 [min, max]："
         "\"近 5 日累计涨超 10%\" → days=5,min=10；\"近 20 日跌超 15%\" → days=20,max=-15；"
         "\"近 10 日涨幅不超过 5%（没大涨过）\" → days=10,max=5\n"
+        "白名单类型表达不了的 K 线条件，用公式类型 expr（仅在必要时使用）：\n"
+        "{\"type\":\"expr\",\"formula\":\"<布尔公式>\",\"desc\":\"<中文一句话描述，必填>\"}\n"
+        "公式语法是 Python 表达式子集：变量只有 open/high/low/close/volume（日 K 序列，逐日求值），"
+        "运算 + - * /、比较 > >= < <= == !=、and/or/not、数值字面量。可用函数：\n"
+        "shift(x,n) n 日前的值；ma/ema/sum/max/min/std(x,n) n 日滚动均值/指数均值/和/最高/最低/标准差；"
+        "abs(x)；pct(a,b)=(a/b-1)*100；count(cond,n) 近 n 日 cond 成立天数；"
+        "all/any(cond,n) 近 n 日 cond 全部/至少一天成立；cross_up/cross_down(a,b) a 上穿/下穿 b 首日。\n"
+        "窗口一律含当日且必须是整数字面量（1..240）。示例：\n"
+        "\"近 60 日高点回撤超 20%\" → pct(close, max(high, 60)) <= -20\n"
+        "\"低开 2% 以上且收红（低开高走）\" → pct(open, shift(close, 1)) <= -2 and close > open\n"
+        "\"量比大于 2\" → volume / ma(volume, 5) > 2\n"
+        "\"近 5 日振幅超 15%\" → (max(high, 5) - min(low, 5)) / shift(close, 5) * 100 >= 15\n"
+        "\"连续 3 日缩量\" → all(volume < shift(volume, 1), 3)\n"
         "change_pct 是收盘（盘中为最新价）相对前收的涨跌幅；high_change_pct/low_change_pct/"
         "open_change_pct 是当日最高/最低/开盘价相对前收的涨跌幅（\"盘中一度涨超 5%\" → "
         "high_change_pct gte 5，\"盘中最多跌 3% 以内\" → low_change_pct gte -3，"
