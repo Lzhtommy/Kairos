@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -26,6 +26,23 @@ _QUOTE_BATCH = 80
 _UNIVERSE_PAGE = 100
 
 _KLINE_PERIOD = {"1d": "day", "1w": "week", "1M": "month"}
+_KLINE_PAGE = 640  # ifzq 单次日 K 上限（约 800，留余量）
+
+
+def _parse_kline_rows(rows: list) -> list[Candle]:
+    out: list[Candle] = []
+    for row in rows:  # [date, open, close, high, low, volume(手), ...]
+        out.append(
+            Candle(
+                ts=datetime.fromisoformat(str(row[0])),
+                open=float(row[1]),
+                high=float(row[3]),
+                low=float(row[4]),
+                close=float(row[2]),
+                volume=int(float(row[5])),
+            )
+        )
+    return out
 
 
 def _to_symbol(code: str) -> str:
@@ -215,7 +232,39 @@ class TencentProvider:
         symbol = self._INDEX_SYMBOLS.get(code)
         if symbol is None:
             return []
+        if limit > _KLINE_PAGE:
+            return self._kline_paged(symbol, limit)
         return self._fetch_kline(symbol, "1d", limit)
+
+    def get_kline_history(self, code: str, bars: int) -> list[Candle]:
+        """深历史日 K（qfq）：按日期向前分页拉取，用于 5 年级回补。
+
+        不回落 Sina——回补要求全段复权口径统一（Sina 未复权），
+        失败直接抛给调用方限速重试。
+        """
+        return self._kline_paged(_to_symbol(code), bars)
+
+    def _kline_paged(self, symbol: str, bars: int) -> list[Candle]:
+        out: list[Candle] = []
+        end = ""  # 空 = 最新
+        while len(out) < bars:
+            count = min(_KLINE_PAGE, bars - len(out) + 10)
+            r = self._get(
+                "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get",
+                params={"param": f"{symbol},day,,{end},{count},qfq"},
+            )
+            data = r.json()["data"][symbol]
+            chunk = _parse_kline_rows(data.get("qfqday") or data.get("day") or [])
+            if out:
+                chunk = [c for c in chunk if c.ts < out[0].ts]
+            if not chunk:
+                break
+            got = len(chunk)
+            out = chunk + out
+            if got < count - 10:
+                break  # 已到上市日
+            end = (out[0].ts - timedelta(days=1)).strftime("%Y-%m-%d")
+        return out[-bars:]
 
     def _fetch_kline(self, symbol: str, period: str, limit: int) -> list[Candle]:
         freq = _KLINE_PERIOD.get(period, "day")
@@ -235,20 +284,7 @@ class TencentProvider:
             self._ifzq_down_until = time.monotonic() + 600
             return self._kline_sina(symbol, limit)
         data = r.json()["data"][symbol]
-        rows = data.get(f"qfq{freq}") or data.get(freq) or []
-        out: list[Candle] = []
-        for row in rows:  # [date, open, close, high, low, volume(手), ...]
-            out.append(
-                Candle(
-                    ts=datetime.fromisoformat(str(row[0])),
-                    open=float(row[1]),
-                    high=float(row[3]),
-                    low=float(row[4]),
-                    close=float(row[2]),
-                    volume=int(float(row[5])),
-                )
-            )
-        return out
+        return _parse_kline_rows(data.get(f"qfq{freq}") or data.get(freq) or [])
 
     def _kline_sina(self, symbol: str, limit: int) -> list[Candle]:
         """Daily kline via Sina. Unadjusted (no qfq) — close enough for the MVP screener."""

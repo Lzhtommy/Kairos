@@ -34,7 +34,9 @@ const EXIT_REASON: Record<BacktestTrade["reason"], string> = {
   stop_gain: "止盈",
   stop_loss: "止损",
 }
-const PERIOD_LABEL: Record<number, string> = { 120: "近半年", 250: "近1年", 500: "近2年", 750: "近3年" }
+const PERIOD_LABEL: Record<number, string> = {
+  120: "近半年", 250: "近1年", 500: "近2年", 750: "近3年", 1250: "近5年",
+}
 const EXIT_LABEL: Record<string, string> = { hold: "持有到期", signal: "反向信号", stop: "止盈止损" }
 const REB_LABEL: Record<string, string> = { weekly: "每周", monthly: "每月", quarterly: "每季" }
 
@@ -384,6 +386,13 @@ export function BacktestPage() {
     Array.isArray((active?.dsl as { technical?: unknown[] } | undefined)?.technical) &&
     ((active!.dsl as { technical: unknown[] }).technical.length > 0)
 
+  // 从事件策略切到标量策略时，把只属于事件策略的 5 年窗口收回 3 年
+  useEffect(() => {
+    if (active && !isEventStrategy && (btParams.periodDays ?? 250) > 750) {
+      setBtParams((p) => ({ ...p, periodDays: 750 }))
+    }
+  }, [active, isEventStrategy, btParams.periodDays])
+
   function setParam<K extends keyof BacktestParams>(key: K, value: BacktestParams[K]) {
     setBtParams((p) => ({ ...p, [key]: value }))
   }
@@ -511,7 +520,12 @@ export function BacktestPage() {
                   label="区间"
                   value={String(btParams.periodDays)}
                   onChange={(v) => setParam("periodDays", Number(v))}
-                  options={[["120", "近半年"], ["250", "近1年"], ["500", "近2年"], ["750", "近3年"]]}
+                  options={[
+                    ["120", "近半年"], ["250", "近1年"], ["500", "近2年"], ["750", "近3年"],
+                    // 5 年窗口只开放给纯技术（事件）策略：标量因子的历史重构
+                    // 在长周期下失真，不提供好看的假曲线
+                    ...(isEventStrategy ? ([["1250", "近5年"]] as [string, string][]) : []),
+                  ]}
                 />
                 <ParamSelect
                   label="费率"

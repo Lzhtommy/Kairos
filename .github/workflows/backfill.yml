@@ -1,13 +1,24 @@
-name: Backfill Factors
+name: Backfill
 
-# 手动触发：在生产容器里回补历史因子快照（PIT 数据）。
-# 幂等——已有快照的日期自动跳过，重复运行无副作用。
+# 手动触发：在生产容器里回补历史数据。幂等，重复运行无副作用。
+# - factors: 回补最近 N 个交易日的因子快照（PIT 数据），value = 天数
+# - kline:   日 K 深度回补到 N 根（约 5 年 = 1250，断点续跑），value = 根数
 on:
   workflow_dispatch:
     inputs:
-      days:
-        description: "回补最近 N 个交易日"
+      mode:
+        description: "回补类型（kline-full=整段 qfq 重刷，修复除权台阶）"
+        type: choice
+        options: [factors, kline, kline-full]
+        default: "factors"
+        required: true
+      value:
+        description: "factors=交易日数 / kline=目标根数"
         default: "500"
+        required: true
+      timeoutMinutes:
+        description: "最长等待分钟数（kline 全量约需 180+）"
+        default: "60"
         required: true
 
 jobs:
@@ -29,12 +40,13 @@ jobs:
           ssh -o ServerAliveInterval=30 -i ~/.ssh/id_ed25519 \
             "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" \
             "chmod +x /opt/kairos/server/scripts/run_backfill.sh && \
-             nohup /opt/kairos/server/scripts/run_backfill.sh ${{ inputs.days }} \
+             nohup /opt/kairos/server/scripts/run_backfill.sh ${{ inputs.mode }} ${{ inputs.value }} \
                > /tmp/kairos-backfill.nohup 2>&1 & echo kicked"
 
-      - name: Wait for completion (up to 30 min)
+      - name: Wait for completion
         run: |
-          for i in $(seq 1 60); do
+          loops=$(( ${{ inputs.timeoutMinutes }} * 2 ))
+          for i in $(seq 1 "$loops"); do
             sleep 30
             st=$(ssh -o ServerAliveInterval=30 -i ~/.ssh/id_ed25519 \
               "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" \
@@ -46,9 +58,9 @@ jobs:
                 "grep -v 'HTTP Request' /tmp/kairos-backfill.log | tail -25"
               exit "$st"
             fi
-            echo "waiting... ($i/60)"
+            echo "waiting... ($i/$loops)"
           done
-          echo "30 分钟未完成" >&2
+          echo "${{ inputs.timeoutMinutes }} 分钟未完成（服务器侧仍在跑，可稍后重触发 kline 断点续跑）" >&2
           exit 1
 
       - name: Verify service healthy after backfill
