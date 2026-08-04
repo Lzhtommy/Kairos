@@ -216,7 +216,7 @@ def _validate_technical(entries: Any) -> list[dict[str, Any]]:
                 raise DSLError(f"technical[{i}] 要求 fast < slow")
         if typ == "ma_distance" and entry["min_pct"] > entry["max_pct"]:
             raise DSLError(f"technical[{i}] 要求 min_pct ≤ max_pct")
-        if typ == "rsi_range" and entry["min"] > entry["max"]:
+        if typ in ("rsi_range", "daily_change") and entry["min"] > entry["max"]:
             raise DSLError(f"technical[{i}] 要求 min ≤ max")
         out.append(entry)
     return out

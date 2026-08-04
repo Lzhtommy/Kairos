@@ -9,6 +9,7 @@
 - ma_distance: MA{fast} 相对 MA{base} 的偏离百分比落在 [min_pct, max_pct]
 - ma_rising:   windows 里每条均线今日值都高于昨日值（同步上翘）
 - ma_cross:    MA{fast} 今日刚上穿(golden)/下穿(death) MA{slow}，只认首日
+- daily_change: 最近 days 个交易日每日涨跌幅都在 [min, max]（%）区间
 """
 
 from __future__ import annotations
@@ -61,9 +62,16 @@ SPECS: dict[str, dict[str, tuple[float, float, float]]] = {
         "min": (0.0, 0.0, 100.0),
         "max": (30.0, 0.0, 100.0),
     },
+    # 最近 days 个交易日，每日涨跌幅都在 [min, max]（%）区间
+    # （连涨: min=0；连跌: max=0；"每天涨幅>2%": min=2）
+    "daily_change": {
+        "days": (3, 1, 60),
+        "min": (-100.0, -100.0, 100.0),
+        "max": (100.0, -100.0, 100.0),
+    },
 }
 
-INT_PARAMS = {"window", "lookback", "max_down_days", "fast", "base", "slow", "signal"}
+INT_PARAMS = {"window", "lookback", "max_down_days", "fast", "base", "slow", "signal", "days"}
 
 _MAX_BARS = 250  # 库里每只股票的日 K 上限
 
@@ -273,6 +281,23 @@ def signal_series(
                 v = rsi[i]
                 if v is None or not (t["min"] <= v <= t["max"]):
                     ok[i] = False
+        elif typ == "daily_change":
+            d = t["days"]
+            # in_range[i] = 第 i 日涨跌幅落于 [min, max]；前缀和 O(1) 查任意窗口
+            inr = [0] * n
+            for i in range(1, n):
+                if closes[i - 1]:
+                    chg = (closes[i] / closes[i - 1] - 1) * 100
+                    inr[i] = 1 if t["min"] <= chg <= t["max"] else 0
+            pref = [0] * (n + 1)
+            for i in range(n):
+                pref[i + 1] = pref[i] + inr[i]
+            for i in range(n):
+                if not ok[i]:
+                    continue
+                # 最近 d 日 = 第 i-d+1..i 日，首日还需要 closes[i-d] 作前收
+                if i < d or pref[i + 1] - pref[i - d + 1] < d:
+                    ok[i] = False
     return ok
 
 
@@ -304,6 +329,8 @@ def bars_needed(technical: list[dict[str, Any]]) -> int:
             need = max(need, t["slow"] + t["signal"] + 10)  # EMA 预热
         elif t["type"] == "rsi_range":
             need = max(need, t["window"] * 3)  # Wilder 平滑预热
+        elif t["type"] == "daily_change":
+            need = max(need, t["days"] + 1)
     return min(need, _MAX_BARS)
 
 

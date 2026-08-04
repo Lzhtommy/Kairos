@@ -48,6 +48,14 @@ class TestValidate:
         with pytest.raises(DSLError):
             validate_dsl(_dsl(technical=[{"type": "ma_cross", "fast": 10, "slow": 5}]))
 
+    def test_daily_change_validate(self):
+        out = validate_dsl(
+            _dsl(technical=[{"type": "daily_change", "days": 3, "min": 2, "max": 100}])
+        )
+        assert out["technical"][0] == {"type": "daily_change", "days": 3, "min": 2.0, "max": 100.0}
+        with pytest.raises(DSLError):  # min > max
+            validate_dsl(_dsl(technical=[{"type": "daily_change", "days": 3, "min": 5, "max": 2}]))
+
     def test_defaults_filled(self):
         out = validate_dsl(_dsl([{"factor": "pe", "op": "lte", "value": 30}]))
         assert out["universe"]["market"] == ["SH", "SZ"]
@@ -88,6 +96,25 @@ class TestExecute:
         ]
         got = execute(_dsl([{"factor": "open_change_pct", "op": "gt", "value": 0}]), rows)
         assert [r["code"] for r in got] == ["A"]
+
+
+class TestDailyChange:
+    def test_streak_semantics(self):
+        from app.services.technical import passes, signal_series
+
+        # 连续 3 日每天 +2%：末段三天 +3% 满足 min=2，前面的下行日不满足
+        closes = [100.0, 99.0, 98.0, 100.94, 103.97, 107.09]
+        cond = [{"type": "daily_change", "days": 3, "min": 2.0, "max": 100.0}]
+        sig = signal_series(cond, closes)
+        assert sig[-1] is True  # 最近 3 天都 +3%
+        assert sig[-2] is False  # 窗口含 98→100.94 前的下跌日？含 99→98(-1%) → 不满足
+        assert passes(cond, closes) is True
+
+        # 连跌 2 天（max=0）：末两天下跌成立
+        down = [100.0, 101.0, 100.0, 99.0]
+        assert passes([{"type": "daily_change", "days": 2, "min": -100.0, "max": 0.0}], down)
+        # 数据不足（需要 days+1 根）不通过
+        assert not passes([{"type": "daily_change", "days": 3, "min": -100.0, "max": 0.0}], down[:3])
 
     def test_industry_in(self):
         rows = [_row("A", industry="白酒"), _row("B", industry="证券")]

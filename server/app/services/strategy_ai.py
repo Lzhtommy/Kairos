@@ -126,9 +126,38 @@ def _split_clauses(text: str) -> list[str]:
     return [c for c in re.split(r"[，,。；;、\n]|并且|而且|且|同时", text) if c.strip()]
 
 
+def _parse_streak(text: str) -> dict[str, Any] | None:
+    """连涨/连跌 N 天（可带每日幅度）→ daily_change 条件。
+
+    覆盖三种说法：连续N天上涨 / 连涨N天 / N连涨（跌同理）。
+    """
+    days: int | None = None
+    up: bool | None = None
+    m = re.search(r"连续\s*(\d+)\s*[天日][^，。；;、]{0,8}?(上?涨|下?跌)", text)
+    if m:
+        days, up = int(m.group(1)), "涨" in m.group(2)
+    elif m := re.search(r"连(涨|跌)\s*(\d+)\s*[天日]", text):
+        days, up = int(m.group(2)), m.group(1) == "涨"
+    elif m := re.search(r"(\d+)\s*连(涨|跌)", text):
+        days, up = int(m.group(1)), m.group(2) == "涨"
+    if days is None or up is None:
+        return None
+    # "每天涨超 2%"类幅度：取"每天/单日"附近的数字
+    amp = re.search(r"(?:每[天日]|单日)[^，。；;、]{0,6}?(\d+(?:\.\d+)?)\s*[%％]", text)
+    lo, hi = (-100.0, 100.0)
+    if up:
+        lo = float(amp.group(1)) if amp else 0.0
+    else:
+        hi = -float(amp.group(1)) if amp else 0.0
+    return {"type": "daily_change", "days": days, "min": lo, "max": hi}
+
+
 def _parse_technical(text: str) -> list[dict[str, Any]]:
     """技术形态的关键词兜底（主路径是 DeepSeek，按 prompt 生成参数化条件）。"""
     tech: list[dict[str, Any]] = []
+    streak = _parse_streak(text)
+    if streak:
+        tech.append(streak)
     if "死叉" in text:
         tech.append({"type": "ma_cross", "fast": 3, "slow": 7, "direction": "death"})
     elif "金叉" in text:
@@ -203,6 +232,8 @@ def _tech_desc(t: dict[str, Any]) -> str:
         return f"MACD({t['fast']},{t['slow']},{t['signal']}) {word}首日"
     if t["type"] == "rsi_range":
         return f"RSI{t['window']} 在 {t['min']}~{t['max']} 区间"
+    if t["type"] == "daily_change":
+        return f"最近{t['days']}日每日涨跌幅都在 {t['min']}%~{t['max']}% 区间"
     return t["type"]
 
 
@@ -330,7 +361,7 @@ def _spec_doc(industries: list[str] | None = None) -> str:
         "{\"score\":{\"factors\":[{\"factor\":\"roe\",\"weight\":0.6,\"direction\":\"desc\"},"
         "{\"factor\":\"pe\",\"weight\":0.4,\"direction\":\"asc\"}],\"top_n\":30}}"
         " → 各因子截面排名归一后加权求和取前 top_n；direction: desc=越大越好, asc=越小越好。\n"
-        "涉及均线/K线/量能形态时用 technical 数组，只有以下 8 种类型（参数可调）：\n"
+        "涉及均线/K线/量能形态时用 technical 数组，只有以下 9 种类型（参数可调）：\n"
         "- {\"type\":\"ma_trend\",\"window\":60,\"lookback\":120,\"max_down_days\":10,\"min_gain_pct\":1.5}"
         " → MA{window} 在最近 lookback 个交易日平滑上行：逐日滚动算 MA，"
         "下行天数≤max_down_days 且 MA 首尾累计涨幅≥min_gain_pct(%)\n"
@@ -348,6 +379,9 @@ def _spec_doc(industries: list[str] | None = None) -> str:
         " → MACD DIF 上穿 DEA（金叉首日；death 为死叉）\n"
         "- {\"type\":\"rsi_range\",\"window\":14,\"min\":0,\"max\":30}"
         " → RSI 落于 [min, max]（如超卖 [0,30]、超买 [70,100]）\n"
+        "- {\"type\":\"daily_change\",\"days\":3,\"min\":-100,\"max\":100}"
+        " → 最近 days 个交易日每日涨跌幅都在 [min, max]（%）：\"连涨 3 天\" → days=3,min=0；"
+        "\"连续 3 天每天涨超 2%\" → days=3,min=2；\"最近 5 天单日跌幅都没超过 3%\" → days=5,min=-3\n"
         "change_pct 是收盘（盘中为最新价）相对前收的涨跌幅；high_change_pct/low_change_pct/"
         "open_change_pct 是当日最高/最低/开盘价相对前收的涨跌幅（\"盘中一度涨超 5%\" → "
         "high_change_pct gte 5，\"盘中最多跌 3% 以内\" → low_change_pct gte -3，"
