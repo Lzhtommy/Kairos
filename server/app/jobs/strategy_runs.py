@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from statistics import mean
 
 from sqlalchemy import func, select
 
@@ -99,10 +100,92 @@ def run_all_strategies(force: bool = False) -> int:
 
         if new_runs:
             _notify_users(db, new_runs, run_date)
-        logger.info("strategy runs: %d new for %s", len(new_runs), run_date.date())
+        filled = _backfill_forward(db, run_date)
+        from app.services.paper import settle_all
+
+        settled = settle_all(db)  # 模拟盘逐日结算（含停机补结算），依赖当日 run 的信号
+        logger.info(
+            "strategy runs: %d new for %s, forward filled %d, paper settled %d",
+            len(new_runs), run_date.date(), filled, settled,
+        )
         return len(new_runs)
     finally:
         db.close()
+
+
+# ---- 信号前瞻跟踪（模拟盘第一步：样本外验证信号本身） ---------------------------
+
+_HORIZONS = (1, 5, 10)
+_TRACK_DAYS = 45  # 只回填最近 ~45 自然日（覆盖 D+10 成熟窗口），更早的不再动
+_CODES_CAP = 800  # 单次 IN 查询上限（SQLite 参数数约束），超出截断并计入日志
+
+
+def _forward_for_run(db, run: StrategyRun) -> dict | None:
+    """一条 run 的前瞻收益：信号次日开盘入场，D+N 收盘相对入场价，等权平均。
+
+    只结算已成熟的 horizon（后市交易日数足够）；停牌缺 bar 的股票不计入该档。
+    返回增量更新后的 forward，无新成熟档位时返回 None。
+    """
+    codes = list(run.hit_codes or [])
+    if not codes:
+        return {f"d{h}": {"n": 0, "avg": 0.0, "win": 0.0} for h in _HORIZONS}
+    if len(codes) > _CODES_CAP:
+        logger.warning("run %s hit %d codes, forward tracking caps at %d",
+                       run.id, len(codes), _CODES_CAP)
+        codes = codes[:_CODES_CAP]
+
+    need = max(_HORIZONS)
+    series: dict[str, list[tuple[float, float]]] = {}  # code -> [(open, close)] 升序
+    for code, o, c in db.execute(
+        select(Kline.code, Kline.open, Kline.close)
+        .where(Kline.period == "1d", Kline.code.in_(codes), Kline.ts > run.run_date)
+        .order_by(Kline.code, Kline.ts.asc())
+    ):
+        s = series.setdefault(code, [])
+        if len(s) < need:
+            s.append((o, c))
+    if not series:
+        return None  # 尚无后市数据
+
+    # 成熟度按"命中股中后市 bar 最多者"判定：个别停牌不至于拖住整条 run
+    elapsed = max(len(s) for s in series.values())
+    out = dict(run.forward or {})
+    changed = False
+    for h in _HORIZONS:
+        key = f"d{h}"
+        if key in out or elapsed < h:
+            continue
+        rets = []
+        for s in series.values():
+            if len(s) < h or not s[0][0]:
+                continue  # 停牌缺 bar / 无开盘价
+            rets.append(s[h - 1][1] / s[0][0] - 1)
+        out[key] = {
+            "n": len(rets),
+            "avg": round(mean(rets) * 100, 2) if rets else 0.0,
+            "win": round(100 * sum(r > 0 for r in rets) / len(rets), 1) if rets else 0.0,
+        }
+        changed = True
+    return out if changed else None
+
+
+def _backfill_forward(db, latest: datetime) -> int:
+    """给窗口内 forward 未完结（缺 d10）的 run 补记已成熟的档位。幂等增量。"""
+    cutoff = latest - timedelta(days=_TRACK_DAYS)
+    runs = db.execute(
+        select(StrategyRun).where(StrategyRun.run_date >= cutoff)
+    ).scalars().all()
+    filled = 0
+    for r in runs:
+        if f"d{max(_HORIZONS)}" in (r.forward or {}):
+            continue
+        fwd = _forward_for_run(db, r)
+        if fwd is not None:
+            r.forward = fwd
+            filled += 1
+    if filled:
+        db.commit()
+    return filled
 
 
 def _notify_users(db, runs: list[StrategyRun], run_date: datetime) -> None:

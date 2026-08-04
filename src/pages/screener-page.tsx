@@ -252,6 +252,19 @@ export function ScreenerPage() {
                       )}
                     </p>
                   )}
+                  {s.signalStats?.d5 && (
+                    <p
+                      className="mt-1 text-[11px] text-muted-foreground"
+                      title="近 5 次盘后信号的样本外表现：次日开盘买入，第 5 个交易日收盘结算"
+                    >
+                      信号跟踪 D5：胜率 {s.signalStats.d5.win}% ·{" "}
+                      <span className={s.signalStats.d5.avg >= 0 ? "text-up" : "text-down"}>
+                        均 {s.signalStats.d5.avg > 0 ? "+" : ""}
+                        {s.signalStats.d5.avg}%
+                      </span>
+                      （{s.signalStats.d5.n} 签）
+                    </p>
+                  )}
                 </button>
               ))}
               <Link

@@ -66,7 +66,27 @@ def _run_summary(r: StrategyRun) -> dict:
         "removedCount": r.removed_count,
         "added": r.added or [],
         "removed": r.removed or [],
+        "forward": r.forward or {},
     }
+
+
+def _pooled_forward(runs: list[StrategyRun]) -> dict | None:
+    """近几次 run 的前瞻收益按签数加权合并：{"d5": {"n","avg","win"}, …}。"""
+    out: dict[str, dict] = {}
+    for key in ("d1", "d5", "d10"):
+        parts = [
+            f for r in runs
+            if (f := (r.forward or {}).get(key)) and f.get("n")
+        ]
+        total = sum(f["n"] for f in parts)
+        if not total:
+            continue
+        out[key] = {
+            "n": total,
+            "avg": round(sum(f["avg"] * f["n"] for f in parts) / total, 2),
+            "win": round(sum(f["win"] * f["n"] for f in parts) / total, 1),
+        }
+    return out or None
 
 
 @router.get("")
@@ -82,6 +102,8 @@ def list_strategies(db: Session = Depends(get_db), user: User = Depends(get_curr
         item["lastRun"] = _run_summary(latest[0]) if latest else None
         # 最近 5 次命中数（旧→新），卡片上画迷你趋势
         item["hitTrend"] = [r.hit_count for r in reversed(latest)]
+        # 信号前瞻跟踪：近 5 次 run 的样本外收益合并（未成熟时为 null）
+        item["signalStats"] = _pooled_forward(latest)
         out.append(item)
     return out
 

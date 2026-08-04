@@ -4,6 +4,7 @@ import {
   ChartLineUp,
   ChartBar,
   FunnelSimple,
+  Robot,
   Sparkle,
   Star,
   Sun,
@@ -29,6 +30,7 @@ const NAV_ITEMS = [
   { to: "/app/screener", label: "选股", icon: FunnelSimple },
   { to: "/app/strategy", label: "策略工坊", icon: Sparkle },
   { to: "/app/backtest", label: "回测", icon: ChartBar },
+  { to: "/app/paper", label: "模拟盘", icon: Robot },
   { to: "/app/watchlist", label: "自选", icon: Star },
   { to: "/app/settings", label: "设置", icon: GearSix },
 ]

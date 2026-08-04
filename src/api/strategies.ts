@@ -1,6 +1,10 @@
 import { api, API_BASE_URL, getToken } from "@/api/client"
 import type { Stock } from "@/lib/mock-data"
 
+/** 单档前瞻收益：签数 / 等权平均收益% / 胜率%（信号次日开盘入场，D+N 收盘结算） */
+export type ForwardStat = { n: number; avg: number; win: number }
+export type ForwardStats = { d1?: ForwardStat; d5?: ForwardStat; d10?: ForwardStat }
+
 export type StrategyRunSummary = {
   date: string
   hitCount: number
@@ -8,6 +12,8 @@ export type StrategyRunSummary = {
   removedCount: number
   added: { code: string; name: string }[]
   removed: { code: string; name: string }[]
+  /** 信号前瞻收益，未成熟的档位缺省 */
+  forward?: ForwardStats
 }
 
 export type Strategy = {
@@ -21,6 +27,8 @@ export type Strategy = {
   createdAt: string
   lastRun?: StrategyRunSummary | null
   hitTrend?: number[]
+  /** 近 5 次盘后信号的样本外收益合并（按签数加权），无成熟数据时为 null */
+  signalStats?: ForwardStats | null
 }
 
 export function fetchStrategies(): Promise<Strategy[]> {
