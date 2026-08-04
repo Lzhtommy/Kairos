@@ -35,6 +35,8 @@ _FACTOR_KEYWORDS: list[tuple[str, str]] = [
     ("最低价涨跌幅", "low_change_pct"), ("盘中跌幅", "low_change_pct"),
     ("最大回落", "low_change_pct"), ("下探", "low_change_pct"),
     ("开盘涨跌幅", "open_change_pct"), ("高开", "open_change_pct"), ("低开", "open_change_pct"),
+    ("日内涨跌幅", "intraday_change_pct"), ("日内涨幅", "intraday_change_pct"),
+    ("相对开盘", "intraday_change_pct"), ("实体涨幅", "intraday_change_pct"),
     ("涨跌幅", "change_pct"), ("涨幅", "change_pct"),
     ("股息率", "dividend_yield"), ("股息", "dividend_yield"), ("分红", "dividend_yield"),
     ("股价", "price"), ("价格", "price"), ("最新价", "price"),
@@ -425,7 +427,10 @@ def _spec_doc(industries: list[str] | None = None) -> str:
         "change_pct 是收盘（盘中为最新价）相对前收的涨跌幅；high_change_pct/low_change_pct/"
         "open_change_pct 是当日最高/最低/开盘价相对前收的涨跌幅（\"盘中一度涨超 5%\" → "
         "high_change_pct gte 5，\"盘中最多跌 3% 以内\" → low_change_pct gte -3，"
-        "\"高开\" → open_change_pct gt 0，\"低开 2% 以上\" → open_change_pct lte -2）。\n"
+        "\"高开\" → open_change_pct gt 0，\"低开 2% 以上\" → open_change_pct lte -2）；"
+        "intraday_change_pct 是收盘（盘中为最新价）相对今日开盘的日内涨跌幅"
+        "（\"开盘后又涨了 3%\" → intraday_change_pct gte 3，\"收盘收在开盘价下方\" → "
+        "intraday_change_pct lt 0）。\n"
         "注意单位：市值/成交额单位为亿，换手率/涨跌幅/ROE 为百分数数值，股息率为小数(3% → 0.03)。\n"
         "涉及板块范围时输出 \"board\": [...]，可选值 main(主板)/chinext(创业板)/star(科创板)/bj(北交所)；"
         "如\"排除创业板和科创板\" → [\"main\",\"bj\"]，\"只要主板\" → [\"main\"]；不限板块则省略该字段。\n"

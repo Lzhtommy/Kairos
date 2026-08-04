@@ -104,6 +104,8 @@ def factor_rows(db: Session, codes: list[str] | None = None) -> list[dict[str, A
                 "open_change_pct": change_pct(q.open, q.prev_close) if q.open else None,
                 "high_change_pct": change_pct(q.high, q.prev_close) if q.high else None,
                 "low_change_pct": change_pct(q.low, q.prev_close) if q.low else None,
+                # 日内：现价（收盘后为收盘价）相对今开
+                "intraday_change_pct": change_pct(q.price, q.open) if q.open else None,
                 "price": q.price,
                 "dividend_yield": fund.dividend_yield if fund else 0.0,
             }

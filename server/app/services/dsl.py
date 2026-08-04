@@ -25,6 +25,7 @@ FACTORS: dict[str, tuple[str, str]] = {
     "high_change_pct": ("最高价涨跌幅(%)", "num"),
     "low_change_pct": ("最低价涨跌幅(%)", "num"),
     "open_change_pct": ("开盘涨跌幅(%)", "num"),
+    "intraday_change_pct": ("日内涨跌幅(现价对今开,%)", "num"),
     "price": ("最新价", "num"),
     "dividend_yield": ("股息率", "num"),
     "industry": ("行业", "cat"),

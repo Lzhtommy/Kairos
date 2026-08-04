@@ -14,7 +14,7 @@ def _row(code="600000", **kw) -> dict:
         "code": code, "name": f"股票{code}", "market": "SH", "industry": "白酒",
         "pe": 10.0, "pb": 2.0, "roe": 15.0, "turnover_rate": 1.0, "turnover": 5.0,
         "market_cap": 100.0, "change_pct": 1.0, "high_change_pct": 2.0,
-        "low_change_pct": -1.0, "open_change_pct": 0.5,
+        "low_change_pct": -1.0, "open_change_pct": 0.5, "intraday_change_pct": 0.5,
         "price": 10.0, "dividend_yield": 0.02,
     }
     base.update(kw)
@@ -135,6 +135,11 @@ class TestDailyChange:
         )
         # 缺开盘价直接不通过
         assert not passes([cond], closes)
+
+    def test_intraday_change_pct_filter(self):
+        rows = [_row("A", intraday_change_pct=3.5), _row("B", intraday_change_pct=-1.0)]
+        got = execute(_dsl([{"factor": "intraday_change_pct", "op": "gte", "value": 3.0}]), rows)
+        assert [r["code"] for r in got] == ["A"]
 
     def test_industry_in(self):
         rows = [_row("A", industry="白酒"), _row("B", industry="证券")]
