@@ -28,7 +28,7 @@ def run_dsl(db: Session, dsl: dict[str, Any]) -> list[dict[str, Any]]:
     )
     out = []
     for r in passing:
-        closes, volumes = series.get(r["code"], ([], []))
-        if technical.passes(tech, closes, volumes):
+        closes, volumes, opens = series.get(r["code"], ([], [], []))
+        if technical.passes(tech, closes, volumes, opens):
             out.append(r)
     return out

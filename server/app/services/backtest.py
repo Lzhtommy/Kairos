@@ -284,12 +284,13 @@ def _candidates_for_stock(
     """一只股票的候选交易（含一字板顺延/放弃）。返回 (candidates, 因涨停放弃的信号数)。"""
     closes = [bar[2] for bar in series]
     volumes = [bar[5] for bar in series]
+    opens = [bar[1] for bar in series]
     n = len(series)
     if n < need + 2:
         return [], 0
     pct = _limit_pct(code, name)
-    sig = technical.signal_series(tech, closes, volumes)
-    rev_sig = technical.signal_series(rev, closes, volumes) if rev else None
+    sig = technical.signal_series(tech, closes, volumes, opens)
+    rev_sig = technical.signal_series(rev, closes, volumes, opens) if rev else None
 
     cands: list[dict[str, Any]] = []
     skipped_limit = 0

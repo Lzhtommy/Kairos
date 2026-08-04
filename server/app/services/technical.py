@@ -10,7 +10,8 @@
 - ma_rising:   windows 里每条均线今日值都高于昨日值（同步上翘）
 - ma_cross:    MA{fast} 今日刚上穿(golden)/下穿(death) MA{slow}，只认首日
 - daily_change: 最近 days 个交易日每日涨跌幅都在 [min, max]（%）区间
-- cum_change:  近 days 日累计涨跌幅（收盘相对 days 日前收盘）在 [min, max]（%）区间
+- cum_change:  近 days 日累计涨跌幅（今收相对窗口首日开盘，窗口含今日共 days 个
+               交易日：days=3 即今收对前天开盘）在 [min, max]（%）区间
 """
 
 from __future__ import annotations
@@ -70,7 +71,8 @@ SPECS: dict[str, dict[str, tuple[float, float, float]]] = {
         "min": (-100.0, -100.0, 100.0),
         "max": (100.0, -100.0, 100.0),
     },
-    # 近 days 日累计涨跌幅（今日收盘相对 days 日前收盘，%）在 [min, max] 区间
+    # 近 days 日累计涨跌幅（今收相对窗口首日开盘，窗口含今日共 days 个交易日，%）
+    # 在 [min, max] 区间
     "cum_change": {
         "days": (5, 1, 240),
         "min": (0.0, -1000.0, 1000.0),
@@ -138,11 +140,12 @@ def passes(
     technical: list[dict[str, Any]],
     closes: list[float],
     volumes: list[int] | None = None,
+    opens: list[float] | None = None,
 ) -> bool:
     """point-in-time 判定 = 滚动信号序列的最后一位（单一实现杜绝语义漂移）。"""
     if not closes:
         return False
-    return signal_series(technical, closes, volumes)[-1]
+    return signal_series(technical, closes, volumes, opens)[-1]
 
 
 # ---- 滚动信号序列（事件驱动回测用） --------------------------------------------------
@@ -169,6 +172,7 @@ def signal_series(
     technical: list[dict[str, Any]],
     closes: list[float],
     volumes: list[int] | None = None,
+    opens: list[float] | None = None,
 ) -> list[bool]:
     n = len(closes)
     ok = [True] * n
@@ -310,10 +314,12 @@ def signal_series(
             for i in range(n):
                 if not ok[i]:
                     continue
-                if i < d or not closes[i - d]:
+                # 窗口含今日共 d 个交易日，首日 = i-d+1，基准取其开盘价
+                base = opens[i - d + 1] if opens and i - d + 1 >= 0 else None
+                if not base:
                     ok[i] = False
                     continue
-                chg = (closes[i] / closes[i - d] - 1) * 100
+                chg = (closes[i] / base - 1) * 100
                 if not (t["min"] <= chg <= t["max"]):
                     ok[i] = False
     return ok
@@ -347,31 +353,34 @@ def bars_needed(technical: list[dict[str, Any]]) -> int:
             need = max(need, t["slow"] + t["signal"] + 10)  # EMA 预热
         elif t["type"] == "rsi_range":
             need = max(need, t["window"] * 3)  # Wilder 平滑预热
-        elif t["type"] in ("daily_change", "cum_change"):
+        elif t["type"] == "daily_change":
             need = max(need, t["days"] + 1)
+        elif t["type"] == "cum_change":
+            need = max(need, t["days"])  # 窗口含今日，只需 days 根
     return min(need, _MAX_BARS)
 
 
 def series_by_code(
     db: Session, codes: list[str], bars: int
-) -> dict[str, tuple[list[float], list[int]]]:
-    """每只股票最近 `bars` 根日 K 的 (收盘价, 成交量)（升序），单条窗口函数查询。"""
+) -> dict[str, tuple[list[float], list[int], list[float]]]:
+    """每只股票最近 `bars` 根日 K 的 (收盘价, 成交量, 开盘价)（升序），单条窗口函数查询。"""
     if not codes:
         return {}
     rn = func.row_number().over(partition_by=Kline.code, order_by=Kline.ts.desc()).label("rn")
     sub = (
-        select(Kline.code, Kline.close, Kline.volume, Kline.ts, rn)
+        select(Kline.code, Kline.close, Kline.volume, Kline.open, Kline.ts, rn)
         .where(Kline.period == "1d", Kline.code.in_(codes))
         .subquery()
     )
     stmt = (
-        select(sub.c.code, sub.c.close, sub.c.volume)
+        select(sub.c.code, sub.c.close, sub.c.volume, sub.c.open)
         .where(sub.c.rn <= bars)
         .order_by(sub.c.code, sub.c.ts.asc())
     )
-    out: dict[str, tuple[list[float], list[int]]] = {}
-    for code, close, volume in db.execute(stmt):
-        pair = out.setdefault(code, ([], []))
-        pair[0].append(close)
-        pair[1].append(volume or 0)
+    out: dict[str, tuple[list[float], list[int], list[float]]] = {}
+    for code, close, volume, open_ in db.execute(stmt):
+        triple = out.setdefault(code, ([], [], []))
+        triple[0].append(close)
+        triple[1].append(volume or 0)
+        triple[2].append(open_ or 0.0)
     return out

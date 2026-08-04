@@ -119,11 +119,22 @@ class TestDailyChange:
     def test_cum_change_semantics(self):
         from app.services.technical import passes
 
-        closes = [100.0, 102.0, 104.0, 106.0, 108.0, 111.0]  # 近 5 日累计 +11%
-        assert passes([{"type": "cum_change", "days": 5, "min": 10.0, "max": 1000.0}], closes)
-        assert not passes([{"type": "cum_change", "days": 5, "min": 12.0, "max": 1000.0}], closes)
-        # 数据不足（需要 days+1 根）不通过
-        assert not passes([{"type": "cum_change", "days": 6, "min": 0.0, "max": 1000.0}], closes)
+        # 窗口含今日共 days 根：days=5 时基准 = 倒数第 5 根的开盘价
+        closes = [100.0, 102.0, 104.0, 106.0, 108.0, 111.0]
+        opens = [99.0, 100.0, 101.0, 103.0, 105.0, 107.0]  # 今收 111 对 opens[1]=100 → +11%
+        cond = {"type": "cum_change", "days": 5, "min": 10.0, "max": 1000.0}
+        assert passes([cond], closes, opens=opens)
+        assert not passes([{**cond, "min": 12.0}], closes, opens=opens)
+        # days=3 → 今收对前天开盘：111 / 103 - 1 ≈ +7.77%
+        assert passes(
+            [{"type": "cum_change", "days": 3, "min": 7.0, "max": 8.0}], closes, opens=opens
+        )
+        # 数据不足（窗口需要 days 根）不通过
+        assert not passes(
+            [{"type": "cum_change", "days": 7, "min": 0.0, "max": 1000.0}], closes, opens=opens
+        )
+        # 缺开盘价直接不通过
+        assert not passes([cond], closes)
 
     def test_industry_in(self):
         rows = [_row("A", industry="白酒"), _row("B", industry="证券")]

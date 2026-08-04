@@ -269,7 +269,7 @@ def _tech_desc(t: dict[str, Any]) -> str:
     if t["type"] == "daily_change":
         return f"最近{t['days']}日每日涨跌幅都在 {t['min']}%~{t['max']}% 区间"
     if t["type"] == "cum_change":
-        return f"近{t['days']}日累计涨跌幅在 {t['min']}%~{t['max']}% 区间"
+        return f"近{t['days']}日累计涨跌幅（今收对窗口首日开盘）在 {t['min']}%~{t['max']}% 区间"
     return t["type"]
 
 
@@ -419,7 +419,7 @@ def _spec_doc(industries: list[str] | None = None) -> str:
         " → 最近 days 个交易日每日涨跌幅都在 [min, max]（%）：\"连涨 3 天\" → days=3,min=0；"
         "\"连续 3 天每天涨超 2%\" → days=3,min=2；\"最近 5 天单日跌幅都没超过 3%\" → days=5,min=-3\n"
         "- {\"type\":\"cum_change\",\"days\":5,\"min\":0,\"max\":1000}"
-        " → 近 days 日累计涨跌幅（收盘相对 days 日前收盘，%）在 [min, max]："
+        " → 近 days 日累计涨跌幅（今收相对窗口首日开盘，窗口含今日共 days 个交易日，%）在 [min, max]："
         "\"近 5 日累计涨超 10%\" → days=5,min=10；\"近 20 日跌超 15%\" → days=20,max=-15；"
         "\"近 10 日涨幅不超过 5%（没大涨过）\" → days=10,max=5\n"
         "change_pct 是收盘（盘中为最新价）相对前收的涨跌幅；high_change_pct/low_change_pct/"
