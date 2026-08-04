@@ -9,7 +9,7 @@ from statistics import mean
 import pytest
 
 from app.services import backtest
-from app.services.technical import signal_series
+from app.services.technical import Bars, signal_series
 from tests.conftest import add_stock, trading_days
 
 GOLDEN = [{"type": "ma_cross", "fast": 2, "slow": 3, "direction": "golden"}]
@@ -41,7 +41,7 @@ class TestEventMode:
         assert result["metrics"]["mode"] == "event"
         assert trades, "金叉序列必须产出至少一笔交易"
 
-        sig = signal_series(GOLDEN, closes)
+        sig = signal_series(GOLDEN, Bars(closes))
         first = sig.index(True)
         t = trades[0]
         e_idx = first + 1
@@ -51,6 +51,23 @@ class TestEventMode:
         assert t["exitDate"] == days[exit_idx].strftime("%Y-%m-%d")
         expected_ret = closes[exit_idx] / opens[e_idx] - 1 - 2 * 0.001
         assert t["ret"] == round(expected_ret * 100, 2)
+
+    def test_expr_condition_matches_ma_cross(self, db):
+        """expr 的 cross_up(ma,ma) 与白名单 ma_cross 语义一致：同一份数据
+        产出完全相同的交易序列（expr 走同一条 signal_series 路径）。"""
+        days = trading_days("2026-01-05", 30)
+        closes = [20 - i * 0.5 for i in range(10)] + [15.5 + i * 0.7 for i in range(20)]
+        add_stock(db, "600519", days, closes)
+        expr_dsl = {"filters": [], "technical": [
+            {"type": "expr", "formula": "cross_up(ma(close, 2), ma(close, 3))"}
+        ]}
+        got = backtest.run(db, expr_dsl, {"holdDays": 5})
+        want = backtest.run(db, _event_dsl(), {"holdDays": 5})
+        assert got["metrics"]["mode"] == "event"
+        assert got["trades"], "expr 条件必须产出交易"
+        assert [t["entryDate"] for t in got["trades"]] == [
+            t["entryDate"] for t in want["trades"]
+        ]
 
     def test_stop_loss_exits_early(self, db):
         days = trading_days("2026-01-05", 30)

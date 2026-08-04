@@ -10,6 +10,8 @@ from __future__ import annotations
 from statistics import median
 from typing import Any
 
+from app.services import expr as expr_mod
+from app.services.technical import _MAX_BARS as TECH_MAX_BARS
 from app.services.technical import INT_PARAMS as TECH_INT_PARAMS
 from app.services.technical import SPECS as TECH_SPECS
 
@@ -194,8 +196,25 @@ def _validate_technical(entries: Any) -> list[dict[str, Any]]:
         if not isinstance(t, dict):
             raise DSLError(f"technical[{i}] 必须是对象")
         typ = t.get("type")
+        if typ == "expr":
+            # 白名单 AST 公式：解析即校验（语法/白名单/资源上限），并静态推导取数窗口
+            formula = t.get("formula")
+            try:
+                need = expr_mod.bars_needed(expr_mod.parse(formula))
+            except expr_mod.ExprError as e:
+                raise DSLError(f"technical[{i}].formula 非法: {e}") from None
+            if need > TECH_MAX_BARS:
+                raise DSLError(
+                    f"technical[{i}].formula 需要 {need} 根日 K，超出上限 {TECH_MAX_BARS}"
+                )
+            entry = {"type": "expr", "formula": formula.strip()}
+            desc = t.get("desc")
+            if isinstance(desc, str) and desc.strip():
+                entry["desc"] = desc.strip()[:60]
+            out.append(entry)
+            continue
         if typ not in TECH_SPECS:
-            raise DSLError(f"未知技术条件类型: {typ}（可用: {', '.join(TECH_SPECS)}）")
+            raise DSLError(f"未知技术条件类型: {typ}（可用: expr, {', '.join(TECH_SPECS)}）")
         entry: dict[str, Any] = {"type": typ}
         for param, (default, lo, hi) in TECH_SPECS[typ].items():
             raw = t.get(param, default)

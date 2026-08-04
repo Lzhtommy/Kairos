@@ -12,16 +12,31 @@
 - daily_change: 最近 days 个交易日每日涨跌幅都在 [min, max]（%）区间
 - cum_change:  近 days 日累计涨跌幅（今收相对窗口首日开盘，窗口含今日共 days 个
                交易日：days=3 即今收对前天开盘）在 [min, max]（%）区间
+- expr:        白名单 AST 公式（见 expr.py / docs/EXPR-DSL-DESIGN.md），
+               基础算子自由组合，兜白名单类型表达不了的长尾指标
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.market import Kline
+from app.services import expr as expr_mod
+
+
+@dataclass
+class Bars:
+    """一只股票对齐的日 K 序列（升序）。close 必有，其余按条件所需可缺。"""
+
+    close: list[float]
+    volume: list[int] | None = None
+    open: list[float] | None = None
+    high: list[float] | None = None
+    low: list[float] | None = None
 
 # type -> {参数名: (默认值, 下限, 上限)}；ma_rising 的 windows、ma_cross 的
 # direction 结构特殊，在 validate_dsl 里单独校验。
@@ -136,21 +151,16 @@ def _rolling_max_prev(values: list[float], window: int) -> list[float | None]:
     return out
 
 
-def passes(
-    technical: list[dict[str, Any]],
-    closes: list[float],
-    volumes: list[int] | None = None,
-    opens: list[float] | None = None,
-) -> bool:
+def passes(technical: list[dict[str, Any]], bars: Bars) -> bool:
     """point-in-time 判定 = 滚动信号序列的最后一位（单一实现杜绝语义漂移）。"""
-    if not closes:
+    if not bars.close:
         return False
-    return signal_series(technical, closes, volumes, opens)[-1]
+    return signal_series(technical, bars)[-1]
 
 
 # ---- 滚动信号序列（事件驱动回测用） --------------------------------------------------
 #
-# signal_series(tech, closes)[t] 与 passes(tech, closes[:t+1]) 语义完全一致，
+# signal_series(tech, bars)[t] 与 passes(tech, bars[:t+1]) 语义完全一致，
 # 但整条时间线一次算完：先铺 MA 数组（O(n)），ma_trend 的回调计数用前缀和，
 # 避免逐日重算导致的 O(n²)。
 
@@ -168,12 +178,8 @@ def _ma_full(closes: list[float], window: int) -> list[float | None]:
     return out
 
 
-def signal_series(
-    technical: list[dict[str, Any]],
-    closes: list[float],
-    volumes: list[int] | None = None,
-    opens: list[float] | None = None,
-) -> list[bool]:
+def signal_series(technical: list[dict[str, Any]], bars: Bars) -> list[bool]:
+    closes, volumes, opens = bars.close, bars.volume, bars.open
     n = len(closes)
     ok = [True] * n
     ma_cache: dict[int, list[float | None]] = {}
@@ -322,6 +328,17 @@ def signal_series(
                 chg = (closes[i] / base - 1) * 100
                 if not (t["min"] <= chg <= t["max"]):
                     ok[i] = False
+        elif typ == "expr":
+            sig = expr_mod.evaluate(
+                t["formula"],
+                {
+                    "open": bars.open, "high": bars.high, "low": bars.low,
+                    "close": bars.close, "volume": bars.volume,
+                },
+            )
+            for i in range(n):
+                if ok[i] and not sig[i]:
+                    ok[i] = False
     return ok
 
 
@@ -357,30 +374,35 @@ def bars_needed(technical: list[dict[str, Any]]) -> int:
             need = max(need, t["days"] + 1)
         elif t["type"] == "cum_change":
             need = max(need, t["days"])  # 窗口含今日，只需 days 根
+        elif t["type"] == "expr":
+            need = max(need, expr_mod.bars_needed(t["formula"]))
     return min(need, _MAX_BARS)
 
 
-def series_by_code(
-    db: Session, codes: list[str], bars: int
-) -> dict[str, tuple[list[float], list[int], list[float]]]:
-    """每只股票最近 `bars` 根日 K 的 (收盘价, 成交量, 开盘价)（升序），单条窗口函数查询。"""
+def series_by_code(db: Session, codes: list[str], bars: int) -> dict[str, Bars]:
+    """每只股票最近 `bars` 根日 K 的 OHLCV（升序），单条窗口函数查询。"""
     if not codes:
         return {}
     rn = func.row_number().over(partition_by=Kline.code, order_by=Kline.ts.desc()).label("rn")
     sub = (
-        select(Kline.code, Kline.close, Kline.volume, Kline.open, Kline.ts, rn)
+        select(
+            Kline.code, Kline.close, Kline.volume, Kline.open, Kline.high, Kline.low,
+            Kline.ts, rn,
+        )
         .where(Kline.period == "1d", Kline.code.in_(codes))
         .subquery()
     )
     stmt = (
-        select(sub.c.code, sub.c.close, sub.c.volume, sub.c.open)
+        select(sub.c.code, sub.c.close, sub.c.volume, sub.c.open, sub.c.high, sub.c.low)
         .where(sub.c.rn <= bars)
         .order_by(sub.c.code, sub.c.ts.asc())
     )
-    out: dict[str, tuple[list[float], list[int], list[float]]] = {}
-    for code, close, volume, open_ in db.execute(stmt):
-        triple = out.setdefault(code, ([], [], []))
-        triple[0].append(close)
-        triple[1].append(volume or 0)
-        triple[2].append(open_ or 0.0)
+    out: dict[str, Bars] = {}
+    for code, close, volume, open_, high, low in db.execute(stmt):
+        b = out.setdefault(code, Bars(close=[], volume=[], open=[], high=[], low=[]))
+        b.close.append(close)
+        b.volume.append(volume or 0)
+        b.open.append(open_ or 0.0)
+        b.high.append(high or 0.0)
+        b.low.append(low or 0.0)
     return out

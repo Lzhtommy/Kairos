@@ -100,41 +100,68 @@ class TestExecute:
 
 class TestDailyChange:
     def test_streak_semantics(self):
-        from app.services.technical import passes, signal_series
+        from app.services.technical import Bars, passes, signal_series
 
         # 连续 3 日每天 +2%：末段三天 +3% 满足 min=2，前面的下行日不满足
         closes = [100.0, 99.0, 98.0, 100.94, 103.97, 107.09]
         cond = [{"type": "daily_change", "days": 3, "min": 2.0, "max": 100.0}]
-        sig = signal_series(cond, closes)
+        sig = signal_series(cond, Bars(closes))
         assert sig[-1] is True  # 最近 3 天都 +3%
         assert sig[-2] is False  # 窗口含 98→100.94 前的下跌日？含 99→98(-1%) → 不满足
-        assert passes(cond, closes) is True
+        assert passes(cond, Bars(closes)) is True
 
         # 连跌 2 天（max=0）：末两天下跌成立
         down = [100.0, 101.0, 100.0, 99.0]
-        assert passes([{"type": "daily_change", "days": 2, "min": -100.0, "max": 0.0}], down)
+        assert passes([{"type": "daily_change", "days": 2, "min": -100.0, "max": 0.0}], Bars(down))
         # 数据不足（需要 days+1 根）不通过
-        assert not passes([{"type": "daily_change", "days": 3, "min": -100.0, "max": 0.0}], down[:3])
+        assert not passes([{"type": "daily_change", "days": 3, "min": -100.0, "max": 0.0}], Bars(down[:3]))
 
     def test_cum_change_semantics(self):
-        from app.services.technical import passes
+        from app.services.technical import Bars, passes
 
         # 窗口含今日共 days 根：days=5 时基准 = 倒数第 5 根的开盘价
         closes = [100.0, 102.0, 104.0, 106.0, 108.0, 111.0]
         opens = [99.0, 100.0, 101.0, 103.0, 105.0, 107.0]  # 今收 111 对 opens[1]=100 → +11%
         cond = {"type": "cum_change", "days": 5, "min": 10.0, "max": 1000.0}
-        assert passes([cond], closes, opens=opens)
-        assert not passes([{**cond, "min": 12.0}], closes, opens=opens)
+        assert passes([cond], Bars(closes, open=opens))
+        assert not passes([{**cond, "min": 12.0}], Bars(closes, open=opens))
         # days=3 → 今收对前天开盘：111 / 103 - 1 ≈ +7.77%
         assert passes(
-            [{"type": "cum_change", "days": 3, "min": 7.0, "max": 8.0}], closes, opens=opens
+            [{"type": "cum_change", "days": 3, "min": 7.0, "max": 8.0}], Bars(closes, open=opens)
         )
         # 数据不足（窗口需要 days 根）不通过
         assert not passes(
-            [{"type": "cum_change", "days": 7, "min": 0.0, "max": 1000.0}], closes, opens=opens
+            [{"type": "cum_change", "days": 7, "min": 0.0, "max": 1000.0}], Bars(closes, open=opens)
         )
         # 缺开盘价直接不通过
-        assert not passes([cond], closes)
+        assert not passes([cond], Bars(closes))
+
+    def test_expr_validate_and_passes(self):
+        from app.services.technical import Bars, bars_needed, passes
+
+        out = validate_dsl(_dsl(technical=[{
+            "type": "expr",
+            "formula": "pct(close, max(high, 5)) <= -20",
+            "desc": "近5日高点回撤超20%",
+        }]))
+        cond = out["technical"]
+        assert cond[0]["desc"] == "近5日高点回撤超20%"
+        assert bars_needed(cond) == 5
+        closes = [100.0, 110.0, 120.0, 130.0, 110.0, 100.0]
+        highs = [101.0, 111.0, 121.0, 131.0, 111.0, 101.0]
+        assert passes(cond, Bars(closes, high=highs))  # 100/131-1 ≈ -23.7%
+        assert not passes(cond, Bars([130.0] * 6, high=highs))
+        assert not passes(cond, Bars(closes))  # 缺 high 列 → 不通过
+
+    def test_expr_invalid_rejected(self):
+        for bad in (
+            "close",  # 顶层不是布尔
+            "__import__('os').system('x') > 1",  # 非白名单
+            "ma(close, 500) > 1",  # 窗口越界
+            "ma(shift(close, 120), 240) > 1",  # 组合窗口 360 根，超出 K 线上限
+        ):
+            with pytest.raises(DSLError):
+                validate_dsl(_dsl(technical=[{"type": "expr", "formula": bad}]))
 
     def test_intraday_change_pct_filter(self):
         rows = [_row("A", intraday_change_pct=3.5), _row("B", intraday_change_pct=-1.0)]

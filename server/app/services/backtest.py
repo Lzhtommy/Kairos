@@ -29,7 +29,7 @@ from app.services.dsl import CROSS_OPS, apply_universe, execute, match_filter, v
 from app.services.market import factor_rows
 
 TRADING_DAYS = 252
-_MAX_BARS = 760
+_MAX_BARS = 1300  # ~5 年：日 K 深度回补（scripts/backfill_kline.py）后的窗口上限
 _BENCHMARKS = {"000300": "沪深300", "000905": "中证500", "399006": "创业板指"}
 _CHUNK = 400  # 每批加载 K 线的股票数，控制 ECS 内存峰值
 
@@ -48,7 +48,7 @@ def _clean_params(params: dict[str, Any], dsl: dict[str, Any]) -> dict[str, Any]
             return default
 
     return {
-        "period": int(num("periodDays", 250, 60, _MAX_BARS)),
+        "period": int(num("periodDays", 250, 60, 1250)),
         "hold": int(num("holdDays", 10, 1, 60)),
         "entry": pick("entry", ("open", "close"), "open"),
         "exit": pick("exitRule", ("hold", "signal", "stop"), "hold"),
@@ -285,15 +285,19 @@ def _candidates_for_stock(
     day_filters: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], int]:
     """一只股票的候选交易（含一字板顺延/放弃）。返回 (candidates, 因涨停放弃的信号数)。"""
-    closes = [bar[2] for bar in series]
-    volumes = [bar[5] for bar in series]
-    opens = [bar[1] for bar in series]
+    bars = technical.Bars(
+        close=[bar[2] for bar in series],
+        volume=[bar[5] for bar in series],
+        open=[bar[1] for bar in series],
+        high=[bar[3] for bar in series],
+        low=[bar[4] for bar in series],
+    )
     n = len(series)
     if n < need + 2:
         return [], 0
     pct = _limit_pct(code, name)
-    sig = technical.signal_series(tech, closes, volumes, opens)
-    rev_sig = technical.signal_series(rev, closes, volumes, opens) if rev else None
+    sig = technical.signal_series(tech, bars)
+    rev_sig = technical.signal_series(rev, bars) if rev else None
 
     cands: list[dict[str, Any]] = []
     skipped_limit = 0

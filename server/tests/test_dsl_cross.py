@@ -3,7 +3,7 @@
 import pytest
 
 from app.services.dsl import DSLError, execute, validate_dsl
-from app.services.technical import passes, signal_series
+from app.services.technical import Bars, passes, signal_series
 from tests.test_dsl import _dsl, _row
 
 
@@ -97,14 +97,14 @@ class TestNewTechnical:
         volumes = [100] * 24 + [300]  # 最后一天放量 3 倍
         t = [{"type": "vol_surge", "window": 20, "ratio": 2.0}]
         tech = validate_dsl(_dsl(technical=t))["technical"]
-        assert passes(tech, closes, volumes)
-        assert not passes(tech, closes, [100] * 25)
-        assert not passes(tech, closes, None)  # 无量能数据 → 不通过
+        assert passes(tech, Bars(closes, volumes))
+        assert not passes(tech, Bars(closes, [100] * 25))
+        assert not passes(tech, Bars(closes))  # 无量能数据 → 不通过
 
     def test_breakout_first_day_only(self):
         closes = [10.0] * 10 + [11.0, 11.0]  # 第 10 天突破前 10 日高点，第 11 天平台
         tech = validate_dsl(_dsl(technical=[{"type": "breakout", "window": 10}]))["technical"]
-        sig = signal_series(tech, closes)
+        sig = signal_series(tech, Bars(closes))
         assert sig[10] is True
         assert sig[11] is False  # 11 与前高持平，不再是"创新高"
 
@@ -114,16 +114,16 @@ class TestNewTechnical:
         tech = validate_dsl(
             _dsl(technical=[{"type": "rsi_range", "window": 14, "min": 0, "max": 30}])
         )["technical"]
-        assert passes(tech, [float(x) for x in down])
-        assert not passes(tech, [float(x) for x in up])
+        assert passes(tech, Bars([float(x) for x in down]))
+        assert not passes(tech, Bars([float(x) for x in up]))
 
     def test_macd_cross_fires_on_reversal(self):
         closes = [float(100 - i) for i in range(40)] + [float(60 + i * 2) for i in range(40)]
         tech = validate_dsl(
             _dsl(technical=[{"type": "macd_cross", "fast": 12, "slow": 26, "signal": 9}])
         )["technical"]
-        sig = signal_series(tech, closes)
+        sig = signal_series(tech, Bars(closes))
         assert any(sig[40:]), "下跌转上涨后应出现 MACD 金叉"
         # 一致性：passes == signal_series 最后一位
         for cut in (50, 60, 79):
-            assert passes(tech, closes[: cut + 1]) == sig[cut]
+            assert passes(tech, Bars(closes[: cut + 1])) == sig[cut]
