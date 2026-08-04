@@ -10,6 +10,7 @@
 - ma_rising:   windows 里每条均线今日值都高于昨日值（同步上翘）
 - ma_cross:    MA{fast} 今日刚上穿(golden)/下穿(death) MA{slow}，只认首日
 - daily_change: 最近 days 个交易日每日涨跌幅都在 [min, max]（%）区间
+- cum_change:  近 days 日累计涨跌幅（收盘相对 days 日前收盘）在 [min, max]（%）区间
 """
 
 from __future__ import annotations
@@ -68,6 +69,12 @@ SPECS: dict[str, dict[str, tuple[float, float, float]]] = {
         "days": (3, 1, 60),
         "min": (-100.0, -100.0, 100.0),
         "max": (100.0, -100.0, 100.0),
+    },
+    # 近 days 日累计涨跌幅（今日收盘相对 days 日前收盘，%）在 [min, max] 区间
+    "cum_change": {
+        "days": (5, 1, 240),
+        "min": (0.0, -1000.0, 1000.0),
+        "max": (1000.0, -1000.0, 1000.0),
     },
 }
 
@@ -298,6 +305,17 @@ def signal_series(
                 # 最近 d 日 = 第 i-d+1..i 日，首日还需要 closes[i-d] 作前收
                 if i < d or pref[i + 1] - pref[i - d + 1] < d:
                     ok[i] = False
+        elif typ == "cum_change":
+            d = t["days"]
+            for i in range(n):
+                if not ok[i]:
+                    continue
+                if i < d or not closes[i - d]:
+                    ok[i] = False
+                    continue
+                chg = (closes[i] / closes[i - d] - 1) * 100
+                if not (t["min"] <= chg <= t["max"]):
+                    ok[i] = False
     return ok
 
 
@@ -329,7 +347,7 @@ def bars_needed(technical: list[dict[str, Any]]) -> int:
             need = max(need, t["slow"] + t["signal"] + 10)  # EMA 预热
         elif t["type"] == "rsi_range":
             need = max(need, t["window"] * 3)  # Wilder 平滑预热
-        elif t["type"] == "daily_change":
+        elif t["type"] in ("daily_change", "cum_change"):
             need = max(need, t["days"] + 1)
     return min(need, _MAX_BARS)
 

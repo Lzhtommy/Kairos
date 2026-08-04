@@ -116,6 +116,15 @@ class TestDailyChange:
         # 数据不足（需要 days+1 根）不通过
         assert not passes([{"type": "daily_change", "days": 3, "min": -100.0, "max": 0.0}], down[:3])
 
+    def test_cum_change_semantics(self):
+        from app.services.technical import passes
+
+        closes = [100.0, 102.0, 104.0, 106.0, 108.0, 111.0]  # 近 5 日累计 +11%
+        assert passes([{"type": "cum_change", "days": 5, "min": 10.0, "max": 1000.0}], closes)
+        assert not passes([{"type": "cum_change", "days": 5, "min": 12.0, "max": 1000.0}], closes)
+        # 数据不足（需要 days+1 根）不通过
+        assert not passes([{"type": "cum_change", "days": 6, "min": 0.0, "max": 1000.0}], closes)
+
     def test_industry_in(self):
         rows = [_row("A", industry="白酒"), _row("B", industry="证券")]
         got = execute(_dsl([{"factor": "industry", "op": "in", "value": ["证券"]}]), rows)

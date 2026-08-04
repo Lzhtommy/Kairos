@@ -75,6 +75,9 @@ def _find_number(clause: str) -> float | None:
     return float(m.group(1)) if m else None
 
 
+_MULTI_DAY = re.compile(r"每[天日]|单日|连[涨跌续]|\d+\s*连[涨跌]|(?:最)?近\s*\d+\s*(?:个)?(?:交易)?[天日]")
+
+
 def _parse_clause(clause: str) -> dict[str, Any] | None:
     # industry match
     for kw, boards in _INDUSTRY_ALIASES.items():
@@ -82,6 +85,10 @@ def _parse_clause(clause: str) -> dict[str, Any] | None:
             if len(boards) == 1:
                 return {"factor": "industry", "op": "eq", "value": boards[0]}
             return {"factor": "industry", "op": "in", "value": boards}
+
+    # 多日表达（连涨/每天/近N日）归 technical 层解析，跳过以免误判成当日涨跌幅条件
+    if _MULTI_DAY.search(clause):
+        return None
 
     # 高开/低开：带幅度按幅度筛，不带幅度按 0 分界（低开的幅度在负半轴，通用路径会解析反）
     if "高开" in clause or "低开" in clause:
@@ -152,12 +159,39 @@ def _parse_streak(text: str) -> dict[str, Any] | None:
     return {"type": "daily_change", "days": days, "min": lo, "max": hi}
 
 
+def _parse_cum(text: str) -> dict[str, Any] | None:
+    """近/最近 N 日累计涨跌幅 → cum_change 条件。"""
+    m = re.search(
+        r"(?:最)?近\s*(\d+)\s*(?:个)?(?:交易)?[天日]([^，。；;、]{0,16}?)(涨|跌)幅?([^，。；;、]{0,12})",
+        text,
+    )
+    if not m:
+        return None
+    if "每" in m.group(2) or "单日" in m.group(2):
+        return None  # "近5天每日/单日…"是逐日条件，归 _parse_streak
+    days, up, tail = int(m.group(1)), m.group(3) == "涨", m.group(4)
+    num = _find_number(tail)
+    if num is None:
+        return None
+    # "不超过/没超过"须先于"超过"判定
+    lte = any(k in tail for k in _LTE) or "没超过" in tail
+    lo, hi = -1000.0, 1000.0
+    if up:
+        lo, hi = (-1000.0, num) if lte else (num, 1000.0)
+    else:
+        lo, hi = (-num, 1000.0) if lte else (-1000.0, -num)
+    return {"type": "cum_change", "days": days, "min": lo, "max": hi}
+
+
 def _parse_technical(text: str) -> list[dict[str, Any]]:
     """技术形态的关键词兜底（主路径是 DeepSeek，按 prompt 生成参数化条件）。"""
     tech: list[dict[str, Any]] = []
     streak = _parse_streak(text)
     if streak:
         tech.append(streak)
+    cum = _parse_cum(text)
+    if cum:
+        tech.append(cum)
     if "死叉" in text:
         tech.append({"type": "ma_cross", "fast": 3, "slow": 7, "direction": "death"})
     elif "金叉" in text:
@@ -234,6 +268,8 @@ def _tech_desc(t: dict[str, Any]) -> str:
         return f"RSI{t['window']} 在 {t['min']}~{t['max']} 区间"
     if t["type"] == "daily_change":
         return f"最近{t['days']}日每日涨跌幅都在 {t['min']}%~{t['max']}% 区间"
+    if t["type"] == "cum_change":
+        return f"近{t['days']}日累计涨跌幅在 {t['min']}%~{t['max']}% 区间"
     return t["type"]
 
 
@@ -361,7 +397,7 @@ def _spec_doc(industries: list[str] | None = None) -> str:
         "{\"score\":{\"factors\":[{\"factor\":\"roe\",\"weight\":0.6,\"direction\":\"desc\"},"
         "{\"factor\":\"pe\",\"weight\":0.4,\"direction\":\"asc\"}],\"top_n\":30}}"
         " → 各因子截面排名归一后加权求和取前 top_n；direction: desc=越大越好, asc=越小越好。\n"
-        "涉及均线/K线/量能形态时用 technical 数组，只有以下 9 种类型（参数可调）：\n"
+        "涉及均线/K线/量能形态时用 technical 数组，只有以下 10 种类型（参数可调）：\n"
         "- {\"type\":\"ma_trend\",\"window\":60,\"lookback\":120,\"max_down_days\":10,\"min_gain_pct\":1.5}"
         " → MA{window} 在最近 lookback 个交易日平滑上行：逐日滚动算 MA，"
         "下行天数≤max_down_days 且 MA 首尾累计涨幅≥min_gain_pct(%)\n"
@@ -382,6 +418,10 @@ def _spec_doc(industries: list[str] | None = None) -> str:
         "- {\"type\":\"daily_change\",\"days\":3,\"min\":-100,\"max\":100}"
         " → 最近 days 个交易日每日涨跌幅都在 [min, max]（%）：\"连涨 3 天\" → days=3,min=0；"
         "\"连续 3 天每天涨超 2%\" → days=3,min=2；\"最近 5 天单日跌幅都没超过 3%\" → days=5,min=-3\n"
+        "- {\"type\":\"cum_change\",\"days\":5,\"min\":0,\"max\":1000}"
+        " → 近 days 日累计涨跌幅（收盘相对 days 日前收盘，%）在 [min, max]："
+        "\"近 5 日累计涨超 10%\" → days=5,min=10；\"近 20 日跌超 15%\" → days=20,max=-15；"
+        "\"近 10 日涨幅不超过 5%（没大涨过）\" → days=10,max=5\n"
         "change_pct 是收盘（盘中为最新价）相对前收的涨跌幅；high_change_pct/low_change_pct/"
         "open_change_pct 是当日最高/最低/开盘价相对前收的涨跌幅（\"盘中一度涨超 5%\" → "
         "high_change_pct gte 5，\"盘中最多跌 3% 以内\" → low_change_pct gte -3，"
