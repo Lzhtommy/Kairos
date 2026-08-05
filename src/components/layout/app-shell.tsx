@@ -11,6 +11,7 @@ import {
   Moon,
   Bell,
   List,
+  Ticket,
   X,
 } from "@phosphor-icons/react"
 import { GearSix, SignOut } from "@phosphor-icons/react"
@@ -33,6 +34,7 @@ const NAV_ITEMS = [
   { to: "/app/paper", label: "模拟盘", icon: Robot },
   { to: "/app/watchlist", label: "自选", icon: Star },
   { to: "/app/settings", label: "设置", icon: GearSix },
+  { to: "/app/invites", label: "邀请码", icon: Ticket, adminOnly: true },
 ]
 
 function QuickActions() {
@@ -118,7 +120,9 @@ function UserFooter() {
 
 export function AppShell({ children }: { children: ReactNode }) {
   const location = useLocation()
+  const { user } = useAuth()
   const [mobileOpen, setMobileOpen] = useState(false)
+  const navItems = NAV_ITEMS.filter((item) => !item.adminOnly || user?.is_admin)
 
   const isActive = (to: string, end?: boolean) =>
     end ? location.pathname === to : location.pathname.startsWith(to)
@@ -137,7 +141,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
         </div>
         <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto px-3 py-2">
-          {NAV_ITEMS.map((item) => {
+          {navItems.map((item) => {
             const active = isActive(item.to, item.end)
             return (
               <Link
@@ -176,7 +180,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               </button>
             </div>
             <nav className="flex-1 space-y-1">
-              {NAV_ITEMS.map((item) => {
+              {navItems.map((item) => {
                 const active = isActive(item.to, item.end)
                 return (
                   <Link

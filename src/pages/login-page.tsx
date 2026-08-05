@@ -16,6 +16,7 @@ export function LoginPage() {
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [nickname, setNickname] = useState("")
+  const [inviteCode, setInviteCode] = useState("")
   const [busy, setBusy] = useState(false)
 
   // 已登录还访问 /login → 直接回应用
@@ -28,7 +29,7 @@ export function LoginPage() {
       const user =
         mode === "login"
           ? await login(email, password)
-          : await register(email, password, nickname || email.split("@")[0])
+          : await register(email, password, nickname || email.split("@")[0], inviteCode.trim())
       setUser(user)
       toast.success(mode === "login" ? "登录成功" : "注册成功")
       navigate("/app")
@@ -55,15 +56,27 @@ export function LoginPage() {
           <TabsContent value={mode}>
             <form onSubmit={submit} className="space-y-4 rounded-lg border border-border p-5">
               {mode === "register" && (
-                <div className="space-y-1.5">
-                  <Label htmlFor="nickname">昵称</Label>
-                  <Input
-                    id="nickname"
-                    value={nickname}
-                    onChange={(e) => setNickname(e.target.value)}
-                    placeholder="你的名字"
-                  />
-                </div>
+                <>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="invite-code">邀请码</Label>
+                    <Input
+                      id="invite-code"
+                      required
+                      value={inviteCode}
+                      onChange={(e) => setInviteCode(e.target.value)}
+                      placeholder="注册需要邀请码"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="nickname">昵称</Label>
+                    <Input
+                      id="nickname"
+                      value={nickname}
+                      onChange={(e) => setNickname(e.target.value)}
+                      placeholder="你的名字"
+                    />
+                  </div>
+                </>
               )}
               <div className="space-y-1.5">
                 <Label htmlFor="email">邮箱</Label>

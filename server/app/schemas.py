@@ -7,6 +7,7 @@ class RegisterIn(BaseModel):
     email: str = Field(min_length=3, max_length=255)
     password: str = Field(min_length=6, max_length=128)
     nickname: str = Field(min_length=1, max_length=64)
+    invite_code: str = Field(min_length=1, max_length=64)
 
 
 class LoginIn(BaseModel):
@@ -24,6 +25,7 @@ class UserOut(BaseModel):
     email: str
     nickname: str
     tier: str
+    is_admin: bool = False
 
 
 class ScreenerIn(BaseModel):

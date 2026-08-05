@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -9,7 +11,7 @@ from app.core.security import (
     hash_password,
     verify_password,
 )
-from app.models.user import User
+from app.models.user import InviteCode, User
 from app.models.watchlist import Watchlist
 from app.schemas import LoginIn, RegisterIn, TokenOut, UserOut
 
@@ -17,7 +19,13 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 def _user_public(u: User) -> dict:
-    return {"id": u.id, "email": u.email, "nickname": u.nickname, "tier": u.tier}
+    return {
+        "id": u.id,
+        "email": u.email,
+        "nickname": u.nickname,
+        "tier": u.tier,
+        "is_admin": u.is_admin,
+    }
 
 
 @router.post("/register", response_model=TokenOut)
@@ -25,6 +33,13 @@ def register(body: RegisterIn, db: Session = Depends(get_db)):
     exists = db.execute(select(User).where(User.email == body.email)).scalar_one_or_none()
     if exists:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "该邮箱已注册")
+    invite = db.execute(
+        select(InviteCode).where(InviteCode.code == body.invite_code.strip()).with_for_update()
+    ).scalar_one_or_none()
+    if invite is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "邀请码无效")
+    if invite.used_by is not None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "邀请码已被使用")
     user = User(
         email=body.email,
         password_hash=hash_password(body.password),
@@ -33,6 +48,8 @@ def register(body: RegisterIn, db: Session = Depends(get_db)):
     )
     db.add(user)
     db.flush()
+    invite.used_by = user.id
+    invite.used_at = datetime.now(timezone.utc)
     db.add(Watchlist(user_id=user.id, name="默认自选", is_default=True))
     db.commit()
     db.refresh(user)

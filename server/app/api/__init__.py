@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.api import (
+    admin,
     auth,
     backtests,
     health,
@@ -15,6 +16,7 @@ from app.api import (
 api_router = APIRouter(prefix="/api")
 api_router.include_router(health.router)
 api_router.include_router(auth.router)
+api_router.include_router(admin.router)
 api_router.include_router(settings.router)
 api_router.include_router(quotes.router)
 api_router.include_router(screener.router)

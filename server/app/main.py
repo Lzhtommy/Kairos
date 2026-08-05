@@ -34,6 +34,9 @@ async def lifespan(_app: FastAPI):
         cols = {c["name"] for c in inspect(engine).get_columns("strategy_runs")}
         if "forward" not in cols:
             conn.execute(text("ALTER TABLE strategy_runs ADD COLUMN forward JSON"))
+        user_cols = {c["name"] for c in inspect(engine).get_columns("users")}
+        if "is_admin" not in user_cols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT 0"))
         conn.commit()
 
     from app.jobs.collect import (

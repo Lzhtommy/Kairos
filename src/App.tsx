@@ -9,6 +9,7 @@ import { BacktestPage } from "@/pages/backtest-page"
 import { PaperPage } from "@/pages/paper-page"
 import { WatchlistPage } from "@/pages/watchlist-page"
 import { SettingsPage } from "@/pages/settings-page"
+import { AdminInvitesPage } from "@/pages/admin-invites-page"
 import { LoginPage } from "@/pages/login-page"
 import { useAuth } from "@/lib/auth"
 
@@ -25,6 +26,12 @@ function RequireAuth({ children }: { children: ReactNode }) {
   return <AppShell>{children}</AppShell>
 }
 
+function RequireAdmin({ children }: { children: ReactNode }) {
+  const { user } = useAuth()
+  if (user && !user.is_admin) return <Navigate to="/app" replace />
+  return <>{children}</>
+}
+
 function App() {
   return (
     <Routes>
@@ -37,6 +44,10 @@ function App() {
       <Route path="/app/paper" element={<RequireAuth><PaperPage /></RequireAuth>} />
       <Route path="/app/watchlist" element={<RequireAuth><WatchlistPage /></RequireAuth>} />
       <Route path="/app/settings" element={<RequireAuth><SettingsPage /></RequireAuth>} />
+      <Route
+        path="/app/invites"
+        element={<RequireAuth><RequireAdmin><AdminInvitesPage /></RequireAdmin></RequireAuth>}
+      />
     </Routes>
   )
 }
