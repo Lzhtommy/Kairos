@@ -19,7 +19,8 @@ from app.providers.factory import get_provider
 
 logger = logging.getLogger("kairos.collector")
 
-# China Standard Time = UTC+8; trading sessions 09:30–11:30 and 13:00–15:00.
+# China Standard Time = UTC+8; sessions 09:25–11:30 and 13:00–15:00 —
+# 早盘从 9:25 开始：集合竞价撮合已结束，行情源已给出开盘价。
 _CST_OFFSET_HOURS = 8
 
 # 日 K 目标深度（约 3 年交易日），供 bootstrap / 回补 / 加深共用。
@@ -32,7 +33,7 @@ def in_trading_session(now_utc: datetime | None = None) -> bool:
     t = time(cst_hour, now.minute)
     if now.weekday() >= 5:  # Sat/Sun
         return False
-    return (time(9, 30) <= t <= time(11, 30)) or (time(13, 0) <= t <= time(15, 0))
+    return (time(9, 25) <= t <= time(11, 30)) or (time(13, 0) <= t <= time(15, 0))
 
 
 def _refresh_quotes(db) -> int:
