@@ -452,15 +452,36 @@ def _spec_doc(industries: list[str] | None = None) -> str:
     )
 
 
+# 板块名 → board 代码（中英都认）。模型偶尔不按规格走：把"主板"塞进
+# industry 因子、或在 board 字段里写中文——不矫正的话前者永远匹配不到
+# 任何股票（行业表里没有"主板"），后者会被 validate_dsl 静默丢弃。
+_BOARD_NAMES = {cn: en for en, cn in BOARDS.items()} | {en: en for en in BOARDS}
+
+
 def _build_dsl(payload: dict[str, Any]) -> dict[str, Any]:
     """模型输出的 {filters, technical, score, board} → 完整 DSL（带 universe/调仓/费率默认值）并校验。"""
     universe: dict[str, Any] = {"exclude": ["ST", "停牌"], "market": ["SH", "SZ"]}
-    if payload.get("board"):
-        universe["board"] = payload["board"]
+    board = [_BOARD_NAMES[b] for b in (payload.get("board") or []) if b in _BOARD_NAMES]
+    filters = []
+    for f in payload.get("filters") or []:
+        if isinstance(f, dict) and f.get("factor") == "industry":
+            raw = f.get("value")
+            items = raw if isinstance(raw, list) else [raw]
+            hits = [v for v in items if v in _BOARD_NAMES]
+            if hits:  # 板块词挪去 universe.board，剩余真实行业保留
+                board += [_BOARD_NAMES[v] for v in hits]
+                rest = [v for v in items if v not in _BOARD_NAMES]
+                if not rest:
+                    continue
+                f = {**f, "op": "eq" if len(rest) == 1 else "in",
+                     "value": rest[0] if len(rest) == 1 else rest}
+        filters.append(f)
+    if board:
+        universe["board"] = list(dict.fromkeys(board))
     return validate_dsl(
         {
             "universe": universe,
-            "filters": payload.get("filters", []),
+            "filters": filters,
             "technical": payload.get("technical", []),
             "score": payload.get("score"),
             "rebalance": "monthly_first_trading_day",

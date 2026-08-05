@@ -34,3 +34,37 @@ class TestMultiDayParsing:
         r = rule_based("涨跌幅大于3%，PE低于20")
         assert {"factor": "change_pct", "op": "gte", "value": 3.0} in r["filters"]
         assert r["technical"] == []
+
+
+class TestBuildDslBoardRemap:
+    """模型把板块名当行业/中文 board 输出时的矫正。"""
+
+    def test_board_word_in_industry_moved_to_universe(self):
+        from app.services.strategy_ai import _build_dsl
+
+        dsl = _build_dsl({
+            "filters": [
+                {"factor": "industry", "op": "eq", "value": "主板"},
+                {"factor": "pe", "op": "lte", "value": 30},
+            ],
+        })
+        assert dsl["universe"]["board"] == ["main"]
+        assert all(f["factor"] != "industry" for f in dsl["filters"])
+
+    def test_mixed_industry_list_keeps_real_industries(self):
+        from app.services.strategy_ai import _build_dsl
+
+        dsl = _build_dsl({
+            "filters": [{"factor": "industry", "op": "in", "value": ["主板", "白酒"]}],
+        })
+        assert dsl["universe"]["board"] == ["main"]
+        assert {"factor": "industry", "op": "eq", "value": "白酒"} in dsl["filters"]
+
+    def test_chinese_board_field_mapped(self):
+        from app.services.strategy_ai import _build_dsl
+
+        dsl = _build_dsl({
+            "filters": [{"factor": "pe", "op": "lte", "value": 30}],
+            "board": ["科创板", "chinext"],
+        })
+        assert dsl["universe"]["board"] == ["chinext", "star"]
