@@ -1,0 +1,37 @@
+name: Maintenance
+
+# 手动触发：在生产 api 容器里执行 scripts/ 下的一次性维护脚本（如数据迁移）。
+# 脚本自身应幂等或先试跑；本 workflow 只负责透传并回显输出。
+on:
+  workflow_dispatch:
+    inputs:
+      module:
+        description: "python 模块名（scripts. 前缀，如 scripts.migrate_ma_trend_lookback）"
+        default: "scripts.migrate_ma_trend_lookback"
+        required: true
+      args:
+        description: "附加参数（如 --apply；留空多为试跑）"
+        default: ""
+        required: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "${{ secrets.SERVER_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Run script in api container
+        run: |
+          case "${{ inputs.module }}" in
+            scripts.*) ;;
+            *) echo "只允许执行 scripts.* 模块" >&2; exit 1 ;;
+          esac
+          ssh -o ServerAliveInterval=30 -i ~/.ssh/id_ed25519 \
+            "${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}" \
+            "cd /opt/kairos && docker compose exec -T api \
+               python -m ${{ inputs.module }} ${{ inputs.args }}"
