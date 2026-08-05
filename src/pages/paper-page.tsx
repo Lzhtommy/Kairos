@@ -181,7 +181,18 @@ export function PaperPage() {
 
               {account.curve.length > 1 ? (
                 <div className="rounded-lg border border-border p-4">
-                  <BacktestChart curve={account.curve} />
+                  <BacktestChart
+                    curve={account.curve}
+                    benchmark={account.backtestOverlay?.curve ?? []}
+                    benchmarkName="回测（同段归一）"
+                  />
+                  {account.backtestOverlay && (
+                    <p className="mt-2 text-[11px] text-muted-foreground">
+                      虚线为 {account.backtestOverlay.createdAt} 的最近一次回测在同一时段的归一曲线
+                      ——两条线的分叉程度就是策略过拟合的直观读数。若回测参数与模拟盘不一致，
+                      对比仅供参考。
+                    </p>
+                  )}
                 </div>
               ) : (
                 <p className="rounded-lg border border-border p-4 text-xs text-muted-foreground">

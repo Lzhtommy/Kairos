@@ -56,6 +56,22 @@ class Kline(Base):
     volume: Mapped[int] = mapped_column(Integer)
 
 
+class AdjustmentEvent(Base):
+    """除权除息事件：ex-date 当日检测到的复权比例，历史 bar 已按此重标定。
+
+    ratio = 交易所披露的调整后昨收 / 库里昨收（分红/送转 < 1）。
+    留档用于审计与季度 kline-full 重刷的核对；(code, date) 唯一。
+    """
+
+    __tablename__ = "adjustment_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(16), index=True)
+    date: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    ratio: Mapped[float] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
 class IndexQuote(Base):
     __tablename__ = "index_quotes"
 

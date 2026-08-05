@@ -113,6 +113,19 @@ def test_capacity_skips_by_code_order(db):
     assert db.get(PaperAccount, acct.id).stats.get("skippedByCapacity") == 1
 
 
+def test_renormalize_overlay():
+    """回测叠加曲线：截段 + 起点归一；重叠不足不叠加。"""
+    bt = [
+        {"t": "2026-01-05", "v": 1.0},
+        {"t": "2026-01-06", "v": 1.2},
+        {"t": "2026-01-07", "v": 1.5},
+    ]
+    seg = paper.renormalize_overlay(bt, "2026-01-06")
+    assert seg == [{"t": "2026-01-06", "v": 1.0}, {"t": "2026-01-07", "v": 1.25}]
+    assert paper.renormalize_overlay(bt, "2026-01-07") is None  # 只剩 1 点
+    assert paper.renormalize_overlay([], "2026-01-01") is None
+
+
 def test_one_word_limit_defers_entry(db):
     days = trading_days("2026-02-02", 3)
     acct = _setup(db, days, {"holdDays": 5, "exitRule": "hold",

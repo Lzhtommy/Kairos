@@ -4,9 +4,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.backtests import _load_payload
 from app.core.db import get_db
 from app.core.security import get_current_user
 from app.models.strategy import (
+    Backtest,
     PaperAccount,
     PaperEquity,
     PaperPosition,
@@ -15,7 +17,7 @@ from app.models.strategy import (
 )
 from app.models.user import User
 from app.schemas import PaperToggleIn
-from app.services.paper import clean_params
+from app.services.paper import clean_params, renormalize_overlay
 
 router = APIRouter(prefix="/paper", tags=["paper"])
 
@@ -25,6 +27,29 @@ def _owned_strategy(db: Session, sid: int, user: User) -> Strategy:
     if not s or s.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "策略不存在")
     return s
+
+
+def _backtest_overlay(db: Session, strategy_id: int, start: str | None) -> dict | None:
+    """最近一次完成的回测，与模拟盘同段归一后的曲线。"""
+    if not start:
+        return None
+    bt = db.execute(
+        select(Backtest)
+        .where(Backtest.strategy_id == strategy_id, Backtest.status == "done")
+        .order_by(Backtest.created_at.desc())
+        .limit(1)
+    ).scalar()
+    if bt is None:
+        return None
+    curve = renormalize_overlay(_load_payload(bt).get("curve") or [], start)
+    if curve is None:
+        return None
+    return {
+        "backtestId": bt.id,
+        "createdAt": bt.created_at.strftime("%Y-%m-%d"),
+        "params": bt.params or {},
+        "curve": curve,
+    }
 
 
 def _account_public(db: Session, acct: PaperAccount, name: str) -> dict:
@@ -41,6 +66,7 @@ def _account_public(db: Session, acct: PaperAccount, name: str) -> dict:
         .order_by(PaperEquity.date.asc())
     ).scalars().all()
     closed_rets = [t.ret for t in trades]
+    started_at = curve[0].date.strftime("%Y-%m-%d") if curve else None
     return {
         "strategyId": acct.strategy_id,
         "strategyName": name,
@@ -48,7 +74,9 @@ def _account_public(db: Session, acct: PaperAccount, name: str) -> dict:
         "params": clean_params(acct.params),
         "equity": acct.equity,
         "stats": acct.stats or {},
-        "startedAt": curve[0].date.strftime("%Y-%m-%d") if curve else None,
+        "startedAt": started_at,
+        # 最近一次回测的同段归一曲线：与模拟盘画在一张图上看分叉（过拟合读数）
+        "backtestOverlay": _backtest_overlay(db, acct.strategy_id, started_at),
         "curve": [
             {"t": e.date.strftime("%Y-%m-%d"), "v": round(e.equity, 4)} for e in curve
         ],

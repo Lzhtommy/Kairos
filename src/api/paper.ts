@@ -51,6 +51,13 @@ export type PaperAccount = {
   stats: { skippedByLimit?: number; skippedByCapacity?: number }
   startedAt: string | null
   curve: { t: string; v: number }[]
+  /** 最近一次完成回测的同段归一曲线（与模拟盘起点对齐到 1.0），无重叠时为 null */
+  backtestOverlay: {
+    backtestId: number
+    createdAt: string
+    params: Record<string, unknown>
+    curve: { t: string; v: number }[]
+  } | null
   positions: PaperPosition[]
   trades: PaperTrade[]
   tradeCount: number

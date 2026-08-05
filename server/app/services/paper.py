@@ -72,6 +72,16 @@ def clean_params(raw: dict[str, Any] | None) -> dict[str, Any]:
     return out
 
 
+def renormalize_overlay(bt_curve: list[dict], start: str) -> list[dict] | None:
+    """回测曲线截到模拟盘起点之后并归一到 1.0——两条线同段可比，
+    分叉程度即过拟合读数。重叠不足 2 个点时不叠加。"""
+    seg = [p for p in bt_curve if p.get("t", "") >= start]
+    if len(seg) < 2 or not seg[0].get("v"):
+        return None
+    base = seg[0]["v"]
+    return [{"t": p["t"], "v": round(p["v"] / base, 4)} for p in seg]
+
+
 def _one_word(bar: Bar, prev_close: float, pct: float, direction: int) -> bool:
     """当日是否一字板（同 backtest._one_word 的判定，输入换成单日 bar + 前收）。"""
     o, high, low, close = bar

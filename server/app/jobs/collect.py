@@ -11,10 +11,18 @@ import logging
 from datetime import datetime, time, timedelta, timezone
 from time import sleep
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 
 from app.core.db import SessionLocal
-from app.models.market import FactorSnapshot, Fundamental, IndexQuote, Kline, Quote, StockInfo
+from app.models.market import (
+    AdjustmentEvent,
+    FactorSnapshot,
+    Fundamental,
+    IndexQuote,
+    Kline,
+    Quote,
+    StockInfo,
+)
 from app.providers.factory import get_provider
 
 logger = logging.getLogger("kairos.collector")
@@ -36,9 +44,95 @@ def in_trading_session(now_utc: datetime | None = None) -> bool:
     return (time(9, 25) <= t <= time(11, 30)) or (time(13, 0) <= t <= time(15, 0))
 
 
+# 除权检测当日已完成的标记（CST 日期字符串）。重启后重跑无害：
+# 历史已重标定 → 比例重算 ≈ 1，且事件表 (code, date) 去重
+_adj_done_day: str | None = None
+
+# 复权比例的合法区间：分红/送转/配股都是下调（10送10 → 0.5），
+# 上调（缩股）极罕见不处理；|r-1| ≤ 0.1% 视为正常价差不动
+_ADJ_MIN, _ADJ_EPS = 0.2, 0.001
+
+
+def _apply_adjustments(db, quotes, day_start: datetime) -> int:
+    """除权除息当日检测 + 历史重标定，维持全库"连续前复权"口径。
+
+    交易所披露的 prev_close 与库里昨收出现超阈值下调 → 除权事件：
+    把该股全部历史 bar 按比例缩放（假跌恰好被抵消，任意两日比价关系
+    保持正确），并同步缩放模拟盘持仓的成本价/最新价。读路径零改动。
+
+    已知边界：停机跨过 ex-date 时，比例里会混入当日真实涨跌（误差一次
+    性、幅度小），季度 kline-full 重刷兜底修正。
+    """
+    todays = {
+        q.code: q for q in quotes if q.exchange_ts and q.exchange_ts.date() == day_start.date()
+    }
+    if not todays:
+        return 0
+    # 每股最新一根 ts < today 的收盘（库里口径的"昨收"）
+    rn = func.row_number().over(partition_by=Kline.code, order_by=Kline.ts.desc()).label("rn")
+    sub = (
+        select(Kline.code, Kline.close, rn)
+        .where(Kline.period == "1d", Kline.ts < day_start, Kline.code.in_(sorted(todays)))
+        .subquery()
+    )
+    prev_stored = {
+        code: close for code, close in db.execute(
+            select(sub.c.code, sub.c.close).where(sub.c.rn == 1)
+        )
+    }
+    seen_today = {
+        r[0] for r in db.execute(
+            select(AdjustmentEvent.code).where(AdjustmentEvent.date == day_start)
+        )
+    }
+    applied = 0
+    for code, q in todays.items():
+        stored = prev_stored.get(code)
+        if code in seen_today or not stored or stored <= 0 or q.prev_close <= 0:
+            continue
+        r = q.prev_close / stored
+        if not (_ADJ_MIN <= r <= 1.0) or abs(r - 1) <= _ADJ_EPS:
+            continue
+        db.execute(
+            update(Kline)
+            .where(Kline.code == code, Kline.period == "1d", Kline.ts < day_start)
+            .values(open=Kline.open * r, high=Kline.high * r,
+                    low=Kline.low * r, close=Kline.close * r)
+        )
+        # 模拟盘持仓与排队的价格基准同口径缩放（否则止损阈值/浮盈会按假跌算）
+        from app.models.strategy import PaperPosition
+
+        db.execute(
+            update(PaperPosition)
+            .where(PaperPosition.code == code)
+            .values(entry_px=PaperPosition.entry_px * r,
+                    last_price=PaperPosition.last_price * r)
+        )
+        db.add(AdjustmentEvent(code=code, date=day_start, ratio=round(r, 6)))
+        applied += 1
+        logger.info("Adjustment %s: ratio %.4f (prev %.3f -> %.3f)",
+                    code, r, stored, q.prev_close)
+    if applied:
+        db.commit()
+    return applied
+
+
 def _refresh_quotes(db) -> int:
     provider = get_provider()
     quotes = provider.get_quotes()
+
+    # 除权检测每个交易日只跑一次（首采时），seed 演示数据不适用
+    global _adj_done_day
+    cst_today = (datetime.now(timezone.utc) + timedelta(hours=8)).date()
+    if provider.name != "seed" and _adj_done_day != str(cst_today):
+        day_start = datetime(cst_today.year, cst_today.month, cst_today.day)
+        try:
+            _apply_adjustments(db, quotes, day_start)
+        except Exception:  # noqa: BLE001 — 检测失败不拦行情写入
+            logger.exception("adjustment detection failed")
+            db.rollback()
+        _adj_done_day = str(cst_today)
+
     fund_map = {f.code: f for f in db.execute(select(Fundamental)).scalars().all()}
     for q in quotes:
         roe = q.roe or (fund_map[q.code].roe if q.code in fund_map else 0.0)
