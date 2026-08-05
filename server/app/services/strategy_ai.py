@@ -201,7 +201,7 @@ def _parse_technical(text: str) -> list[dict[str, Any]]:
     if any(k in text for k in ("双线向上", "均线向上", "均线上翘", "均线同步向上")):
         tech.append({"type": "ma_rising", "windows": [3, 7]})
     if any(k in text for k in ("趋势平滑", "平滑上行", "稳步上行", "长期趋势向上")):
-        tech.append({"type": "ma_trend", "window": 60, "lookback": 120,
+        tech.append({"type": "ma_trend", "window": 60, "lookback": 60,
                      "max_down_days": 10, "min_gain_pct": 1.5})
     return tech
 
@@ -402,9 +402,11 @@ def _spec_doc(industries: list[str] | None = None) -> str:
         "{\"factor\":\"pe\",\"weight\":0.4,\"direction\":\"asc\"}],\"top_n\":30}}"
         " → 各因子截面排名归一后加权求和取前 top_n；direction: desc=越大越好, asc=越小越好。\n"
         "涉及均线/K线/量能形态时用 technical 数组，优先使用以下 10 种白名单类型（参数可调）：\n"
-        "- {\"type\":\"ma_trend\",\"window\":60,\"lookback\":120,\"max_down_days\":10,\"min_gain_pct\":1.5}"
-        " → MA{window} 在最近 lookback 个交易日平滑上行：逐日滚动算 MA，"
-        "下行天数≤max_down_days 且 MA 首尾累计涨幅≥min_gain_pct(%)\n"
+        "- {\"type\":\"ma_trend\",\"window\":60,\"lookback\":60,\"max_down_days\":10,\"min_gain_pct\":1.5}"
+        " → MA{window} 均线最近 lookback 个交易日平滑上行（lookback = 检查最近多少个"
+        "均线值，均线每个交易日一个点）：下行天数≤max_down_days 且首尾累计涨幅≥min_gain_pct(%)。"
+        "lookback 与 window 相互独立，\"MA60 近 5 日上行\" → window=60,lookback=5；"
+        "约束 window+lookback-1 ≤ 250\n"
         "- {\"type\":\"ma_distance\",\"fast\":3,\"base\":60,\"min_pct\":-8,\"max_pct\":12}"
         " → MA{fast} 相对 MA{base} 的偏离百分比在 [min_pct, max_pct] 区间内\n"
         "- {\"type\":\"ma_rising\",\"windows\":[3,7]}"

@@ -48,6 +48,14 @@ class TestValidate:
         with pytest.raises(DSLError):
             validate_dsl(_dsl(technical=[{"type": "ma_cross", "fast": 10, "slow": 5}]))
 
+    def test_ma_trend_combined_bars_capped(self):
+        # lookback 是均线值个数，lookback < window 合法（"MA60 近 5 日上行"）
+        out = validate_dsl(_dsl(technical=[{"type": "ma_trend", "window": 60, "lookback": 5}]))
+        assert out["technical"][0]["lookback"] == 5
+        # 但 window+lookback-1 超过日 K 上限要报错
+        with pytest.raises(DSLError):
+            validate_dsl(_dsl(technical=[{"type": "ma_trend", "window": 120, "lookback": 240}]))
+
     def test_daily_change_validate(self):
         out = validate_dsl(
             _dsl(technical=[{"type": "daily_change", "days": 3, "min": 2, "max": 100}])

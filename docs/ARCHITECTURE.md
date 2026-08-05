@@ -277,7 +277,7 @@ alerts(id, user_id, type, target, condition json, enabled)
   "rebalance": "monthly_first_trading_day",
   "cost": { "side": "both", "rate": 0.0005 },
   "technical": [
-    { "type": "ma_trend", "window": 60, "lookback": 120, "max_down_days": 10, "min_gain_pct": 1.5 },
+    { "type": "ma_trend", "window": 60, "lookback": 60, "max_down_days": 10, "min_gain_pct": 1.5 },
     { "type": "ma_distance", "fast": 3, "base": 60, "min_pct": -8, "max_pct": 12 },
     { "type": "ma_rising", "windows": [3, 7] },
     { "type": "ma_cross", "fast": 3, "slow": 7, "direction": "golden" }

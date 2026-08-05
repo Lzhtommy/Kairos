@@ -4,8 +4,9 @@
 解释器函数，类型走白名单，数值参数在 validate_dsl 里夹到安全范围。
 
 形态类型（参数均可调）：
-- ma_trend:    MA{window} 在最近 lookback 根 K 线内"平滑上行"——
-               逐日滚动计算 MA，下行天数 ≤ max_down_days 且首尾累计涨幅 ≥ min_gain_pct(%)
+- ma_trend:    MA{window} 最近 lookback 个均线值（均线每个交易日一个点，即图上
+               这条线最近 lookback 天的走势）"平滑上行"——下行天数 ≤ max_down_days
+               且首尾累计涨幅 ≥ min_gain_pct(%)；需要 window+lookback-1 根日 K
 - ma_distance: MA{fast} 相对 MA{base} 的偏离百分比落在 [min_pct, max_pct]
 - ma_rising:   windows 里每条均线今日值都高于昨日值（同步上翘）
 - ma_cross:    MA{fast} 今日刚上穿(golden)/下穿(death) MA{slow}，只认首日
@@ -43,7 +44,7 @@ class Bars:
 SPECS: dict[str, dict[str, tuple[float, float, float]]] = {
     "ma_trend": {
         "window": (60, 2, 120),
-        "lookback": (120, 3, 240),
+        "lookback": (60, 2, 240),  # 均线值个数（≥2 才能比较首尾）
         "max_down_days": (10, 0, 240),
         "min_gain_pct": (1.5, -100.0, 1000.0),
     },
@@ -192,7 +193,7 @@ def signal_series(technical: list[dict[str, Any]], bars: Bars) -> list[bool]:
     for t in technical:
         typ = t["type"]
         if typ == "ma_trend":
-            w, lb = t["window"], t["lookback"]
+            w, lb = t["window"], t["lookback"]  # lookback = 检查最近多少个均线值
             m = ma(w)
             # downs[i] = m[i] < m[i-1]（两值都存在才算）；前缀和 O(1) 查任意区间回调数
             downs = [0] * n
@@ -202,11 +203,11 @@ def signal_series(technical: list[dict[str, Any]], bars: Bars) -> list[bool]:
             pref = [0] * (n + 1)
             for i in range(n):
                 pref[i + 1] = pref[i] + downs[i]
-            span = lb - w  # 窗口内 MA 值数量 - 1 = 比较次数
+            span = lb - 1  # 首尾均线值的下标距离 = 比较次数
             for i in range(n):
-                # 与 point-in-time 版本一致：取 closes[i-lb+1..i] 内的 MA 序列
+                # 取 m[i-lb+1..i] 共 lb 个均线值，首个值也须已能算出（下标 ≥ w-1）
                 start = i - span
-                if i + 1 < lb or start < w - 1 or m[start] is None or m[i] is None or not m[start]:
+                if start < w - 1 or m[i] is None or not m[start]:
                     ok[i] = False
                     continue
                 if pref[i + 1] - pref[start + 1] > t["max_down_days"]:
@@ -357,7 +358,7 @@ def bars_needed(technical: list[dict[str, Any]]) -> int:
     need = 0
     for t in technical:
         if t["type"] == "ma_trend":
-            need = max(need, t["lookback"])
+            need = max(need, t["window"] + t["lookback"] - 1)
         elif t["type"] == "ma_distance":
             need = max(need, t["base"])
         elif t["type"] == "ma_rising":

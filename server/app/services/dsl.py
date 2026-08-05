@@ -234,6 +234,13 @@ def _validate_technical(entries: Any) -> list[dict[str, Any]]:
             entry["direction"] = direction
             if entry["fast"] >= entry["slow"]:
                 raise DSLError(f"technical[{i}] 要求 fast < slow")
+        if typ == "ma_trend":
+            need = entry["window"] + entry["lookback"] - 1
+            if need > TECH_MAX_BARS:
+                raise DSLError(
+                    f"technical[{i}] 需要 {need} 根日 K（window+lookback-1），"
+                    f"超出上限 {TECH_MAX_BARS}"
+                )
         if typ == "ma_distance" and entry["min_pct"] > entry["max_pct"]:
             raise DSLError(f"technical[{i}] 要求 min_pct ≤ max_pct")
         if typ in ("rsi_range", "daily_change", "cum_change") and entry["min"] > entry["max"]:
