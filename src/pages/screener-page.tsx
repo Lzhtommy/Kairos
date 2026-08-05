@@ -1,6 +1,13 @@
-import { useState } from "react"
+import { useRef, useState } from "react"
 import { keepPreviousData, useQuery } from "@tanstack/react-query"
-import { Sparkle, ArrowCounterClockwise, ArrowsClockwise, CircleNotch } from "@phosphor-icons/react"
+import {
+  Sparkle,
+  ArrowCounterClockwise,
+  ArrowsClockwise,
+  Check,
+  CircleNotch,
+  Copy,
+} from "@phosphor-icons/react"
 import { INDUSTRIES } from "@/lib/mock-data"
 import { fetchIndustries, runScreener } from "@/api/market"
 import { fetchStrategies, fetchStrategyHits } from "@/api/strategies"
@@ -100,6 +107,28 @@ export function ScreenerPage() {
   // 只在首次加载或筛选条件变化（展示的是旧数据占位）时亮加载态，60s 后台轮询不打扰
   const activeQ = mode === "classic" ? classicQ : hitsQ
   const loading = activeQ.isLoading || (activeQ.isFetching && activeQ.isPlaceholderData)
+
+  const [copied, setCopied] = useState(false)
+  const copiedTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const copyList = async () => {
+    const text = filtered.map((s) => `${s.code} ${s.name}`).join(" ")
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch {
+      // http 部署环境没有 clipboard API（需要安全上下文），回退隐藏 textarea
+      const ta = document.createElement("textarea")
+      ta.value = text
+      ta.style.position = "fixed"
+      ta.style.opacity = "0"
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand("copy")
+      ta.remove()
+    }
+    setCopied(true)
+    clearTimeout(copiedTimer.current)
+    copiedTimer.current = setTimeout(() => setCopied(false), 2000)
+  }
 
   return (
     <div className="mx-auto max-w-[1600px] space-y-5 px-4 py-6 lg:px-6">
@@ -291,6 +320,16 @@ export function ScreenerPage() {
             >
               <ArrowsClockwise className={cn("size-3.5", activeQ.isFetching && "animate-spin")} />
             </button>
+            <button
+              onClick={copyList}
+              disabled={filtered.length === 0}
+              aria-label="复制股票列表"
+              title="复制当前筛选结果（代码 名称）"
+              className="flex size-6 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+            >
+              {copied ? <Check className="size-3.5 text-up" /> : <Copy className="size-3.5" />}
+            </button>
+            {copied && <span className="text-xs text-up">已复制 {filtered.length} 只</span>}
           </p>
           {filtered.length > 0 && (
             <div
