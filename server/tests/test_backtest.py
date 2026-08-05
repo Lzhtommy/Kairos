@@ -69,6 +69,23 @@ class TestEventMode:
             t["entryDate"] for t in want["trades"]
         ]
 
+    def test_signal_close_entry_same_day(self, db):
+        """entry=signal_close：信号当日收盘价入场（尾盘预判近似），持有期从当日起算。"""
+        days = trading_days("2026-01-05", 30)
+        closes = [20 - i * 0.5 for i in range(10)] + [15.5 + i * 0.7 for i in range(20)]
+        add_stock(db, "600519", days, closes)
+
+        result = backtest.run(
+            db, _event_dsl(), {"holdDays": 5, "entry": "signal_close", "costRate": 0}
+        )
+        t = result["trades"][0]
+        sig = signal_series(GOLDEN, Bars(closes))
+        first = sig.index(True)
+        assert t["entryDate"] == days[first].strftime("%Y-%m-%d")  # 信号当日
+        assert t["entryPx"] == round(closes[first], 3)             # 当日收盘价
+        exit_idx = min(first + 5, len(days) - 1)
+        assert t["exitDate"] == days[exit_idx].strftime("%Y-%m-%d")
+
     def test_stop_loss_exits_early(self, db):
         days = trading_days("2026-01-05", 30)
         # 金叉后第二天开始暴跌，触发 8% 止损

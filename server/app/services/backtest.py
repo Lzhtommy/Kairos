@@ -50,7 +50,8 @@ def _clean_params(params: dict[str, Any], dsl: dict[str, Any]) -> dict[str, Any]
     return {
         "period": int(num("periodDays", 250, 60, 1250)),
         "hold": int(num("holdDays", 10, 1, 60)),
-        "entry": pick("entry", ("open", "close"), "open"),
+        # open=信号次日开盘 close=信号次日收盘 signal_close=信号当日收盘（尾盘近似）
+        "entry": pick("entry", ("open", "close", "signal_close"), "open"),
         "exit": pick("exitRule", ("hold", "signal", "stop"), "hold"),
         "stop_gain": num("stopGain", 15.0, 1.0, 100.0),
         "stop_loss": num("stopLoss", 8.0, 1.0, 50.0),
@@ -312,9 +313,11 @@ def _candidates_for_stock(
             if row is None or not all(match_filter(f, row) for f in day_filters):
                 i += 1
                 continue
-        # 入场：信号次日，一字涨停顺延，连续 3 日买不进则放弃该信号
+        # 入场：当日收盘（尾盘按预判信号成交的近似）或信号次日；
+        # 一字涨停顺延，连续 3 个交易日买不进则放弃该信号
+        start = i if p["entry"] == "signal_close" else i + 1
         e_idx = None
-        for e in range(i + 1, min(i + 4, n)):
+        for e in range(start, min(start + 3, n)):
             if not _one_word(series, e, pct, +1):
                 e_idx = e
                 break

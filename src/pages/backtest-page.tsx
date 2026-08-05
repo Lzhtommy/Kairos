@@ -131,6 +131,7 @@ function summarizeBacktest(b: BacktestSummary): { params: string; result: string
   const bits = [PERIOD_LABEL[p.periodDays ?? 250] ?? `${p.periodDays}日`]
   if (m.mode === "event") {
     bits.push(
+      p.entry === "signal_close" ? "当日收盘买" : p.entry === "close" ? "次日收盘买" : "次日开盘买",
       `持有${p.holdDays}天`,
       p.exitRule === "stop"
         ? `止盈+${p.stopGain}%/止损-${p.stopLoss}%`
@@ -553,7 +554,12 @@ export function BacktestPage() {
                       label="入场"
                       value={btParams.entry!}
                       onChange={(v) => setParam("entry", v as BacktestParams["entry"])}
-                      options={[["open", "次日开盘"], ["close", "次日收盘"]]}
+                      options={[
+                        ["open", "次日开盘"],
+                        ["close", "次日收盘"],
+                        // 尾盘按预判信号买入的近似：信号用当日收盘价算出，也按它成交
+                        ["signal_close", "当日收盘"],
+                      ]}
                     />
                     <ParamSelect
                       label="退出"
@@ -722,7 +728,7 @@ export function BacktestPage() {
                     )}
                   <p className="text-xs text-muted-foreground">
                     {metrics.mode === "event"
-                      ? `事件驱动回测（账户口径）：信号次日入场、按所选规则退出，每笔占 1/${metrics.maxConcurrent ?? 10} 仓位，同日信号多于空位时按代码序取前 N。止盈止损按盘中高低价触发、按触发价成交（跳空按开盘价，同日双触发保守计为止损）。一字涨停顺延入场（3 日买不进放弃）、一字跌停顺延出场。涨跌幅/最高价/最低价/开盘涨跌幅条件按信号日 K 线逐日检查，其余标量条件（PE/市值等）按今日快照预筛股票池。资金曲线为账户净值（空仓部分现金持平，虚线为基准）。`
+                      ? `事件驱动回测（账户口径）：按所选时机入场（"当日收盘"是尾盘按预判信号成交的近似——信号由当日收盘价算出，也按它成交）、按所选规则退出，每笔占 1/${metrics.maxConcurrent ?? 10} 仓位，同日信号多于空位时按代码序取前 N。止盈止损按盘中高低价触发、按触发价成交（跳空按开盘价，同日双触发保守计为止损）。一字涨停顺延入场（3 日买不进放弃）、一字跌停顺延出场。涨跌幅/最高价/最低价/开盘涨跌幅条件按信号日 K 线逐日检查，其余标量条件（PE/市值等）按今日快照预筛股票池。资金曲线为账户净值（空仓部分现金持平，虚线为基准）。`
                       : `组合回测：每个调仓期按当期时点数据重新选股（虚线为基准指数），调仓成本按实际换手比例计。时点因子来自每日收盘快照${
                           metrics.rebalances
                             ? `，本次 ${metrics.rebalances} 期中 ${metrics.pitPeriods ?? 0} 期有真实快照`

@@ -4,7 +4,8 @@ import { api } from "@/api/client"
 export type BacktestParams = {
   periodDays?: number // 120≈半年 250≈1年 500≈2年 750≈3年
   holdDays?: number
-  entry?: "open" | "close"
+  /** open=次日开盘 close=次日收盘 signal_close=信号当日收盘（尾盘近似） */
+  entry?: "open" | "close" | "signal_close"
   exitRule?: "hold" | "signal" | "stop"
   stopGain?: number
   stopLoss?: number

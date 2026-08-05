@@ -63,7 +63,7 @@ class BacktestIn(BaseModel):
     strategyId: int
     periodDays: int = 250          # 回测窗口（交易日）：120≈半年 250≈1年 500≈2年 750≈3年
     holdDays: int = 10             # 事件驱动：信号后持有期
-    entry: str = "open"            # 事件驱动：信号次日 open|close 入场
+    entry: str = "open"            # 事件驱动：open|close（次日）|signal_close（当日收盘）
     exitRule: str = "hold"         # 事件驱动：hold|signal|stop
     stopGain: float = 15.0         # exitRule=stop 时的止盈 %
     stopLoss: float = 8.0          # exitRule=stop 时的止损 %
