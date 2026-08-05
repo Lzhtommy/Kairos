@@ -143,7 +143,11 @@ function summarizeBacktest(b: BacktestSummary): { params: string; result: string
   }
   let result = ""
   if (b.status === "failed") result = "失败"
-  else if (m.mode === "event") result = `平均 ${m.avgReturn}% · 胜率 ${m.winRate}%`
+  else if (m.mode === "event")
+    result =
+      (m.eventCount ?? 0) === 0
+        ? "无成交信号"
+        : `平均 ${m.avgReturn ?? "—"}% · 胜率 ${m.winRate ?? "—"}%`
   else if (m.mode === "portfolio")
     result = `年化 ${m.annualizedReturn}%${m.excessReturn != null ? ` · 超额 ${m.excessReturn}%` : ""}`
   return { params: bits.join("·"), result }
@@ -632,19 +636,27 @@ export function BacktestPage() {
                   调好参数后点击「运行回测」查看历史表现
                 </div>
               )}
-              {metrics && (
+              {metrics && metrics.mode === "event" && (metrics.eventCount ?? 0) === 0 && (
+                <div className="rounded-lg border border-dashed border-border px-6 py-14 text-center text-sm text-muted-foreground">
+                  回测区间内没有产生成交信号（股票池 {metrics.hitCount ?? 0} 只，技术条件从未同时满足）。
+                  {(metrics.skippedByLimit ?? 0) > 0 &&
+                    `另有 ${metrics.skippedByLimit} 个信号因连续一字涨停买不进被放弃。`}
+                  可尝试放宽条件，或检查是否存在相互矛盾、永远不可能成立的条件。
+                </div>
+              )}
+              {metrics && !(metrics.mode === "event" && (metrics.eventCount ?? 0) === 0) && (
                 <>
                   <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-border bg-border sm:grid-cols-3 lg:grid-cols-6">
                     {(metrics.mode === "event"
                       ? [
-                          { label: "账户总收益", value: `${(metrics.totalReturn ?? 0) > 0 ? "+" : ""}${metrics.totalReturn}%`, tone: (metrics.totalReturn ?? 0) >= 0 ? ("up" as const) : ("down" as const) },
+                          { label: "账户总收益", value: `${(metrics.totalReturn ?? 0) > 0 ? "+" : ""}${metrics.totalReturn ?? "—"}%`, tone: (metrics.totalReturn ?? 0) >= 0 ? ("up" as const) : ("down" as const) },
                           { label: "年化收益", value: `${(metrics.annualizedReturn ?? 0) > 0 ? "+" : ""}${metrics.annualizedReturn ?? "—"}%`, tone: (metrics.annualizedReturn ?? 0) >= 0 ? ("up" as const) : ("down" as const) },
                           { label: "最大回撤", value: `${metrics.maxDrawdown ?? "—"}%`, tone: "down" as const },
                           { label: `${metrics.benchmarkName ?? "基准"}同期`, value: metrics.benchmarkReturn == null ? "—" : `${metrics.benchmarkReturn > 0 ? "+" : ""}${metrics.benchmarkReturn}%`, tone: "flat" as const },
-                          { label: "成交信号", value: `${metrics.eventCount}`, tone: "flat" as const },
-                          { label: "胜率", value: `${metrics.winRate}%`, tone: "flat" as const },
-                          { label: "平均单次收益", value: `${(metrics.avgReturn ?? 0) > 0 ? "+" : ""}${metrics.avgReturn}%`, tone: (metrics.avgReturn ?? 0) >= 0 ? ("up" as const) : ("down" as const) },
-                          { label: "平均持有", value: `${metrics.avgHoldDays} 天`, tone: "flat" as const },
+                          { label: "成交信号", value: `${metrics.eventCount ?? 0}`, tone: "flat" as const },
+                          { label: "胜率", value: `${metrics.winRate ?? "—"}%`, tone: "flat" as const },
+                          { label: "平均单次收益", value: `${(metrics.avgReturn ?? 0) > 0 ? "+" : ""}${metrics.avgReturn ?? "—"}%`, tone: (metrics.avgReturn ?? 0) >= 0 ? ("up" as const) : ("down" as const) },
+                          { label: "平均持有", value: `${metrics.avgHoldDays ?? "—"} 天`, tone: "flat" as const },
                         ]
                       : [
                           { label: "年化收益", value: `${(metrics.annualizedReturn ?? 0) > 0 ? "+" : ""}${metrics.annualizedReturn}%`, tone: (metrics.annualizedReturn ?? 0) >= 0 ? ("up" as const) : ("down" as const) },
