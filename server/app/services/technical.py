@@ -43,7 +43,7 @@ class Bars:
 SPECS: dict[str, dict[str, tuple[float, float, float]]] = {
     "ma_trend": {
         "window": (60, 2, 120),
-        "lookback": (120, 10, 240),
+        "lookback": (120, 3, 240),
         "max_down_days": (10, 0, 240),
         "min_gain_pct": (1.5, -100.0, 1000.0),
     },
