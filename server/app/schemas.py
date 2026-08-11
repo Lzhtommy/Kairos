@@ -50,6 +50,18 @@ class ChatTurn(BaseModel):
     content: str = Field(max_length=4000)
 
 
+class ChatMessageIn(BaseModel):
+    role: Literal["user", "assistant"]
+    text: str = Field(max_length=20000)
+    code: str | None = None
+
+
+class ChatHistoryIn(BaseModel):
+    """策略对话历史的整体替换。前端在保存策略和每轮对话结束后全量同步。"""
+
+    messages: list[ChatMessageIn] = Field(max_length=500)
+
+
 class ChatIn(BaseModel):
     text: str = Field(min_length=1, max_length=2000)
     # 多轮对话上下文：此前的会话记录 + 右侧面板当前草稿策略（供"把 PE 收紧到 20"这类增量修改）

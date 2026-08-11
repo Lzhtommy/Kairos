@@ -23,6 +23,8 @@ import {
   updateStrategy,
   deleteStrategy,
   chatStrategy,
+  fetchChatHistory,
+  saveChatHistory,
   type Strategy,
 } from "@/api/strategies"
 import { fetchBacktest } from "@/api/backtests"
@@ -66,6 +68,16 @@ export function StrategyBuilderPage() {
 
   // messages 的同步镜像：诊断深链等"非输入框触发"的发送需要拿到已提交的最新会话
   const messagesRef = useRef<Message[]>([])
+  // savedId 的同步镜像：流式回复结束后的历史落库发生在异步回调里
+  const savedIdRef = useRef<string | null>(null)
+
+  // 对话历史全量同步到服务器（幂等 PUT）；未保存的草稿会话不落库，保存时补同步
+  function syncChat() {
+    const sid = savedIdRef.current
+    if (!sid) return
+    const items = messagesRef.current.map((m) => ({ role: m.role, text: m.text, code: m.code ?? null }))
+    saveChatHistory(sid, items).catch(() => {}) // 静默失败，下一轮对话会再次全量同步
+  }
 
   // 流式输出时跟随滚动到底部；用户正翻看历史（离底部较远）时不打扰
   useEffect(() => {
@@ -78,6 +90,9 @@ export function StrategyBuilderPage() {
   useEffect(() => {
     messagesRef.current = messages
   }, [messages])
+  useEffect(() => {
+    savedIdRef.current = savedId
+  }, [savedId])
 
   // 深链 /app/strategy?s=<id>&diagnose=<backtestId>：从回测页跳来，自动发起 AI 诊断
   const diagnoseFired = useRef(false)
@@ -88,9 +103,12 @@ export function StrategyBuilderPage() {
     const s = strategies.find((x) => x.id === sid)
     if (!s) return
     diagnoseFired.current = true
-    loadStrategy(s)
-    fetchBacktest(Number(bid))
-      .then((res) => {
+    // loadStrategy 会异步拉对话历史，必须等它完成再发诊断，否则迟到的
+    // setMessages(history) 会冲掉进行中的诊断会话
+    ;(async () => {
+      await loadStrategy(s)
+      try {
+        const res = await fetchBacktest(Number(bid))
         const metrics = res.metrics as Record<string, unknown>
         setLastBacktest(metrics)
         setSearchParams({}, { replace: true })
@@ -98,8 +116,10 @@ export function StrategyBuilderPage() {
         requestAnimationFrame(() =>
           sendText(DIAGNOSE_PROMPT, { backtest: metrics, dsl: s.dsl }),
         )
-      })
-      .catch(() => toast.error("载入回测结果失败"))
+      } catch {
+        toast.error("载入回测结果失败")
+      }
+    })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [strategies, searchParams])
 
@@ -162,6 +182,7 @@ export function StrategyBuilderPage() {
       setThinking(false)
       requestAnimationFrame(() => {
         scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
+        syncChat() // rAF 在 effects 之后触发，此时 messagesRef 已是本轮完整会话
       })
     }
   }
@@ -202,6 +223,8 @@ export function StrategyBuilderPage() {
       // 已关联策略 → 原地更新；否则新建
       const saved = savedId ? await updateStrategy(savedId, body) : await createStrategy(body)
       setSavedId(saved.id)
+      savedIdRef.current = saved.id
+      syncChat() // 首次保存时把此前"无主"的会话补挂到新策略上
       setDirty(false)
       qc.invalidateQueries({ queryKey: ["strategies"] })
       qc.removeQueries({ queryKey: ["strategyHits", saved.id] })
@@ -242,13 +265,26 @@ export function StrategyBuilderPage() {
     }
   }
 
-  function loadStrategy(s: Strategy) {
+  async function loadStrategy(s: Strategy) {
     setDraftDsl(s.dsl)
     setDraftCode(s.code)
     setDraftName(s.name)
     setSavedId(s.id)
+    savedIdRef.current = s.id
     setDirty(false)
     setLastPrompt(s.description)
+    try {
+      const history = await fetchChatHistory(s.id)
+      if (history.length > 0) {
+        setMessages(
+          history.map((m) => ({ role: m.role, text: m.text, code: m.code ?? undefined })),
+        )
+        return
+      }
+    } catch {
+      // 拉历史失败不阻塞载入，退回合成开场白
+    }
+    // 没有落库历史的老策略：合成开场白
     setMessages([
       { role: "user", text: s.description || s.name },
       { role: "assistant", text: `已载入策略「${s.name}」，可继续对话调整，或去回测页检验表现。`, code: s.code },

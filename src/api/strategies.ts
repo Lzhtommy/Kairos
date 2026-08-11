@@ -72,6 +72,21 @@ export function fetchStrategyHits(id: string): Promise<StrategyHits> {
   return api<StrategyHits>(`/strategies/${id}/hits`)
 }
 
+/** 落库的对话历史（挂在策略上）；proposal 的待确认状态不持久化 */
+export type ChatHistoryMessage = {
+  role: "user" | "assistant"
+  text: string
+  code?: string | null
+}
+
+export function fetchChatHistory(id: string): Promise<ChatHistoryMessage[]> {
+  return api<ChatHistoryMessage[]>(`/strategies/${id}/chat`)
+}
+
+export function saveChatHistory(id: string, messages: ChatHistoryMessage[]): Promise<unknown> {
+  return api(`/strategies/${id}/chat`, { method: "PUT", body: { messages } })
+}
+
 export type ChatEvent =
   | { type: "text"; delta: string }
   // 纯闲聊/追问的回合没有 dsl/code；name 是 AI 起的策略标题

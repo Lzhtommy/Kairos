@@ -4,15 +4,15 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.db import get_db
 from app.core.security import get_current_user
-from app.models.strategy import Strategy, StrategyRun
+from app.models.strategy import ChatMessage, Strategy, StrategyRun
 from app.models.user import User
-from app.schemas import ChatIn, StrategyIn
+from app.schemas import ChatHistoryIn, ChatIn, StrategyIn
 from app.services import strategy_ai
 from app.services.dsl import validate_dsl
 from app.services.market import stock_dicts
@@ -180,6 +180,35 @@ def strategy_hits(sid: int, db: Session = Depends(get_db), user: User = Depends(
         s.hit_count = len(codes)
         db.commit()
     return {"total": len(codes), "items": stock_dicts(db, codes)}
+
+
+@router.get("/{sid}/chat")
+def get_chat_history(
+    sid: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
+    s = _get_owned(db, sid, user)
+    msgs = db.execute(
+        select(ChatMessage).where(ChatMessage.strategy_id == s.id).order_by(ChatMessage.id)
+    ).scalars()
+    return [{"role": m.role, "text": m.text, "code": m.code} for m in msgs]
+
+
+@router.put("/{sid}/chat")
+def put_chat_history(
+    sid: int,
+    body: ChatHistoryIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """全量替换该策略的对话历史（幂等，前端在保存/每轮对话后同步）。"""
+    s = _get_owned(db, sid, user)
+    db.execute(delete(ChatMessage).where(ChatMessage.strategy_id == s.id))
+    db.add_all(
+        ChatMessage(strategy_id=s.id, role=m.role, text=m.text, code=m.code)
+        for m in body.messages
+    )
+    db.commit()
+    return {"count": len(body.messages)}
 
 
 @router.post("/chat")
