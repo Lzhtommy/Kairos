@@ -4,6 +4,7 @@ import { AppShell } from "@/components/layout/app-shell"
 import { LandingPage } from "@/pages/landing-page"
 import { DashboardPage } from "@/pages/dashboard-page"
 import { ScreenerPage } from "@/pages/screener-page"
+import { SectorPage } from "@/pages/sector-page"
 import { StrategyBuilderPage } from "@/pages/strategy-builder-page"
 import { BacktestPage } from "@/pages/backtest-page"
 import { PaperPage } from "@/pages/paper-page"
@@ -39,6 +40,7 @@ function App() {
       <Route path="/login" element={<LoginPage />} />
       <Route path="/app" element={<RequireAuth><DashboardPage /></RequireAuth>} />
       <Route path="/app/screener" element={<RequireAuth><ScreenerPage /></RequireAuth>} />
+      <Route path="/app/sector" element={<RequireAuth><SectorPage /></RequireAuth>} />
       <Route path="/app/strategy" element={<RequireAuth><StrategyBuilderPage /></RequireAuth>} />
       <Route path="/app/backtest" element={<RequireAuth><BacktestPage /></RequireAuth>} />
       <Route path="/app/paper" element={<RequireAuth><PaperPage /></RequireAuth>} />

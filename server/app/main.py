@@ -45,6 +45,8 @@ async def lifespan(_app: FastAPI):
         run_bootstrap_and_first_collect,
         snapshot_factors,
     )
+    from app.jobs.narrative import update_narrative
+    from app.jobs.sector import update_sectors
     from app.jobs.strategy_runs import check_data_freshness, run_all_strategies
 
     run_bootstrap_and_first_collect()
@@ -103,6 +105,30 @@ async def lifespan(_app: FastAPI):
             id="data_freshness",
             max_instances=1,
             coalesce=True,
+        )
+        # 盘后 15:40 CST（07:40 UTC）行业板块日更（K 线 + 拥挤度 + 月度倾斜）；
+        # 启动时补跑一次（幂等 + 盘中自动跳过，首轮会全量 bootstrap 板块历史）。
+        _scheduler.add_job(
+            update_sectors,
+            "cron",
+            hour=7,
+            minute=40,
+            id="sector_update",
+            max_instances=1,
+            coalesce=True,
+            next_run_time=datetime.now(timezone.utc),
+        )
+        # 盘后 15:50 CST（07:50 UTC）行业叙事打分（DeepSeek，只前向记录）；
+        # 周末也跑——政策叙事常发生在非交易日。
+        _scheduler.add_job(
+            update_narrative,
+            "cron",
+            hour=7,
+            minute=50,
+            id="narrative_update",
+            max_instances=1,
+            coalesce=True,
+            next_run_time=datetime.now(timezone.utc),
         )
         _scheduler.start()
         logger.info("Collector scheduled every %ds", settings.collect_interval_seconds)

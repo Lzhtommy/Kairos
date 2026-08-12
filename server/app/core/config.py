@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     collect_interval_seconds: int = 60
     enable_collector: bool = True
 
+    # 行业轮动模块的板块数据源："auto" | "sw" | "eastmoney" | "off"
+    # （auto 先试申万研究口径，再回落东财行业板块；首次落库后按库内口径锁定）
+    sector_source: str = "auto"
+
     # CORS
     cors_origins: str = "*"
 

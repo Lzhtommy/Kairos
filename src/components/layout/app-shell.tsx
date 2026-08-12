@@ -3,6 +3,7 @@ import { Link, useLocation } from "react-router-dom"
 import {
   ChartLineUp,
   ChartBar,
+  CirclesFour,
   FunnelSimple,
   Robot,
   Sparkle,
@@ -29,6 +30,7 @@ import {
 const NAV_ITEMS = [
   { to: "/app", label: "大盘", icon: ChartLineUp, end: true },
   { to: "/app/screener", label: "选股", icon: FunnelSimple },
+  { to: "/app/sector", label: "行业", icon: CirclesFour },
   { to: "/app/strategy", label: "策略工坊", icon: Sparkle },
   { to: "/app/backtest", label: "回测", icon: ChartBar },
   { to: "/app/paper", label: "模拟盘", icon: Robot },
