@@ -7,6 +7,15 @@ export function MarketingFooter() {
         <Logo />
         <p className="text-xs text-muted-foreground">
           © 2026 Kairos. 数据仅供参考，不构成投资建议。
+          {" · "}
+          <a
+            href="https://beian.miit.gov.cn/"
+            target="_blank"
+            rel="noreferrer"
+            className="hover:text-foreground"
+          >
+            粤ICP备2026044175号
+          </a>
         </p>
       </div>
     </footer>
