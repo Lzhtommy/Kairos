@@ -32,3 +32,6 @@ server/data/
 *.njsproj
 *.sln
 *.sw?
+
+# 本地研究沙盒（不入库，结论以产品代码和 PLAN/README 快照为准）
+research/
