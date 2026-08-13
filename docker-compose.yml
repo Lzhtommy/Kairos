@@ -17,7 +17,7 @@ services:
       PROVIDER: ${PROVIDER:-auto}
       AI_PROVIDER: ${AI_PROVIDER:-auto}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
-      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://kairos.ren,https://www.kairos.ren}
     volumes:
       - kairos-data:/app/data
 
