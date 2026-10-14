@@ -7,7 +7,6 @@ from app.api import (
     health,
     paper,
     quotes,
-    research,
     screener,
     sector,
     settings,
@@ -25,5 +24,3 @@ api_router.include_router(sector.router)
 api_router.include_router(strategies.router)
 api_router.include_router(backtests.router)
 api_router.include_router(paper.router)
-api_router.include_router(research.router)
-api_router.include_router(research.admin_router)
