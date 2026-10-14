@@ -7,11 +7,11 @@ from app.api import (
     health,
     paper,
     quotes,
+    research,
     screener,
     sector,
     settings,
     strategies,
-    watchlist,
 )
 
 api_router = APIRouter(prefix="/api")
@@ -23,6 +23,7 @@ api_router.include_router(quotes.router)
 api_router.include_router(screener.router)
 api_router.include_router(sector.router)
 api_router.include_router(strategies.router)
-api_router.include_router(watchlist.router)
 api_router.include_router(backtests.router)
 api_router.include_router(paper.router)
+api_router.include_router(research.router)
+api_router.include_router(research.admin_router)

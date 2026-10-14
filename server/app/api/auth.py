@@ -12,7 +12,6 @@ from app.core.security import (
     verify_password,
 )
 from app.models.user import InviteCode, User
-from app.models.watchlist import Watchlist
 from app.schemas import LoginIn, RegisterIn, TokenOut, UserOut
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -50,7 +49,6 @@ def register(body: RegisterIn, db: Session = Depends(get_db)):
     db.flush()
     invite.used_by = user.id
     invite.used_at = datetime.now(timezone.utc)
-    db.add(Watchlist(user_id=user.id, name="默认自选", is_default=True))
     db.commit()
     db.refresh(user)
     return {"token": create_access_token(str(user.id)), "user": _user_public(user)}

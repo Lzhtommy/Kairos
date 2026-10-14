@@ -2,13 +2,11 @@ import { Routes, Route, Navigate } from "react-router-dom"
 import type { ReactNode } from "react"
 import { AppShell } from "@/components/layout/app-shell"
 import { LandingPage } from "@/pages/landing-page"
-import { DashboardPage } from "@/pages/dashboard-page"
 import { ScreenerPage } from "@/pages/screener-page"
 import { SectorPage } from "@/pages/sector-page"
 import { StrategyBuilderPage } from "@/pages/strategy-builder-page"
 import { BacktestPage } from "@/pages/backtest-page"
 import { PaperPage } from "@/pages/paper-page"
-import { WatchlistPage } from "@/pages/watchlist-page"
 import { SettingsPage } from "@/pages/settings-page"
 import { AdminInvitesPage } from "@/pages/admin-invites-page"
 import { LoginPage } from "@/pages/login-page"
@@ -38,13 +36,12 @@ function App() {
     <Routes>
       <Route path="/" element={<LandingPage />} />
       <Route path="/login" element={<LoginPage />} />
-      <Route path="/app" element={<RequireAuth><DashboardPage /></RequireAuth>} />
+      <Route path="/app" element={<Navigate to="/app/screener" replace />} />
       <Route path="/app/screener" element={<RequireAuth><ScreenerPage /></RequireAuth>} />
       <Route path="/app/sector" element={<RequireAuth><SectorPage /></RequireAuth>} />
       <Route path="/app/strategy" element={<RequireAuth><StrategyBuilderPage /></RequireAuth>} />
       <Route path="/app/backtest" element={<RequireAuth><BacktestPage /></RequireAuth>} />
       <Route path="/app/paper" element={<RequireAuth><PaperPage /></RequireAuth>} />
-      <Route path="/app/watchlist" element={<RequireAuth><WatchlistPage /></RequireAuth>} />
       <Route path="/app/settings" element={<RequireAuth><SettingsPage /></RequireAuth>} />
       <Route
         path="/app/invites"

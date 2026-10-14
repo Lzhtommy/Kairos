@@ -9,7 +9,6 @@ import {
   getSortedRowModel,
   useReactTable,
 } from "@tanstack/react-table"
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   CaretUpDown,
   CaretUp,
@@ -18,11 +17,9 @@ import {
   CaretRight,
   CaretDoubleLeft,
   CaretDoubleRight,
-  Star,
 } from "@phosphor-icons/react"
 import type { Stock } from "@/lib/mock-data"
 import { changePct } from "@/lib/use-live-quotes"
-import { fetchWatchlist, addToWatchlist, removeFromWatchlist } from "@/api/watchlist"
 import { ChangeBadge, PriceCell, Sparkline } from "@/components/market/price-change"
 import {
   Select,
@@ -40,37 +37,6 @@ function stockDetailUrl(s: Stock) {
   return `https://xueqiu.com/S/${s.market}${s.code}`
 }
 
-function StarToggle({ code }: { code: string }) {
-  const qc = useQueryClient()
-  const { data } = useQuery({
-    queryKey: ["watchlist"],
-    queryFn: fetchWatchlist,
-    staleTime: 30_000,
-  })
-  const active = data?.codes.includes(code) ?? false
-
-  const mutation = useMutation({
-    mutationFn: () => (active ? removeFromWatchlist(code) : addToWatchlist(code)),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["watchlist"] })
-    },
-  })
-
-  return (
-    <button
-      onClick={(e) => {
-        e.stopPropagation()
-        mutation.mutate()
-      }}
-      disabled={mutation.isPending}
-      aria-label={active ? "移出自选" : "加入自选"}
-      className="flex size-6 items-center justify-center rounded text-muted-foreground hover:text-primary"
-    >
-      <Star weight={active ? "fill" : "regular"} className={cn("size-3.5", active && "text-primary")} data-code={code} />
-    </button>
-  )
-}
-
 export function QuoteTable({
   data,
   dense = true,
@@ -85,12 +51,6 @@ export function QuoteTable({
 
   const columns = useMemo<ColumnDef<Stock>[]>(
     () => [
-      {
-        id: "star",
-        header: "",
-        size: 32,
-        cell: ({ row }) => <StarToggle code={row.original.code} />,
-      },
       {
         id: "name",
         header: "名称 / 代码",

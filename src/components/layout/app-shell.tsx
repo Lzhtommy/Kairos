@@ -1,13 +1,11 @@
 import { type ReactNode, useState } from "react"
 import { Link, useLocation } from "react-router-dom"
 import {
-  ChartLineUp,
   ChartBar,
   CirclesFour,
   FunnelSimple,
   Robot,
   Sparkle,
-  Star,
   Sun,
   Moon,
   Bell,
@@ -28,13 +26,11 @@ import {
 } from "@/components/ui/tooltip"
 
 const NAV_ITEMS = [
-  { to: "/app", label: "大盘", icon: ChartLineUp, end: true },
   { to: "/app/screener", label: "选股", icon: FunnelSimple },
   { to: "/app/sector", label: "行业", icon: CirclesFour },
   { to: "/app/strategy", label: "策略工坊", icon: Sparkle },
   { to: "/app/backtest", label: "回测", icon: ChartBar },
   { to: "/app/paper", label: "模拟盘", icon: Robot },
-  { to: "/app/watchlist", label: "自选", icon: Star },
   { to: "/app/settings", label: "设置", icon: GearSix },
   { to: "/app/invites", label: "邀请码", icon: Ticket, adminOnly: true },
 ]
@@ -126,8 +122,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false)
   const navItems = NAV_ITEMS.filter((item) => !item.adminOnly || user?.is_admin)
 
-  const isActive = (to: string, end?: boolean) =>
-    end ? location.pathname === to : location.pathname.startsWith(to)
+  const isActive = (to: string) => location.pathname.startsWith(to)
 
   return (
     // 固定视口高度：滚动发生在 main 内部，侧栏（含底部登录信息）常驻不随内容卷走
@@ -144,7 +139,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </div>
         <nav className="min-h-0 flex-1 space-y-1 overflow-y-auto px-3 py-2">
           {navItems.map((item) => {
-            const active = isActive(item.to, item.end)
+            const active = isActive(item.to)
             return (
               <Link
                 key={item.to}
@@ -183,7 +178,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             </div>
             <nav className="flex-1 space-y-1">
               {navItems.map((item) => {
-                const active = isActive(item.to, item.end)
+                const active = isActive(item.to)
                 return (
                   <Link
                     key={item.to}
