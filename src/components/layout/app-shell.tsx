@@ -12,6 +12,7 @@ import {
   Bell,
   List,
   Ticket,
+  UsersThree,
   X,
 } from "@phosphor-icons/react"
 import { GearSix, SignOut } from "@phosphor-icons/react"
@@ -35,6 +36,7 @@ const NAV_ITEMS = [
   { to: "/app/paper", label: "模拟盘", icon: Robot },
   { to: "/app/settings", label: "设置", icon: GearSix },
   { to: "/app/invites", label: "邀请码", icon: Ticket, adminOnly: true },
+  { to: "/app/users", label: "用户", icon: UsersThree, adminOnly: true },
 ]
 
 function QuickActions() {

@@ -11,6 +11,7 @@ import { BacktestPage } from "@/pages/backtest-page"
 import { PaperPage } from "@/pages/paper-page"
 import { SettingsPage } from "@/pages/settings-page"
 import { AdminInvitesPage } from "@/pages/admin-invites-page"
+import { AdminUsersPage } from "@/pages/admin-users-page"
 import { LoginPage } from "@/pages/login-page"
 import { useAuth } from "@/lib/auth"
 
@@ -50,6 +51,10 @@ function App() {
       <Route
         path="/app/invites"
         element={<RequireAuth><RequireAdmin><AdminInvitesPage /></RequireAdmin></RequireAuth>}
+      />
+      <Route
+        path="/app/users"
+        element={<RequireAuth><RequireAdmin><AdminUsersPage /></RequireAdmin></RequireAuth>}
       />
     </Routes>
   )
