@@ -46,10 +46,12 @@ async def lifespan(_app: FastAPI):
         snapshot_factors,
     )
     from app.jobs.narrative import update_narrative
+    from app.jobs.research import process_research_queue, requeue_interrupted
     from app.jobs.sector import update_sectors
     from app.jobs.strategy_runs import check_data_freshness, run_all_strategies
 
     run_bootstrap_and_first_collect()
+    requeue_interrupted()
 
     global _scheduler
     if settings.enable_collector:
@@ -129,6 +131,15 @@ async def lifespan(_app: FastAPI):
             max_instances=1,
             coalesce=True,
             next_run_time=datetime.now(timezone.utc),
+        )
+        # 研报任务队列：每 20s 取一条 queued 串行执行（生成一份约数分钟）
+        _scheduler.add_job(
+            process_research_queue,
+            "interval",
+            seconds=20,
+            id="research_queue",
+            max_instances=1,
+            coalesce=True,
         )
         _scheduler.start()
         logger.info("Collector scheduled every %ds", settings.collect_interval_seconds)

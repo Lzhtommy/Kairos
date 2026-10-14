@@ -1,4 +1,5 @@
 from app.models.market import Fundamental, IndexQuote, Kline, Quote, StockInfo
+from app.models.research import ResearchRawCache, ResearchReport
 from app.models.sector import SectorBar, SectorInfo, SectorMetric, SectorNarrative, SectorTilt
 from app.models.strategy import Backtest, ChatMessage, Strategy
 from app.models.user import User
@@ -21,4 +22,6 @@ __all__ = [
     "SectorMetric",
     "SectorTilt",
     "SectorNarrative",
+    "ResearchReport",
+    "ResearchRawCache",
 ]
