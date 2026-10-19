@@ -132,7 +132,9 @@ def llm_enabled() -> bool:
 
 
 def _chat_json(messages: list[dict], max_tokens: int = 1500) -> tuple[dict, int]:
-    # 网络抖动（SSL EOF / 连接被断）重试两次；HTTP 4xx/5xx 与 JSON 解析错误直接抛
+    # 网络抖动（SSL EOF / 连接被断）重试两次；JSON 解析失败重试一次
+    # （flash 偶发在 JSON 后多吐内容或混入特殊 token）；HTTP 4xx/5xx 直接抛
+    bad_json = 0
     for attempt in range(3):
         try:
             return _chat_json_once(messages, max_tokens)
@@ -141,6 +143,11 @@ def _chat_json(messages: list[dict], max_tokens: int = 1500) -> tuple[dict, int]
                 raise
             logger.info("DeepSeek transport error (%s), retrying", exc)
             time.sleep(2 * (attempt + 1))
+        except json.JSONDecodeError as exc:
+            bad_json += 1
+            if bad_json > 1 or attempt == 2:
+                raise
+            logger.info("DeepSeek returned invalid JSON (%s), retrying", exc)
     raise AssertionError("unreachable")
 
 
@@ -150,6 +157,7 @@ def _chat_json_once(messages: list[dict], max_tokens: int = 1500) -> tuple[dict,
         headers={"Authorization": f"Bearer {settings.deepseek_api_key}"},
         json={
             "model": settings.deepseek_model,
+            "thinking": {"type": "disabled"},  # deepseek-flash 默认开思考：输出暴涨且 temperature 失效
             "messages": messages,
             "response_format": {"type": "json_object"},
             "max_tokens": max_tokens,

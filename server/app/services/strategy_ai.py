@@ -512,6 +512,7 @@ def _deepseek(text: str, industries: list[str] | None = None) -> dict[str, Any] 
             headers={"Authorization": f"Bearer {settings.deepseek_api_key}"},
             json={
                 "model": settings.deepseek_model,
+                "thinking": {"type": "disabled"},  # deepseek-flash 默认开思考：输出暴涨且 temperature 失效
                 "messages": [{"role": "user", "content": prompt}],
                 "response_format": {"type": "json_object"},
                 "max_tokens": 1024,
@@ -581,6 +582,7 @@ async def chat_stream(
             headers={"Authorization": f"Bearer {settings.deepseek_api_key}"},
             json={
                 "model": settings.deepseek_model,
+                "thinking": {"type": "disabled"},  # deepseek-flash 默认开思考：输出暴涨且 temperature 失效
                 "messages": messages,
                 "max_tokens": 1200,
                 "temperature": 0.3,

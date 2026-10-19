@@ -631,3 +631,26 @@ def test_tracking_flags_slow_forecast_progress():
     assert item["value"] == "67.74%" and "80.00%" in item["note"]
     info = _info_facts("valuation", ds["facts"])
     assert info[:2] == ["fwd_pe_2026", "inst_eps_growth_fc_2026"] and info[6] == "fwd_pe_2027" and info[-2:] == ["inst_eps_progress", "eps_progress_prev"]
+
+
+def test_chat_json_retries_once_on_invalid_json(monkeypatch):
+    from app.services import research_writer
+
+    replies = iter(['{"ok":<|endoftext|>true}', '{"ok": true}'])
+
+    class Resp:
+        def __init__(self, content):
+            self._body = {"choices": [{"message": {"content": content}}], "usage": {"total_tokens": 7}}
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._body
+
+    monkeypatch.setattr(research_writer.httpx, "post", lambda *a, **kw: Resp(next(replies)))
+    assert research_writer._chat_json([{"role": "user", "content": "x"}]) == ({"ok": True}, 7)
+
+    replies = iter(["{bad", "{still bad"])
+    with pytest.raises(ValueError):
+        research_writer._chat_json([{"role": "user", "content": "x"}])

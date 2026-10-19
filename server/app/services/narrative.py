@@ -92,6 +92,7 @@ def score_narrative(headlines: list[str], sector_names: list[str]) -> dict | Non
             headers={"Authorization": f"Bearer {settings.deepseek_api_key}"},
             json={
                 "model": settings.deepseek_model,
+                "thinking": {"type": "disabled"},  # deepseek-flash 默认开思考：输出暴涨且 temperature 失效
                 "messages": [{"role": "user", "content": prompt}],
                 "response_format": {"type": "json_object"},
                 "max_tokens": 2048,

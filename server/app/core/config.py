@@ -20,7 +20,8 @@ class Settings(BaseSettings):
     # AI provider: "auto" | "rule" | "deepseek"
     ai_provider: str = "auto"
     deepseek_api_key: str = ""
-    deepseek_model: str = "deepseek-chat"
+    # deepseek-chat 已过官方停用日（2026-07-24）；flash 默认开思考，各调用处显式关闭
+    deepseek_model: str = "deepseek-flash"
     deepseek_base_url: str = "https://api.deepseek.com"
 
     # Collector: only run inside A-share trading sessions

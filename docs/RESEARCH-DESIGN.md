@@ -199,7 +199,7 @@ APScheduler 每 30s 取 1 条 queued 执行（max_instances=1，串行——ECS 
 
 ### 5.2 LLM 约束
 
-- 模型：`deepseek-chat`，JSON mode，输出 `{"markdown": str, "cited": [fact_id]}`。
+- 模型：`deepseek-flash`（关闭思考模式），JSON mode，输出 `{"markdown": str, "cited": [fact_id]}`。
 - 提示词明确：只能使用给定 facts 中的数字；不得出现买入 / 卖出 / 增持 / 减持建议 / 目标价。
 - **数字校验**：从 markdown 中正则抽取所有数字，每个必须能匹配某个 fact 值（按显示精度四舍五入后
   相等，百分数与小数互认）；年份、章节号、「3 年」这类计数词放白名单。
