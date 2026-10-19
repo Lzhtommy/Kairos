@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 import re
+import statistics
 from datetime import date
 from typing import Any
 
@@ -284,6 +285,19 @@ def build_facts(raw: dict[str, list[dict] | None], valuation: dict, name: str = 
             return v if v is not None else yuan_to_yi(r.get("应收票据及应收账款"))
 
         ago = _year_ago(ld)
+
+        # 合同负债（预收款）：预收模式行业（白酒等）的领先指标，只展示不计分。2020 年新收入准则前叫「预收款项」
+        def contract_liab(r: dict | None) -> float | None:
+            if not r:
+                return None
+            v = yuan_to_yi(r.get("合同负债"))
+            return v if v is not None else yuan_to_yi(r.get("预收款项"))
+
+        cl_now, cl_ago = contract_liab(b), contract_liab(balance.get(ago))
+        put("contract_liab", cl_now, "亿元", "合同负债（预收款）", "balance", ld, "health")
+        if cl_now is not None and cl_ago and cl_ago > 0:
+            put("contract_liab_yoy", (cl_now / cl_ago - 1) * 100, "%", "合同负债同比", "balance", ld, "health")
+
         ar_now, ar_ago = receivable(b), receivable(balance.get(ago))
         rev_now, rev_ago = cum_rev(ld), cum_rev(ago)
         if ar_now is not None and rev_now and rev_now > 0:
@@ -359,6 +373,44 @@ def build_facts(raw: dict[str, list[dict] | None], valuation: dict, name: str = 
     if pe and pe > 0 and len(peers) >= 10:
         put("pe_pct_industry", _pct_rank(peers, pe), "%", f"市盈率同行业分位（{len(peers)} 家）",
             "factor_history", valuation.get("as_of"), "valuation")
+
+    # ---------- 同业对比（本地因子快照的同行业最新截面；只展示不计分）
+    peers = None
+    rows = valuation.get("industry_rows") or []
+    self_code = valuation.get("self_code")
+    me = next((r for r in rows if r["code"] == self_code), None)
+    if me is not None and len(rows) >= 2:
+        as_of = valuation.get("as_of")
+        n = len(rows)
+
+        def vals(key: str, positive: bool = False) -> list[float]:
+            return [v for r in rows if (v := r.get(key)) is not None and (v > 0 or not positive)]
+
+        put("peers_count", float(n), "", "同行业样本数", "factor_history", as_of, "peers")
+        put("roe_snapshot", me.get("roe"), "%", "ROE（行情快照口径）", "factor_history", as_of, "peers")
+        for key, label, positive in (("roe", "ROE", False), ("pe", "市盈率", True), ("pb", "市净率", True),
+                                     ("dividend_yield", "股息率", False)):
+            v = vals(key, positive)
+            if v:
+                unit = "%" if key in ("roe", "dividend_yield") else "倍"
+                put(f"industry_median_{key}", statistics.median(v), unit, f"同行业{label}中位数",
+                    "factor_history", as_of, "peers")
+        if n >= 10:
+            if me.get("roe") is not None:
+                put("roe_pct_industry", _pct_rank(vals("roe"), me["roe"]), "%",
+                    f"ROE 同行业分位（{n} 家，行情快照口径）", "factor_history", as_of, "peers")
+            pb_vals = vals("pb", True)
+            if me.get("pb") and me["pb"] > 0:
+                put("pb_pct_industry", _pct_rank(pb_vals, me["pb"]), "%", f"市净率同行业分位（{len(pb_vals)} 家）",
+                    "factor_history", as_of, "peers")
+        # 对比表：市值（对数距离）最接近的 6 家——用行业龙头对比区域小盘股没有意义
+        others = [r for r in rows if r["code"] != self_code and (r.get("market_cap") or 0) > 0]
+        my_cap = me.get("market_cap") or 0
+        if my_cap > 0:
+            others.sort(key=lambda r: abs(math.log(r["market_cap"] / my_cap)))
+        table = [{**r, "self": False} for r in others[:6]] + [{**me, "self": True}]
+        table.sort(key=lambda r: r.get("market_cap") or 0, reverse=True)
+        peers = {"industry": valuation.get("industry"), "count": n, "as_of": as_of, "rows": table}
 
     # ---------- 公司概况与主营构成
     profile_rec = (raw.get("profile") or [{}])[0] if raw.get("profile") else {}
@@ -457,4 +509,5 @@ def build_facts(raw: dict[str, list[dict] | None], valuation: dict, name: str = 
         "consensus": consensus,
         "is_st": "ST" in (name or "").upper(),
         "deducted_last2": deducted_last2,
+        "peers": peers,
     }

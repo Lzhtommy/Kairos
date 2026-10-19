@@ -54,16 +54,23 @@ def valuation_inputs(db: Session, code: str, industry: str) -> dict:
     out["pe_hist"] = [pe for pe, _ in hist if pe is not None]
     out["pb_hist"] = [pb for _, pb in hist if pb is not None]
 
+    out["self_code"], out["industry"] = code, industry
     if industry and industry != "—":
         last_ts = db.execute(select(func.max(FactorSnapshot.ts))).scalar()
         if last_ts is not None:
-            out["industry_pes"] = list(
-                db.execute(
-                    select(FactorSnapshot.pe).where(
-                        FactorSnapshot.ts == last_ts, FactorSnapshot.industry == industry, FactorSnapshot.pe.is_not(None)
-                    )
-                ).scalars()
-            )
+            rows = db.execute(
+                select(FactorSnapshot, StockInfo.name)
+                .join(StockInfo, StockInfo.code == FactorSnapshot.code, isouter=True)
+                .where(FactorSnapshot.ts == last_ts, FactorSnapshot.industry == industry)
+            ).all()
+            out["industry_pes"] = [f.pe for f, _ in rows if f.pe is not None]
+            # 同业对比截面；股息率库存小数，转百分数
+            out["industry_rows"] = [
+                {"code": f.code, "name": (name or f.code).replace(" ", ""), "market_cap": f.market_cap, "pe": f.pe,
+                 "pb": f.pb, "roe": f.roe,
+                 "dividend_yield": None if f.dividend_yield is None else f.dividend_yield * 100}
+                for f, name in rows
+            ]
     return out
 
 
@@ -179,7 +186,7 @@ def run_report(db: Session, report: ResearchReport) -> None:
         "name": name, "code": report.code, "industry": industry, "data_as_of": report.data_as_of,
         "total_score": report.total_score, "grade": report.grade, "coverage": report.coverage,
         "sub_scores": report.sub_scores, "red_flags": report.red_flags, "sections": sections,
-        "sources": sources, "scoring_version": report.scoring_version,
+        "sources": sources, "scoring_version": report.scoring_version, "facts": dataset["facts"],
     })
     report.status = "done"
     report.progress = "完成"

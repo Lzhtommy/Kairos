@@ -19,6 +19,7 @@ from app.core.config import settings
 from app.services.research_annual import BLOCK_LABELS, verify_extract
 from app.services.research_facts import fmt
 from app.services.research_score import DIMENSION_LABELS
+from app.services.research_tracking import build_tracking
 
 logger = logging.getLogger("kairos.research")
 
@@ -32,10 +33,22 @@ SECTIONS: list[tuple[str, str, list[str], list[str]]] = [
     ("growth", "成长性", ["growth"], ["growth"]),
     ("health", "财务健康与现金流", ["health", "cashflow"], ["health", "cashflow"]),
     ("valuation", "估值与股东回报", ["valuation", "shareholder"], ["valuation", "shareholder"]),
+    ("peers", "同业对比", [], ["peers"]),
     ("events", "近期重大公告", ["events"], []),
     ("news", "新闻与机构观点", [], ["consensus"]),
     ("risks", "风险提示", [], ["profitability", "growth", "health", "cashflow", "valuation", "shareholder"]),
+    ("tracking", "后续跟踪", [], []),
 ]
+
+# 纯代码生成、不调 LLM 的章节
+CODE_ONLY_SECTIONS = {"tracking"}
+
+# 各章「参考指标（不计分）」表：存在才展示
+SECTION_INFO_FACTS = {
+    "health": ["contract_liab", "contract_liab_yoy"],
+    "peers": ["roe_snapshot", "roe_pct_industry", "industry_median_roe", "industry_median_pe", "pb_pct_industry",
+              "industry_median_pb", "industry_median_dividend_yield"],
+}
 
 BANNED = [
     "建议买入", "建议卖出", "建议增持", "建议减持", "建议持有", "目标价", "强烈推荐", "推荐买入",
@@ -273,6 +286,19 @@ def _context(key: str, dataset: dict, result: dict) -> tuple[str, list[str]]:
         )
         text = f"近期新闻：\n{news or '（无）'}\n近期机构研报：\n{titles or '（无）'}"
         return text, [text]
+    if key == "peers":
+        p = dataset.get("peers") or {}
+        lines = []
+        for r in p.get("rows") or []:
+            cells = [f"市值 {r['market_cap']:.2f}亿元" if r.get("market_cap") else None,
+                     f"市盈率 {r['pe']:.2f}倍" if r.get("pe") and r["pe"] > 0 else "市盈率 亏损",
+                     f"市净率 {r['pb']:.2f}倍" if r.get("pb") else None,
+                     f"ROE {r['roe']:.2f}%" if r.get("roe") is not None else None,
+                     f"股息率 {r['dividend_yield']:.2f}%" if r.get("dividend_yield") is not None else None]
+            lines.append(f"- {r['name']}{'（本公司）' if r['self'] else ''}：" + "，".join(c for c in cells if c))
+        text = (f"同行业（{p.get('industry')}，共 {p.get('count')} 家）中市值最接近的公司（行情快照 {p.get('as_of')}）：\n"
+                + "\n".join(lines) + "\n注意：ROE 为行情快照口径，可能与年报口径不同；对比只说明相对位置，不推断原因。")
+        return text, [text]
     if key == "risks":
         flags = "\n".join(f"- {f['label']}：{f['detail']}" for f in result["red_flags"]) or "（无）"
         neg = "\n".join(
@@ -310,9 +336,21 @@ def write_sections(
     llm_keys = [k for k, *_ in SECTIONS]
 
     for i, (key, title, metric_keys, groups) in enumerate(SECTIONS, 1):
+        if key == "peers" and not dataset.get("peers"):
+            continue
         if progress:
             progress(f"撰写 {i}/{len(llm_keys)}：{title}")
         sec: dict = {"key": key, "title": title, "md": "", "metric_keys": metric_keys, "ai": use_llm}
+        info = [f for f in SECTION_INFO_FACTS.get(key, []) if f in facts]
+        if info:
+            sec["info_facts"] = info
+        if key == "peers":
+            sec["peers"] = dataset["peers"]
+        if key in CODE_ONLY_SECTIONS:
+            sec["ai"] = False
+            sec["tracking"] = build_tracking(dataset, result, periodic)
+            sections.append(sec)
+            continue
         if key == "events":
             sec["items"] = [e for e in dataset.get("events") or [] if e["tag"] != "other"][:30]
         if key == "news":
@@ -391,9 +429,14 @@ def write_sections(
     return sections, tokens
 
 
+def _cell(v: float | None, suffix: str = "") -> str:
+    return "—" if v is None else f"{v:.2f}{suffix}"
+
+
 def render_markdown(report: dict) -> str:
     """全文 Markdown（导出用）。report 含 name/code/industry/data_as_of/total_score/grade/
-    coverage/sub_scores/red_flags/sections/sources/scoring_version。"""
+    coverage/sub_scores/red_flags/sections/sources/scoring_version/facts。"""
+    facts = report.get("facts") or {}
     out = [
         f"# {report['name']}（{report['code']}）基本面研究报告",
         "",
@@ -426,6 +469,31 @@ def render_markdown(report: dict) -> str:
             for e in sec.get("items") or []:
                 out.append(f"- {e['date']} [{e['label']}] {e['title']}")
             out.append("")
+        if sec.get("info_facts"):
+            out += ["**参考指标（不计分）**", "", "| 指标 | 数值 |", "|---|---|"]
+            out += [f"| {facts[f]['label']} | {fmt(facts[f])} |" for f in sec["info_facts"] if f in facts]
+            out.append("")
+        if sec.get("peers"):
+            p = sec["peers"]
+            out += [f"**{p['industry']}行业市值相近公司**（行业共 {p['count']} 家，行情快照 {p['as_of']}）", "",
+                    "| 公司 | 市值（亿元） | 市盈率 | 市净率 | ROE | 股息率 |", "|---|---|---|---|---|---|"]
+            for r in p["rows"]:
+                pe = "亏损" if r.get("pe") is not None and r["pe"] <= 0 else _cell(r.get("pe"))
+                name = f"**{r['name']}**" if r["self"] else r["name"]
+                out.append(f"| {name} | {_cell(r.get('market_cap'))} | {pe} | {_cell(r.get('pb'))} | "
+                           f"{_cell(r.get('roe'), '%')} | {_cell(r.get('dividend_yield'), '%')} |")
+            out.append("")
+        if sec.get("tracking") is not None:
+            heads = {"flag": "排雷项", "metric": "指标", "event": "需跟进的公告", "risk": "公司自述风险", "next": "下一期数据"}
+            for it in sec["tracking"]:
+                val = f" {it['value']}" if it["value"] else ""
+                line = f"- [{heads[it['kind']]}] **{it['label']}**{val}：{it['note']}"
+                if it.get("explain"):
+                    e = it["explain"]
+                    line += f"（据 {e['doc']} 第 {e['page']} 页：{e['claim']}）"
+                out.append(line)
+            out.append("")
+            continue
         if sec.get("kpis"):
             out += ["**经营数据（摘自定期报告）**", "", "| 项目 | 数值 | 出处 |", "|---|---|---|"]
             out += [f"| {k['name']} | {k['value']} {k['unit']} | {_doc(k)} 第 {k['page']} 页 |" for k in sec["kpis"]]

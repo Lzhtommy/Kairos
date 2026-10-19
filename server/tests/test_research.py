@@ -47,8 +47,8 @@ def make_raw(*, goodwill: float = 0.0, deducted: tuple = (60, 70, 80, 90), notic
     balance = {
         "2026-06-30": {"资产总计": 1000 * yi, "负债合计": 400 * yi, "流动资产合计": 600 * yi, "流动负债合计": 300 * yi,
                        "货币资金": 200 * yi, "商誉": goodwill * yi, "归属于母公司股东权益合计": 600 * yi,
-                       "短期借款": 50 * yi, "长期借款": 50 * yi, "应收账款": 30 * yi},
-        "2025-06-30": {"资产总计": 900 * yi, "负债合计": 380 * yi, "应收账款": 28 * yi},
+                       "短期借款": 50 * yi, "长期借款": 50 * yi, "应收账款": 30 * yi, "合同负债": 8 * yi},
+        "2025-06-30": {"资产总计": 900 * yi, "负债合计": 380 * yi, "应收账款": 28 * yi, "合同负债": 10 * yi},
     }
     cashflow = {
         f"{y}-12-31": {"经营活动产生的现金流量净额": 90 * yi, "购建固定资产、无形资产和其他长期资产所支付的现金": 30 * yi}
@@ -288,6 +288,10 @@ def test_run_report_end_to_end(db, stocks, monkeypatch):
             pe=15 + i * 0.1, pb=5, roe=20, turnover_rate=1, turnover=1, market_cap=100, change_pct=0, price=10,
             dividend_yield=0.02, industry="白酒",
         ))
+    last = datetime(2025, 1, 1, tzinfo=timezone.utc) + timedelta(days=129)
+    for code, cap in (("000858", 300), ("600809", 80), ("000568", 50)):
+        db.add(FactorSnapshot(code=code, ts=last, pe=20, pb=4, roe=15, turnover_rate=1, turnover=1, market_cap=cap,
+                              change_pct=0, price=10, dividend_yield=0.03, industry="白酒"))
     db.commit()
 
     r = ResearchReport(code="600519", status="running")
@@ -298,6 +302,10 @@ def test_run_report_end_to_end(db, stocks, monkeypatch):
     assert r.status == "done"
     assert r.grade is not None and r.total_score is not None
     assert [s["key"] for s in r.sections][0] == "summary"
+    secs = {s["key"]: s for s in r.sections}
+    assert secs["peers"]["peers"]["industry"] == "白酒"  # 来自本地因子快照的同行业截面
+    assert len(secs["peers"]["peers"]["rows"]) == 4 and secs["peers"]["peers"]["rows"][0]["dividend_yield"] == 3
+    assert secs["tracking"]["tracking"][-1]["key"] == "next"
     assert len(r.sections[0]["observations"]) == 3
     assert "基本面研究报告" in r.content_md and "不构成投资建议" in r.content_md
 
@@ -414,6 +422,13 @@ def test_run_report_with_periodic_insights(db, stocks, monkeypatch):
     assert [(x["doc"], x["page"]) for x in secs["risks"]["company_risks"]] == [("2025 年报", 23)]
     assert [s["key"] for s in r.sources if s["key"] in ("q1", "annual")] == ["q1", "annual"]
     assert "公司自述风险" in r.content_md and "2026 一季报 第 2 页" in r.content_md
+    # 后续跟踪：代码生成、不调 LLM，排在风险提示之后；公司自述风险进入跟踪清单
+    keys = [s["key"] for s in r.sections]
+    assert keys.index("tracking") == keys.index("risks") + 1
+    assert secs["tracking"]["ai"] is False and secs["tracking"]["md"] == ""
+    assert any(t["key"] == "risk_宏观经济风险" for t in secs["tracking"]["tracking"])
+    assert secs["health"]["info_facts"] == ["contract_liab", "contract_liab_yoy"]
+    assert "参考指标（不计分）" in r.content_md and "## " in r.content_md
 
     # 再生成一次：两份抽取都命中缓存
     r2 = ResearchReport(code="600519", status="running")
@@ -434,3 +449,77 @@ def test_periodic_skipped_without_llm(db, monkeypatch):
     monkeypatch.setattr(research_service, "fetch_report_text", boom)
     insights, sources, tokens = research_service.periodic_insights(db, "600519", lambda _t: None)
     assert insights is None and tokens == 0 and sources[0]["status"] == "failed"
+
+
+
+# ---------------------------------------------------------------- 合同负债 / 同业对比 / 后续跟踪
+
+
+def _peer_rows() -> list[dict]:
+    # 本股 600519 市值 100；按市值离得近的 6 家入表；行业 12 家
+    caps = [5000, 3000, 1000, 400, 150, 120, 100, 90, 80, 60, 30, 10]
+    codes = ["000858", "600809", "000568", "002304", "000596", "603369", "600519", "603198", "600559",
+             "000799", "603589", "000995"]
+    return [{"code": c, "name": f"股{c}", "market_cap": cap, "pe": 10.0 + i, "pb": 1.0 + i * 0.5,
+             "roe": 30.0 - i * 2, "dividend_yield": 1.0 + i * 0.2} for i, (c, cap) in enumerate(zip(codes, caps))]
+
+
+def test_build_facts_contract_liabilities_and_peers():
+    ds = build_facts(make_raw(), {**VALUATION, "self_code": "600519", "industry": "白酒",
+                                  "industry_rows": _peer_rows()}, "测试")
+    f = ds["facts"]
+    assert f["contract_liab"]["value"] == pytest.approx(8)
+    assert f["contract_liab_yoy"]["value"] == pytest.approx(-20)
+    assert f["contract_liab"]["group"] == "health"
+    # 本股 roe = 30 - 6*2 = 18：样本 12 家里严格小于 18 的有 5 家
+    assert f["roe_pct_industry"]["value"] == pytest.approx(5 / 12 * 100)
+    assert f["industry_median_roe"]["value"] == pytest.approx(19)
+    assert f["industry_median_pe"]["value"] == pytest.approx(15.5)
+    peers = ds["peers"]
+    assert peers["industry"] == "白酒" and peers["count"] == 12
+    # 市值（对数距离）最接近的 6 家 + 本股，按市值降序：30 比 400 离 100 更近
+    assert [r["code"] for r in peers["rows"]] == ["000596", "603369", "600519", "603198", "600559", "000799", "603589"]
+    assert [r["self"] for r in peers["rows"]].count(True) == 1
+
+
+def test_build_facts_peers_need_enough_samples():
+    rows = _peer_rows()[:4]
+    ds = build_facts(make_raw(), {**VALUATION, "self_code": "002304", "industry": "白酒", "industry_rows": rows}, "测试")
+    assert "roe_pct_industry" not in ds["facts"]  # < 10 家不算分位
+    assert ds["peers"]["count"] == 4 and len(ds["peers"]["rows"]) == 4
+    assert build_facts(make_raw(), VALUATION, "测试")["peers"] is None
+
+
+def test_build_tracking():
+    from app.services.research_tracking import build_tracking
+
+    ds = build_facts(make_raw(goodwill=500, notices=["关于收到上海证券交易所问询函的公告"]), VALUATION, "测试")
+    ds["facts"]["deducted_np_yoy"]["value"] = -24.28
+    ds["facts"]["ar_yoy"] = {"value": 79.3, "unit": "%", "label": "应收账款同比", "source": "balance",
+                             "period": "2026-06-30", "group": "cashflow"}
+    result = score(ds)
+    periodic = {
+        "drivers": [
+            {"topic": "other", "claim": "净利润下降主要原因是补缴税款", "quote": "q", "page": 23, "doc": "2026 半年报"},
+            {"topic": "balance", "claim": "应收账款变动主要原因是应收销货款增加", "quote": "q", "page": 18,
+             "doc": "2026 半年报"},
+        ],
+        "kpis": [],
+        "risks": [{"title": "市场竞争风险", "quote": "q", "page": 21, "doc": "2026 半年报"}],
+    }
+    items = build_tracking(ds, result, periodic)
+    by_key = {i["key"]: i for i in items}
+    kinds = [i["kind"] for i in items]
+    # 分组顺序：排雷 → 指标 → 公告 → 公司自述风险 → 下一期数据
+    assert kinds == sorted(kinds, key=["flag", "metric", "event", "risk", "next"].index)
+    assert by_key["flag_goodwill"]["kind"] == "flag"
+    # 指标异常附上公司解释（取最新报告里关键词命中的第一条）
+    assert by_key["deducted_np_yoy"]["explain"] == {"claim": "净利润下降主要原因是补缴税款", "doc": "2026 半年报", "page": 23}
+    assert by_key["ar_yoy"]["explain"]["page"] == 18
+    assert by_key["contract_liab_yoy"]["value"] == "-20.00%"  # 合同负债同比 -20% 触发
+    assert by_key["event_inquiry"]["kind"] == "event"
+    assert by_key["risk_市场竞争风险"]["note"] == "公司自述（2026 半年报 第 21 页）"
+    assert by_key["next"]["label"] == "2026 三季报" and "10-31" in by_key["next"]["note"]
+    # 同一指标不重复（得分偏低 + 异常规则都命中时只留一条）
+    assert len([i for i in items if i["key"] == "deducted_np_yoy"]) == 1
+    assert build_tracking(ds, result, None)[-1]["kind"] == "next"

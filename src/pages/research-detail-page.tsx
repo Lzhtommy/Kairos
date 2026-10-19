@@ -30,6 +30,8 @@ import {
   type EventItem,
   type Fact,
   type NewsItem,
+  type PeersBlock,
+  type TrackingItem,
   type ResearchDetail,
   type ScoreItem,
   type Section,
@@ -235,9 +237,13 @@ function ReportView({ report }: { report: ResearchDetail }) {
                     <MetricTable key={m} dim={report.sub_scores[m]} sourceLabel={sourceLabel} />
                   ) : null,
                 )}
+                {s.info_facts && s.info_facts.length > 0 && <InfoFacts ids={s.info_facts} facts={report.facts} />}
+                {s.peers && <PeersTable peers={s.peers} />}
                 {s.key === "events" && <EventList items={(s.items ?? []) as EventItem[]} />}
                 {s.key === "news" && <NewsBlock section={s} />}
-                {s.md ? (
+                {s.tracking ? (
+                  <TrackingList items={s.tracking} />
+                ) : s.md ? (
                   <Markdown>{s.md}</Markdown>
                 ) : (
                   <p className="text-sm text-muted-foreground italic">AI 解读不可用</p>
@@ -539,6 +545,134 @@ function CompanyRisks({ items }: { items: AnnualRisk[] }) {
           </li>
         ))}
       </ul>
+    </div>
+  )
+}
+
+/** 本章不计分的参考指标 */
+function InfoFacts({ ids, facts }: { ids: string[]; facts: Record<string, Fact> }) {
+  return (
+    <div className="rounded-lg border border-border">
+      <div className="border-b border-border px-4 py-2.5 text-sm font-medium">
+        参考指标<span className="ml-1.5 text-xs font-normal text-muted-foreground">不计分</span>
+      </div>
+      <dl className="grid grid-cols-1 gap-x-6 gap-y-2 px-4 py-3 text-sm sm:grid-cols-2">
+        {ids
+          .filter((id) => facts[id])
+          .map((id) => (
+            <div key={id} className="flex items-baseline justify-between gap-3" title={facts[id].period ?? undefined}>
+              <dt className="text-muted-foreground">{facts[id].label}</dt>
+              <dd className="font-mono tabular-nums text-foreground">{fmtFact(facts[id])}</dd>
+            </div>
+          ))}
+      </dl>
+    </div>
+  )
+}
+
+function PeersTable({ peers }: { peers: PeersBlock }) {
+  const num = (v: number | null, suffix = "") => (v == null ? "—" : `${v.toFixed(2)}${suffix}`)
+  return (
+    <div className="rounded-lg border border-border">
+      <div className="border-b border-border px-4 py-2.5 text-sm font-medium">
+        {peers.industry}行业市值相近公司
+        <span className="ml-1.5 text-xs font-normal text-muted-foreground">
+          行业共 {peers.count} 家 · 行情快照 {peers.as_of ?? "—"}
+        </span>
+      </div>
+      <div className="overflow-x-auto">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>公司</TableHead>
+              <TableHead className="text-right">市值（亿元）</TableHead>
+              <TableHead className="text-right">市盈率</TableHead>
+              <TableHead className="text-right">市净率</TableHead>
+              <TableHead className="text-right">ROE</TableHead>
+              <TableHead className="text-right">股息率</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {peers.rows.map((r) => (
+              <TableRow key={r.code} className={cn(r.self && "bg-muted/60 font-medium")}>
+                <TableCell className="text-sm whitespace-nowrap">
+                  {r.name}
+                  <span className="ml-1.5 font-mono text-xs text-muted-foreground">{r.code}</span>
+                </TableCell>
+                <TableCell className="text-right font-mono text-sm tabular-nums">{num(r.market_cap)}</TableCell>
+                <TableCell className="text-right font-mono text-sm tabular-nums">
+                  {r.pe != null && r.pe <= 0 ? "亏损" : num(r.pe)}
+                </TableCell>
+                <TableCell className="text-right font-mono text-sm tabular-nums">{num(r.pb)}</TableCell>
+                <TableCell className="text-right font-mono text-sm tabular-nums">{num(r.roe, "%")}</TableCell>
+                <TableCell className="text-right font-mono text-sm tabular-nums">{num(r.dividend_yield, "%")}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+  )
+}
+
+const TRACKING_GROUPS: { kind: TrackingItem["kind"]; title: string }[] = [
+  { kind: "flag", title: "排雷项" },
+  { kind: "metric", title: "指标" },
+  { kind: "event", title: "需跟进的公告" },
+  { kind: "risk", title: "公司自述风险" },
+  { kind: "next", title: "下一期数据" },
+]
+
+/** 后续跟踪清单：程序按规则生成 */
+function TrackingList({ items }: { items: TrackingItem[] }) {
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-muted-foreground">
+        由程序按规则生成：排雷项、异常或得分偏低的指标、负面公告、公司自述风险；有公司解释的附上出处。
+      </p>
+      {TRACKING_GROUPS.map(({ kind, title }) => {
+        const group = items.filter((it) => it.kind === kind)
+        if (group.length === 0) return null
+        return (
+          <div key={kind} className="rounded-lg border border-border">
+            <div
+              className={cn(
+                "border-b border-border px-4 py-2.5 text-sm font-medium",
+                kind === "flag" && "text-red-600 dark:text-red-400",
+              )}
+            >
+              {title}
+            </div>
+            <ul className="divide-y divide-border text-sm">
+              {group.map((it) => (
+                <li key={it.key} className="px-4 py-2.5">
+                  <div className="flex flex-wrap items-baseline gap-x-2">
+                    <span className="font-medium text-foreground">{it.label}</span>
+                    {it.value && <span className="font-mono text-xs tabular-nums text-muted-foreground">{it.value}</span>}
+                  </div>
+                  <div className="mt-0.5 text-xs text-muted-foreground">
+                    {it.url ? (
+                      <a href={it.url} target="_blank" rel="noreferrer" className="hover:underline">
+                        {it.note}
+                      </a>
+                    ) : (
+                      it.note
+                    )}
+                  </div>
+                  {it.explain && (
+                    <div className="mt-1 border-l-2 border-border pl-3 text-xs text-muted-foreground">
+                      公司解释：{it.explain.claim}
+                      <span className="ml-1">
+                        — {it.explain.doc} 第 {it.explain.page} 页
+                      </span>
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )
+      })}
     </div>
   )
 }

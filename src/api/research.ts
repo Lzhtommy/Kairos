@@ -71,6 +71,28 @@ export type AnnualKpi = PeriodicSource & { name: string; value: string; unit: st
 export type AnnualRisk = PeriodicSource & { title: string }
 export type AnnualCitation = PeriodicSource & { topic: string; claim: string }
 
+export type PeerRow = {
+  code: string
+  name: string
+  market_cap: number | null
+  pe: number | null
+  pb: number | null
+  roe: number | null
+  dividend_yield: number | null
+  self: boolean
+}
+export type PeersBlock = { industry: string; count: number; as_of: string | null; rows: PeerRow[] }
+
+export type TrackingItem = {
+  kind: "flag" | "metric" | "event" | "risk" | "next"
+  key: string
+  label: string
+  value: string
+  note: string
+  url?: string | null
+  explain?: { claim: string; doc: string; page: number } | null
+}
+
 export type Section = {
   key: string
   title: string
@@ -86,6 +108,10 @@ export type Section = {
   kpis?: AnnualKpi[]
   company_risks?: AnnualRisk[]
   citations?: AnnualCitation[]
+  /** 不计分的参考指标 fact id */
+  info_facts?: string[]
+  peers?: PeersBlock
+  tracking?: TrackingItem[]
 }
 
 export type SourceInfo = {
