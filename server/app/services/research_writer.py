@@ -43,8 +43,10 @@ SECTIONS: list[tuple[str, str, list[str], list[str]]] = [
 # 纯代码生成、不调 LLM 的章节
 CODE_ONLY_SECTIONS = {"tracking"}
 
-# 各章「参考指标（不计分）」表：存在才展示
+# 各章「参考指标（不计分）」表：存在才展示；以 * 结尾的按前缀匹配带年份的 fact（见 _info_facts）
 SECTION_INFO_FACTS = {
+    "valuation": ["fwd_pe_*", "inst_eps_growth_fc_*", "inst_eps_fc_n_*", "inst_eps_fc_min_*", "inst_eps_fc_max_*",
+                  "inst_eps_fc_cv_*", "inst_eps_progress", "eps_progress_prev"],
     "health": ["contract_liab", "contract_liab_yoy"],
     "peers": ["roe_snapshot", "roe_pct_industry", "industry_median_roe", "industry_median_pe", "pb_pct_industry",
               "industry_median_pb", "industry_median_dividend_yield"],
@@ -52,6 +54,7 @@ SECTION_INFO_FACTS = {
 
 BANNED = [
     "建议买入", "建议卖出", "建议增持", "建议减持", "建议持有", "目标价", "强烈推荐", "推荐买入",
+    "合理价格", "合理价位", "合理股价", "价格区间",
     "值得买入", "逢低买入", "逢高卖出", "抄底", "止损", "加仓", "减仓", "满仓", "清仓",
 ]
 
@@ -228,6 +231,15 @@ SECTION_TOPICS = {
 }
 
 
+def _info_facts(key: str, facts: dict) -> list[str]:
+    """带年份的按（年份，配置顺序）排，同一年的放在一起；其余按配置顺序跟在后面。"""
+    pats = SECTION_INFO_FACTS.get(key, [])
+    dated = sorted(
+        (f[len(p) - 1:], i, f) for i, p in enumerate(pats) if p.endswith("*") for f in facts if f.startswith(p[:-1])
+    )
+    return [f for *_, f in dated] + [p for p in pats if not p.endswith("*") and p in facts]
+
+
 def _citations(key: str, periodic: dict | None) -> list[dict]:
     topics = SECTION_TOPICS.get(key)
     if not periodic or not topics:
@@ -308,6 +320,17 @@ def _context(key: str, dataset: dict, result: dict) -> tuple[str, list[str]]:
         ) or "（无）"
         text = f"各维度得分：\n{_score_block(result)}\n排雷项：\n{flags}\n负面公告：\n{neg}"
         return text, [text]
+    if key == "valuation" and any(f.startswith("fwd_pe_") for f in dataset["facts"]):
+        facts = dataset["facts"]
+        actual = [f"- {facts[f]['label']}（{facts[f]['period']}）：{fmt(facts[f])}"
+                  for f in ("deducted_np_yoy", "revenue_yoy") if f in facts]
+        text = (
+            "最新实际增速：\n" + ("\n".join(actual) or "（无）") + "\n"
+            "写作要求：除估值分位外，对照机构一致预期与实际——预测增速与最新实际增速差多少、"
+            "预测完成度与去年同期相比快还是慢、机构预测是否分歧较大（区间与离散度）。"
+            "只描述「当前估值隐含了怎样的预期、实际进度如何」，不给出合理价格或价格区间。"
+        )
+        return text, [text]
     return "", []
 
 
@@ -341,7 +364,7 @@ def write_sections(
         if progress:
             progress(f"撰写 {i}/{len(llm_keys)}：{title}")
         sec: dict = {"key": key, "title": title, "md": "", "metric_keys": metric_keys, "ai": use_llm}
-        info = [f for f in SECTION_INFO_FACTS.get(key, []) if f in facts]
+        info = _info_facts(key, facts)
         if info:
             sec["info_facts"] = info
         if key == "peers":

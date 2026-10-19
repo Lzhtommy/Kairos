@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import statistics
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -523,3 +524,55 @@ def test_build_tracking():
     # 同一指标不重复（得分偏低 + 异常规则都命中时只留一条）
     assert len([i for i in items if i["key"] == "deducted_np_yoy"]) == 1
     assert build_tracking(ds, result, None)[-1]["kind"] == "next"
+
+
+def _with_forecasts(eps_2026: list[float], eps_2027: list[float]) -> dict:
+    raw = make_raw()
+    raw["abstract_report"] = [
+        {"报告期": "2025-06-30", "基本每股收益": 0.8},
+        {"报告期": "2026-06-30", "扣非净利润同比增长率": "-24%", "营业总收入同比增长率": "5%", "基本每股收益": 0.42},
+    ]
+    d = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d")
+    raw["reports"] = [
+        {"日期": d, "机构": f"券商{i}", "报告名称": "点评", "东财评级": "买入",
+         "2026-盈利预测-收益": a, "2026-盈利预测-市盈率": 20.0, "2027-盈利预测-收益": b, "2027-盈利预测-市盈率": 18.0}
+        for i, (a, b) in enumerate(zip(eps_2026, eps_2027))
+    ]
+    return raw
+
+
+def test_build_facts_consensus_expectations():
+    ds = build_facts(_with_forecasts([0.56, 0.61, 0.69], [0.7, 0.8, 0.9]), {**VALUATION, "price": 16.78}, "测试")
+    f = ds["facts"]
+    assert f["inst_eps_fc_2026"]["value"] == pytest.approx(0.62)
+    assert f["inst_eps_fc_min_2026"]["value"] == 0.56 and f["inst_eps_fc_max_2026"]["value"] == 0.69
+    assert f["inst_eps_fc_cv_2026"]["value"] == pytest.approx(statistics.pstdev([0.56, 0.61, 0.69]) / 0.62 * 100, abs=1e-3)
+    # 前瞻市盈率用当前股价，不用研报里的市盈率
+    assert f["fwd_pe_2026"]["value"] == pytest.approx(16.78 / 0.62, abs=1e-3)
+    assert f["fwd_pe_2026"]["group"] == "valuation"
+    # 2026 对 2025 年实际（1.0），2027 对 2026 年预测（0.62）
+    assert f["inst_eps_growth_fc_2026"]["value"] == pytest.approx(-38)
+    assert "实际" in f["inst_eps_growth_fc_2026"]["label"]
+    assert f["inst_eps_growth_fc_2027"]["value"] == pytest.approx((0.8 / 0.62 - 1) * 100, abs=1e-2)
+    assert "预测" in f["inst_eps_growth_fc_2027"]["label"]
+    # 完成度：0.42 / 0.62；去年同期 0.8 / 1.0
+    assert f["inst_eps_progress"]["value"] == pytest.approx(67.74, abs=0.01)
+    assert f["eps_progress_prev"]["value"] == pytest.approx(80)
+
+
+def test_consensus_dispersion_needs_three_reports_and_price():
+    f = build_facts(_with_forecasts([0.5, 0.7], [0.8, 0.9]), VALUATION, "测试")["facts"]
+    assert f["inst_eps_fc_n_2026"]["value"] == 2
+    assert "inst_eps_fc_min_2026" not in f and "inst_eps_fc_cv_2026" not in f
+    assert "fwd_pe_2026" not in f  # 没有股价
+
+
+def test_tracking_flags_slow_forecast_progress():
+    from app.services.research_tracking import build_tracking
+    from app.services.research_writer import _info_facts
+
+    ds = build_facts(_with_forecasts([0.56, 0.61, 0.69], [0.7, 0.8, 0.9]), {**VALUATION, "price": 16.78}, "测试")
+    item = next(i for i in build_tracking(ds, score(ds), None) if i["key"] == "inst_eps_progress")
+    assert item["value"] == "67.74%" and "80.00%" in item["note"]
+    info = _info_facts("valuation", ds["facts"])
+    assert info[:2] == ["fwd_pe_2026", "inst_eps_growth_fc_2026"] and info[6] == "fwd_pe_2027" and info[-2:] == ["inst_eps_progress", "eps_progress_prev"]

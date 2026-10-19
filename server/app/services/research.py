@@ -31,13 +31,14 @@ def valuation_inputs(db: Session, code: str, industry: str) -> dict:
     if latest is not None:
         out = {
             "pe": latest.pe, "pb": latest.pb, "dividend_yield": latest.dividend_yield,
-            "market_cap": latest.market_cap, "as_of": latest.ts.strftime("%Y-%m-%d"),
+            "market_cap": latest.market_cap, "price": latest.price, "as_of": latest.ts.strftime("%Y-%m-%d"),
         }
     else:
         q = db.get(Quote, code)
         fnd = db.get(Fundamental, code)
         if q is not None:
-            out = {"pe": q.pe, "pb": q.pb, "market_cap": q.market_cap, "as_of": q.ts.strftime("%Y-%m-%d")}
+            out = {"pe": q.pe, "pb": q.pb, "market_cap": q.market_cap, "price": q.price,
+                   "as_of": q.ts.strftime("%Y-%m-%d")}
         if fnd is not None:
             out["dividend_yield"] = fnd.dividend_yield
 

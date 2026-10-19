@@ -24,6 +24,7 @@ ANOMALIES: list[tuple[str, Callable[[float], bool], str]] = [
     ("pe_pct_self", lambda v: v > 80, "估值处于自身历史高位"),
 ]
 WEAK_RATIO = 0.3  # 得分率低于此视为偏低
+PROGRESS_LAG_PP = 10  # 预测完成度比去年同期低这么多个百分点才提示
 
 # 指标 → 在公司解释里找的关键词
 EXPLAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
@@ -78,6 +79,13 @@ def build_tracking(dataset: dict, result: dict, periodic: dict | None) -> list[d
             seen.add(it["key"])
             items.append({"kind": "metric", "key": it["key"], "label": it["label"], "value": it["display"],
                           "note": f"得分偏低（{it['points']} / {it['max']}）", "explain": _explain(it["key"], drivers)})
+
+    # 预测完成度明显慢于去年同期（季节性基准）：全年一致预期能否兑现
+    prog, prev = facts.get("inst_eps_progress"), facts.get("eps_progress_prev")
+    if prog and prev and prog["value"] < prev["value"] - PROGRESS_LAG_PP:
+        items.append({"kind": "metric", "key": "inst_eps_progress", "label": prog["label"], "value": fmt(prog),
+                      "note": f"慢于去年同期（{fmt(prev)}），关注全年机构预测能否兑现",
+                      "explain": _explain("deducted_np_yoy", drivers)})
 
     latest_by_tag: dict[str, dict] = {}
     for e in dataset.get("events") or []:  # 已按日期倒序

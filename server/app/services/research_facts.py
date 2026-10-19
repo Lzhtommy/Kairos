@@ -478,15 +478,55 @@ def build_facts(raw: dict[str, list[dict] | None], valuation: dict, name: str = 
         for k, n in ratings.items():
             put(f"inst_rating_{k}", float(n), "篇", f"近 90 天评级「{k}」研报数", "reports", None, "consensus")
         fc_years = sorted({int(m.group(1)) for k in (reports[0] if reports else {}) if (m := re.match(r"(\d{4})-盈利预测-收益", k))})
+        price = valuation.get("price")
+        eps_mean: dict[int, float] = {}
         for y in fc_years[:2]:
             eps_vals = [v for r in recent if (v := num(r.get(f"{y}-盈利预测-收益"))) is not None]
             pe_vals = [v for r in recent if (v := num(r.get(f"{y}-盈利预测-市盈率"))) is not None]
             if eps_vals:
-                put(f"inst_eps_fc_{y}", sum(eps_vals) / len(eps_vals), "元", f"机构预测 {y} 年每股收益（均值）",
+                mean = sum(eps_vals) / len(eps_vals)
+                eps_mean[y] = mean
+                put(f"inst_eps_fc_{y}", mean, "元", f"机构预测 {y} 年每股收益（均值）",
                     "reports", str(y), "consensus")
+                put(f"inst_eps_fc_n_{y}", float(len(eps_vals)), "篇", f"给出 {y} 年盈利预测的研报数",
+                    "reports", str(y), "valuation")
+                # 分歧：样本太少时区间 / 离散度没有意义
+                if len(eps_vals) >= 3:
+                    put(f"inst_eps_fc_min_{y}", min(eps_vals), "元", f"机构预测 {y} 年每股收益（最低）",
+                        "reports", str(y), "valuation")
+                    put(f"inst_eps_fc_max_{y}", max(eps_vals), "元", f"机构预测 {y} 年每股收益（最高）",
+                        "reports", str(y), "valuation")
+                    if mean > 0:
+                        put(f"inst_eps_fc_cv_{y}", statistics.pstdev(eps_vals) / mean * 100, "%",
+                            f"机构预测 {y} 年每股收益离散度（标准差 / 均值）", "reports", str(y), "valuation")
+                # 前瞻市盈率用当前股价重算；研报里的市盈率是各自发布日的股价
+                if price and mean > 0:
+                    put(f"fwd_pe_{y}", price / mean, "倍", f"前瞻市盈率（当前股价 / 机构预测 {y} 年每股收益）",
+                        "reports", str(y), "valuation")
+                # 一致预期隐含增速：对上一年实际值，没有实际值就对上一年预测值
+                base = num((by_year.get(y - 1) or {}).get("基本每股收益")) or eps_mean.get(y - 1)
+                if base and base > 0:
+                    put(f"inst_eps_growth_fc_{y}", (mean / base - 1) * 100, "%",
+                        f"机构预测 {y} 年每股收益增速（对 {y - 1} 年{'实际' if y - 1 in by_year else '预测'}）",
+                        "reports", str(y), "valuation")
             if pe_vals:
                 put(f"inst_pe_fc_{y}", sum(pe_vals) / len(pe_vals), "倍", f"机构预测 {y} 年市盈率（均值）",
                     "reports", str(y), "consensus")
+
+        # 预测完成度：最新累计每股收益占当年预测的比例，对照去年同期占全年的比例（季节性基准）
+        if periodic:
+            lp_d = norm_date(periodic[-1].get("报告期"))
+            ly = int(lp_d[:4])
+            cum = num(periodic[-1].get("基本每股收益"))
+            prev = next((r for r in periodic if norm_date(r.get("报告期")) == _year_ago(lp_d)), None)
+            if not lp_d.endswith("12-31") and ly in eps_mean and cum is not None and eps_mean[ly] > 0:
+                put("inst_eps_progress", cum / eps_mean[ly] * 100, "%",
+                    f"截至 {lp_d} 每股收益占 {ly} 年机构预测的比例", "reports", lp_d, "valuation")
+                prev_cum = num(prev.get("基本每股收益")) if prev else None
+                prev_full = num((by_year.get(ly - 1) or {}).get("基本每股收益"))
+                if prev_cum is not None and prev_full and prev_full > 0:
+                    put("eps_progress_prev", prev_cum / prev_full * 100, "%",
+                        f"{ly - 1} 年同期每股收益占全年实际的比例", "abstract_report", _year_ago(lp_d), "valuation")
         consensus = {
             "ratings": ratings,
             "titles": [
