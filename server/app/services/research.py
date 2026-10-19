@@ -10,11 +10,12 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.market import FactorSnapshot, Fundamental, Quote, StockInfo
-from app.models.research import ResearchReport
-from app.services.research_data import fetch_all
+from app.models.research import ResearchRawCache, ResearchReport
+from app.services.research_annual import select_blocks, split_blocks
+from app.services.research_data import ANNUAL_LABEL, fetch_all, fetch_annual_mdna
 from app.services.research_facts import build_facts, is_financial
 from app.services.research_score import score
-from app.services.research_writer import render_markdown, write_sections
+from app.services.research_writer import EXTRACT_VERSION, extract_annual, llm_enabled, render_markdown, write_sections
 
 logger = logging.getLogger("kairos.research")
 
@@ -66,6 +67,41 @@ def valuation_inputs(db: Session, code: str, industry: str) -> dict:
     return out
 
 
+def annual_insights(db: Session, code: str, progress) -> tuple[dict | None, dict, int]:
+    """年报深读（§10）：MD&A 文本 → 选块 → LLM 抽取 + 原文校验。返回 (annual | None, source, tokens)。
+
+    抽取结果按「公告 ID + EXTRACT_VERSION」缓存，重新生成报告不重复花 LLM。失败一律降级为 None。
+    """
+    if not llm_enabled():
+        # 抽取离不开 LLM；没配 key 就不下载 PDF
+        return None, {"key": "annual", "label": ANNUAL_LABEL, "fetched_at": None, "status": "failed",
+                      "error": "未配置 AI，跳过年报深读"}, 0
+    payload, source = fetch_annual_mdna(db, code, progress)
+    if payload is None:
+        return None, source, 0
+    meta = payload["report"]
+    cache_tag = f"{meta['announcement_id']}:{EXTRACT_VERSION}"
+    cached = db.get(ResearchRawCache, ("annual_extract", code))
+    if cached and (cached.payload or {}).get("tag") == cache_tag:
+        return {**cached.payload["extract"], "report": meta}, source, 0
+
+    progress("年报深读：抽取公司解释")
+    pages = [(int(no), text) for no, text in payload["pages"]]
+    try:
+        extract, tokens = extract_annual(select_blocks(split_blocks(pages)), pages)
+    except Exception as exc:  # noqa: BLE001 — 抽取失败不影响报告主体
+        logger.warning("Research annual extract %s failed: %s", code, exc)
+        return None, {**source, "error": f"抽取失败：{type(exc).__name__}"}, 0
+    now = datetime.now(timezone.utc)
+    if cached:
+        cached.payload, cached.fetched_at = {"tag": cache_tag, "extract": extract}, now
+    else:
+        db.add(ResearchRawCache(source="annual_extract", code=code,
+                                payload={"tag": cache_tag, "extract": extract}, fetched_at=now))
+    db.commit()
+    return {**extract, "report": meta}, source, tokens
+
+
 def run_report(db: Session, report: ResearchReport) -> None:
     """执行一条 running 状态的报告；异常由调用方兜底标 failed。"""
 
@@ -90,7 +126,11 @@ def run_report(db: Session, report: ResearchReport) -> None:
     dataset = build_facts(raw, valuation_inputs(db, report.code, industry), name)
     result = score(dataset)
 
-    sections, tokens = write_sections(dataset, result, name, report.code, progress)
+    annual, annual_source, annual_tokens = annual_insights(db, report.code, progress)
+    sources.append(annual_source)
+
+    sections, tokens = write_sections(dataset, result, name, report.code, progress, annual=annual)
+    tokens += annual_tokens
 
     report.data_as_of = dataset["data_as_of"]
     report.scoring_version = result["scoring_version"]

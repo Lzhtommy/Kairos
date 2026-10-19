@@ -19,6 +19,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.models.research import ResearchRawCache
+from app.services.research_annual import extract_mdna, pick_annual_report, read_until_mdna_end
 
 logger = logging.getLogger("kairos.research")
 
@@ -136,6 +137,95 @@ def fetch_all(db: Session, code: str, progress: Callable[[str], None] | None = N
             raw[key] = None
             sources.append({"key": key, "label": label, "fetched_at": None, "status": "failed", "error": err})
     return raw, sources
+
+
+# ---------------------------------------------------------------- 年报（docs/RESEARCH-DESIGN.md §10）
+
+ANNUAL_LABEL = "巨潮资讯·年报（管理层讨论与分析）"
+PDF_TIMEOUT = 60  # 秒
+PDF_MAX_BYTES = 60 * 1024 * 1024
+
+
+def _annual_list(code: str) -> list[dict]:
+    df = _ak().stock_zh_a_disclosure_report_cninfo(
+        symbol=code, market="沪深京", category="年报", start_date=_since(730), end_date=_today()
+    )
+    return _records(df)
+
+
+def _download_pdf(url: str) -> bytes:
+    import httpx  # noqa: PLC0415
+
+    with httpx.stream("GET", url, timeout=PDF_TIMEOUT, follow_redirects=True) as r:
+        r.raise_for_status()
+        buf = bytearray()
+        for chunk in r.iter_bytes():
+            buf += chunk
+            if len(buf) > PDF_MAX_BYTES:
+                raise ValueError(f"PDF 超过 {PDF_MAX_BYTES // 1024 // 1024}MB")
+    return bytes(buf)
+
+
+def _pdf_mdna(data: bytes) -> list[list] | None:
+    import io  # noqa: PLC0415
+
+    from pypdf import PdfReader  # noqa: PLC0415 — 可选依赖（requirements-data.txt）
+
+    reader = PdfReader(io.BytesIO(data))
+    pages = read_until_mdna_end(p.extract_text() or "" for p in reader.pages)
+    mdna = extract_mdna(pages)
+    return [[no, text] for no, text in mdna] if mdna else None
+
+
+def fetch_annual_mdna(db: Session, code: str, progress: Callable[[str], None] | None = None) -> tuple[dict | None, dict]:
+    """最近一份年报的 MD&A 文本。返回 (payload: {report, pages: [[页码, 文本]]} | None, source)。
+
+    每次都查一遍年报列表（一次巨潮请求）；公告 ID 与缓存一致就不再下载 PDF。
+    任一步失败：有旧缓存回退旧缓存（stale），否则 failed。
+    """
+    if progress:
+        progress("采集：年报管理层讨论与分析")
+    cached = db.get(ResearchRawCache, ("annual_mdna", code))
+    now = datetime.now(timezone.utc)
+
+    def src(status: str, meta: dict | None, fetched_at: datetime | None, err: str | None = None) -> dict:
+        out = {"key": "annual", "label": f"巨潮资讯·{meta['title']}" if meta else ANNUAL_LABEL,
+               "fetched_at": fetched_at.isoformat() if fetched_at else None, "status": status}
+        if meta:
+            out["url"] = meta["detail_url"]
+        if err:
+            out["error"] = err
+        return out
+
+    try:
+        meta = pick_annual_report(_pool.submit(_annual_list, code).result(timeout=CALL_TIMEOUT))
+        if meta is None:
+            raise LookupError("近两年无年报正文")
+        if cached and (cached.payload or {}).get("report", {}).get("announcement_id") == meta["announcement_id"]:
+            return cached.payload, src("cache", meta, _aware(cached.fetched_at))
+        if progress:
+            progress("采集：下载年报 PDF")
+        data = _pool.submit(_download_pdf, meta["pdf_url"]).result(timeout=PDF_TIMEOUT + 10)
+        if progress:
+            progress("解析年报 PDF")
+        pages = _pdf_mdna(data)
+        if pages is None:
+            raise LookupError("未找到「第三节 管理层讨论与分析」（可能是扫描版）")
+        payload = {"report": meta, "pages": pages}
+        if cached:
+            cached.payload, cached.fetched_at = payload, now
+        else:
+            db.add(ResearchRawCache(source="annual_mdna", code=code, payload=payload, fetched_at=now))
+        db.commit()
+        return payload, src("ok", meta, now)
+    except FutureTimeout:
+        err = "超时"
+    except Exception as exc:  # noqa: BLE001 — 年报深读失败不影响报告主体
+        err = f"{type(exc).__name__}: {str(exc)[:120]}"
+    logger.info("Research annual report %s failed: %s", code, err)
+    if cached and cached.payload:
+        return cached.payload, src("stale", cached.payload.get("report"), _aware(cached.fetched_at), err)
+    return None, src("failed", None, None, err)
 
 
 def _aware(dt: datetime | None) -> datetime | None:

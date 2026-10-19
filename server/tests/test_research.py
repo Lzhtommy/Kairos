@@ -315,3 +315,84 @@ def test_run_report_rejects_financial_by_csrc_industry(db, monkeypatch):
     db.commit()
     with pytest.raises(ValueError, match="金融类"):
         research_service.run_report(db, r)
+
+
+# ---------------------------------------------------------------- 年报深读接入（打桩 PDF 与 LLM）
+
+
+def test_run_report_with_annual_insights(db, stocks, monkeypatch):
+    import json
+    from pathlib import Path
+
+    from app.services import research_writer
+    from app.services.research_annual import extract_mdna
+
+    monkeypatch.setattr(settings, "deepseek_api_key", "test-key")
+    monkeypatch.setattr(settings, "ai_provider", "deepseek")
+    raw = make_raw()
+    monkeypatch.setattr(research_service, "fetch_all", lambda _db, _code, _p=None: (raw, []))
+
+    pages = json.loads((Path(__file__).parent / "fixtures" / "annual_600519_2025.json").read_text(encoding="utf-8"))
+    meta = {"title": "贵州茅台2025年年度报告", "date": "2026-04-17", "year": 2025, "announcement_id": "1225114741",
+            "pdf_url": "http://static.cninfo.com.cn/finalpage/2026-04-17/1225114741.PDF", "detail_url": "http://x"}
+    payload = {"report": meta, "pages": [[no, t] for no, t in extract_mdna(pages)]}
+    src = {"key": "annual", "label": "巨潮资讯·贵州茅台2025年年度报告", "fetched_at": None, "status": "ok"}
+    monkeypatch.setattr(research_service, "fetch_annual_mdna", lambda _db, _code, _p=None: (payload, src))
+
+    extract_calls: list[str] = []
+
+    def fake_chat(messages, max_tokens=1500):
+        system, user = messages[0]["content"], messages[-1]["content"]
+        if system == research_writer.EXTRACT_PROMPT:
+            extract_calls.append(user)
+            return {
+                "drivers": [
+                    {"topic": "revenue", "claim": "茅台酒基酒设计产能 46,395.00 吨",
+                     "quote": "2025 年茅台酒基酒设计产能为 46,395.00 吨，同比新增基酒产能 1,800.00 吨"},
+                    {"topic": "margin", "claim": "编造的解释", "quote": "毛利率因提价大幅上升到百分之九十"},
+                ],
+                "kpis": [{"name": "成品酒期末库存", "value": "24,770.35", "unit": "吨",
+                          "quote": "成品酒 半成品酒（含基础酒）\n24,770.35 315,207.51"}],
+                "risks": [{"title": "宏观经济风险", "quote": "一是宏观经济风险；二是安全风险"}],
+            }, 100
+        if "observations" in user:
+            return {"observations": ["观察一", "观察二", "观察三"]}, 10
+        return {"markdown": "解读正文。"}, 10
+
+    monkeypatch.setattr(research_writer, "_chat_json", fake_chat)
+
+    r = ResearchReport(code="600519", status="running")
+    db.add(r)
+    db.commit()
+    research_service.run_report(db, r)
+
+    assert r.status == "done"
+    # 抽取输入：选中的块带上年报页码
+    assert len(extract_calls) == 1 and "【行业经营性信息】（年报第 15 页起" in extract_calls[0]
+    secs = {s["key"]: s for s in r.sections}
+    # 编造的引用被丢弃，真实引用分配到 topic 对应的章节
+    assert [c["page"] for c in secs["growth"]["citations"]] == [15]
+    assert "citations" not in secs["profitability"]
+    assert secs["overview"]["kpis"][0]["value"] == "24,770.35"
+    assert secs["risks"]["company_risks"][0]["page"] == 23
+    assert any(s["key"] == "annual" and s["status"] == "ok" for s in r.sources)
+    assert "公司自述风险" in r.content_md and "年报第 " in r.content_md
+
+    # 再生成一次：抽取结果命中缓存，不再调 LLM 抽取
+    r2 = ResearchReport(code="600519", status="running")
+    db.add(r2)
+    db.commit()
+    research_service.run_report(db, r2)
+    assert len(extract_calls) == 1
+    assert [c["page"] for c in {s["key"]: s for s in r2.sections}["growth"]["citations"]] == [15]
+
+
+def test_annual_skipped_without_llm(db, monkeypatch):
+    monkeypatch.setattr(settings, "deepseek_api_key", "")
+
+    def boom(*_a, **_k):
+        raise AssertionError("不该下载年报")
+
+    monkeypatch.setattr(research_service, "fetch_annual_mdna", boom)
+    annual, source, tokens = research_service.annual_insights(db, "600519", lambda _t: None)
+    assert annual is None and tokens == 0 and source["status"] == "failed"

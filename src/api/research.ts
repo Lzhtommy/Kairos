@@ -65,6 +65,10 @@ export type RedFlag = { key: string; label: string; detail: string }
 export type EventItem = { date: string | null; title: string; url: string | null; tag: string; label: string }
 export type NewsItem = { title: string; time: string; source: string; url: string | null }
 export type InstReport = { date: string | null; org: string; title: string; rating: string; url: string | null }
+/** 年报深读条目：quote 为年报原文，page 由程序按原文回查 */
+export type AnnualKpi = { name: string; value: string; unit: string; quote: string; page: number }
+export type AnnualRisk = { title: string; quote: string; page: number }
+export type AnnualCitation = { topic: string; claim: string; quote: string; page: number }
 
 export type Section = {
   key: string
@@ -78,6 +82,9 @@ export type Section = {
   reports?: InstReport[]
   profile?: Record<string, string>
   segments?: { name: string; share_fact: string; gm_fact: string }[]
+  kpis?: AnnualKpi[]
+  company_risks?: AnnualRisk[]
+  citations?: AnnualCitation[]
 }
 
 export type SourceInfo = {
@@ -86,6 +93,7 @@ export type SourceInfo = {
   fetched_at: string | null
   status: "ok" | "cache" | "stale" | "failed"
   error?: string
+  url?: string
 }
 
 export type ResearchDetail = ResearchSummary & {

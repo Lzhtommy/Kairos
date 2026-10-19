@@ -5,3 +5,4 @@
 # (AI strategy generation uses DeepSeek over httpx — no extra package needed.)
 akshare==1.18.64
 pandas==2.2.3
+pypdf==6.1.3

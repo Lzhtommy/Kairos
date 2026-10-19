@@ -16,6 +16,7 @@ import time
 import httpx
 
 from app.core.config import settings
+from app.services.research_annual import BLOCK_LABELS, verify_extract
 from app.services.research_facts import fmt
 from app.services.research_score import DIMENSION_LABELS
 
@@ -44,7 +45,8 @@ BANNED = [
 SYSTEM_PROMPT = (
     "你是 A 股基本面研究员，为一份程序化研报撰写某一章的文字解读。规则：\n"
     "1. 只能使用「事实」中给出的数字，原样照抄其显示格式；禁止自行计算差值、比值、平均数，禁止出现事实里没有的数字。\n"
-    "2. 不要逐条复述数字，重点解释数字背后的含义、变化原因的可能方向、与经营的关系；不确定的地方明确说「需结合公告进一步确认」。\n"
+    "2. 不要逐条复述数字，重点解释数字背后的含义与经营的关系。背景材料里有「公司解释（摘自年报）」时，"
+    "用它说明变化原因并注明「据年报」；没有公司解释的变化只陈述现象，不要自行推测原因，也不要写「需进一步确认」之类的套话。\n"
     "3. 不给任何投资建议：禁止出现买入、卖出、增减持建议、目标价、仓位等表述。\n"
     "4. 中文，客观克制，200~350 字，Markdown 段落（可用少量无序列表），不要写章节标题。\n"
     "输出严格 JSON：{\"markdown\": \"正文\"}"
@@ -94,15 +96,15 @@ def find_banned(md: str) -> list[str]:
 # ---------------------------------------------------------------- LLM
 
 
-def _llm_enabled() -> bool:
+def llm_enabled() -> bool:
     return bool(settings.deepseek_api_key) and settings.ai_provider in ("auto", "deepseek")
 
 
-def _chat_json(messages: list[dict]) -> tuple[dict, int]:
+def _chat_json(messages: list[dict], max_tokens: int = 1500) -> tuple[dict, int]:
     # 网络抖动（SSL EOF / 连接被断）重试两次；HTTP 4xx/5xx 与 JSON 解析错误直接抛
     for attempt in range(3):
         try:
-            return _chat_json_once(messages)
+            return _chat_json_once(messages, max_tokens)
         except httpx.TransportError as exc:
             if attempt == 2:
                 raise
@@ -111,7 +113,7 @@ def _chat_json(messages: list[dict]) -> tuple[dict, int]:
     raise AssertionError("unreachable")
 
 
-def _chat_json_once(messages: list[dict]) -> tuple[dict, int]:
+def _chat_json_once(messages: list[dict], max_tokens: int = 1500) -> tuple[dict, int]:
     r = httpx.post(
         f"{settings.deepseek_base_url}/chat/completions",
         headers={"Authorization": f"Bearer {settings.deepseek_api_key}"},
@@ -119,7 +121,7 @@ def _chat_json_once(messages: list[dict]) -> tuple[dict, int]:
             "model": settings.deepseek_model,
             "messages": messages,
             "response_format": {"type": "json_object"},
-            "max_tokens": 1500,
+            "max_tokens": max_tokens,
             "temperature": 0.2,
         },
         timeout=90,
@@ -150,6 +152,58 @@ def _write_validated(user_prompt: str, key: str, allowed: set[float]) -> tuple[d
         ]
     logger.info("Research section %s failed validation: %s", key, problems)
     return payload, tokens, "部分内容未通过自动校验，待人工核对：" + "；".join(problems[:5])
+
+
+# ---------------------------------------------------------------- 年报抽取（§10）
+
+EXTRACT_VERSION = "a1"  # 改抽取提示词 / 校验规则时升版本，旧缓存自动失效
+
+EXTRACT_PROMPT = (
+    "你是上市公司年报信息摘录员。从给定的年报「管理层讨论与分析」片段中摘录信息，只摘录、不评价、不推断。规则：\n"
+    "1. 每条都必须带 quote：从原文逐字复制的一段连续文字（20~120 字），不得改写、拼接、省略中间内容。\n"
+    "2. drivers：公司对经营变化原因的解释（收入、毛利、费用、现金流、资本开支、存货等）。"
+    "topic 取 revenue / margin / expense / cashflow / capex / inventory / other 之一；"
+    "claim 用一句话概括（≤60 字），其中出现的数字必须照抄 quote 里的。最多 12 条。\n"
+    "3. kpis：公司披露的经营数据（销量、产量、产能、库存、渠道或门店数量、直销占比、在手订单等）。"
+    "value 只写数字，照抄原文；unit 写单位；name 写清口径（如「茅台酒销量」）。"
+    "不要摘录营业收入、净利润等三张报表里已有的财务科目。最多 12 条。\n"
+    "4. risks：公司自述的经营风险。title 为风险名称（≤12 字），quote 为原文。最多 8 条。\n"
+    "5. 原文没有的类别返回空数组，不要凑数。\n"
+    "输出严格 JSON：{\"drivers\": [{\"topic\", \"claim\", \"quote\"}], "
+    "\"kpis\": [{\"name\", \"value\", \"unit\", \"quote\"}], \"risks\": [{\"title\", \"quote\"}]}"
+)
+
+
+def extract_annual(blocks: list[dict], pages: list[tuple[int, str]]) -> tuple[dict, int]:
+    """一次 LLM 调用抽取 drivers / kpis / risks，再由 verify_extract 按原文校验。"""
+    text = "\n\n".join(
+        f"【{BLOCK_LABELS.get(b['key'], b['title'])}】（年报第 {b['page']} 页起{'，已截断' if b.get('truncated') else ''}）\n{b['text']}"
+        for b in blocks
+    )
+    messages = [{"role": "system", "content": EXTRACT_PROMPT}, {"role": "user", "content": text}]
+    raw, tokens = _chat_json(messages, max_tokens=4000)
+    return verify_extract(raw, pages), tokens
+
+
+# 各章分配哪些 topic 的公司解释
+SECTION_TOPICS = {
+    "profitability": {"margin", "expense"},
+    "growth": {"revenue", "other"},
+    "health": {"cashflow", "capex", "inventory"},
+}
+
+
+def _citations(key: str, annual: dict | None) -> list[dict]:
+    topics = SECTION_TOPICS.get(key)
+    if not annual or not topics:
+        return []
+    return [d for d in annual.get("drivers") or [] if d["topic"] in topics]
+
+
+def _annual_block(cites: list[dict]) -> str:
+    return "公司解释（摘自年报）：\n" + "\n".join(
+        f"- {c['claim']}（第 {c['page']} 页原文：「{c['quote']}」）" for c in cites
+    )
 
 
 def _facts_block(facts: dict, groups: list[str]) -> str:
@@ -219,11 +273,14 @@ def _fallback_observations(result: dict) -> list[str]:
     return out
 
 
-def write_sections(dataset: dict, result: dict, name: str, code: str, progress=None) -> tuple[list[dict], int]:
+def write_sections(
+    dataset: dict, result: dict, name: str, code: str, progress=None, annual: dict | None = None
+) -> tuple[list[dict], int]:
+    """annual：年报深读结果（verify_extract 输出 + report 元信息），可为 None。"""
     facts = dataset["facts"]
     sections: list[dict] = []
     tokens = 0
-    use_llm = _llm_enabled()
+    use_llm = llm_enabled()
     llm_keys = [k for k, *_ in SECTIONS]
 
     for i, (key, title, metric_keys, groups) in enumerate(SECTIONS, 1):
@@ -238,8 +295,23 @@ def write_sections(dataset: dict, result: dict, name: str, code: str, progress=N
         if key == "overview":
             sec["profile"] = dataset.get("profile") or {}
             sec["segments"] = dataset.get("segments") or []
+            sec["kpis"] = (annual or {}).get("kpis") or []
+        if key == "risks":
+            sec["company_risks"] = (annual or {}).get("risks") or []
 
         context, extra = _context(key, dataset, result)
+        cites = _citations(key, annual)
+        if cites:
+            sec["citations"] = cites
+            block = _annual_block(cites)
+            context = f"{context}\n{block}" if context else block
+            extra = extra + [c["quote"] for c in cites] + [str(c["page"]) for c in cites]
+        if key == "overview" and sec["kpis"]:
+            block = "公司披露的经营数据（摘自年报）：\n" + "\n".join(
+                f"- {k['name']}：{k['value']}{k['unit']}（第 {k['page']} 页）" for k in sec["kpis"]
+            )
+            context = f"{context}\n{block}" if context else block
+            extra = extra + [block]
         if key == "summary":
             all_facts = _facts_block(facts, ["profitability", "growth", "health", "cashflow", "valuation", "shareholder"])
             flags = "\n".join(f"- {f['label']}：{f['detail']}" for f in result["red_flags"]) or "（无）"
@@ -328,12 +400,21 @@ def render_markdown(report: dict) -> str:
             for e in sec.get("items") or []:
                 out.append(f"- {e['date']} [{e['label']}] {e['title']}")
             out.append("")
+        if sec.get("kpis"):
+            out += ["**经营数据（摘自年报）**", "", "| 项目 | 数值 | 出处 |", "|---|---|---|"]
+            out += [f"| {k['name']} | {k['value']} {k['unit']} | 年报第 {k['page']} 页 |" for k in sec["kpis"]]
+            out.append("")
         if sec.get("md"):
             out.append(sec["md"])
         elif sec["key"] != "events":
             out.append("_AI 解读不可用_")
         if sec.get("warning"):
             out += ["", f"> ⚠ {sec['warning']}"]
+        if sec.get("citations"):
+            out += ["", "年报原文："] + [f"- 第 {c['page']} 页：「{c['quote']}」" for c in sec["citations"]]
+        if sec.get("company_risks"):
+            out += ["", "**公司自述风险（年报原文）**", ""]
+            out += [f"- **{r['title']}**（第 {r['page']} 页）：{r['quote']}" for r in sec["company_risks"]]
 
     out += ["", f"## {len(report['sections']) + 1}. 附录：评分明细与数据来源", ""]
     out += ["| 维度 | 指标 | 数值 | 得分 | 零分点 → 满分点 |", "|---|---|---|---|---|"]

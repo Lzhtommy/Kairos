@@ -20,6 +20,8 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import {
+  type AnnualCitation,
+  type AnnualRisk,
   DIM_ORDER,
   deleteResearch,
   downloadResearchMarkdown,
@@ -241,6 +243,8 @@ function ReportView({ report }: { report: ResearchDetail }) {
                   <p className="text-sm text-muted-foreground italic">AI 解读不可用</p>
                 )}
                 <SectionWarning section={s} />
+                {s.citations && s.citations.length > 0 && <Citations items={s.citations} />}
+                {s.company_risks && s.company_risks.length > 0 && <CompanyRisks items={s.company_risks} />}
               </div>
             </section>
           ))}
@@ -426,6 +430,7 @@ function Overview({ section, facts }: { section: Section; facts: Record<string, 
     ["主营业务", p["主营业务"]],
   ].filter(([, v]) => v)
   const segs = section.segments ?? []
+  const kpis = section.kpis ?? []
   return (
     <div className="grid gap-4 md:grid-cols-2">
       <dl className="space-y-2 rounded-lg border border-border p-4 text-sm">
@@ -458,6 +463,73 @@ function Overview({ section, facts }: { section: Section; facts: Record<string, 
           </Table>
         </div>
       )}
+      {kpis.length > 0 && (
+        <div className="rounded-lg border border-border md:col-span-2">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>经营数据（摘自年报）</TableHead>
+                <TableHead className="text-right">数值</TableHead>
+                <TableHead className="text-right">出处</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {kpis.map((k, i) => (
+                <TableRow key={i}>
+                  <TableCell className="text-sm" title={k.quote}>
+                    {k.name}
+                  </TableCell>
+                  <TableCell className="text-right font-mono text-sm tabular-nums">
+                    {k.value}
+                    <span className="ml-1 font-sans text-xs text-muted-foreground">{k.unit}</span>
+                  </TableCell>
+                  <TableCell className="text-right text-xs text-muted-foreground">第 {k.page} 页</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** 本章解读引用的年报原文，默认折叠 */
+function Citations({ items }: { items: AnnualCitation[] }) {
+  return (
+    <details className="group rounded-lg border border-border text-sm">
+      <summary className="cursor-pointer select-none px-4 py-2.5 text-muted-foreground hover:text-foreground">
+        年报原文 {items.length} 条
+      </summary>
+      <ul className="divide-y divide-border border-t border-border">
+        {items.map((c, i) => (
+          <li key={i} className="px-4 py-2.5">
+            <div className="text-foreground">{c.claim}</div>
+            <blockquote className="mt-1 border-l-2 border-border pl-3 text-xs text-muted-foreground">
+              「{c.quote}」<span className="ml-1">— 第 {c.page} 页</span>
+            </blockquote>
+          </li>
+        ))}
+      </ul>
+    </details>
+  )
+}
+
+function CompanyRisks({ items }: { items: AnnualRisk[] }) {
+  return (
+    <div className="rounded-lg border border-border">
+      <div className="border-b border-border px-4 py-2.5 text-sm font-medium">公司自述风险（年报原文）</div>
+      <ul className="divide-y divide-border text-sm">
+        {items.map((r, i) => (
+          <li key={i} className="px-4 py-2.5">
+            <div className="font-medium text-foreground">{r.title}</div>
+            <div className="mt-0.5 text-xs text-muted-foreground">
+              {r.quote}
+              <span className="ml-1">— 第 {r.page} 页</span>
+            </div>
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }
@@ -591,7 +663,15 @@ function Appendix({ report, sourceLabel }: { report: ResearchDetail; sourceLabel
           <TableBody>
             {report.sources.map((s) => (
               <TableRow key={s.key}>
-                <TableCell className="text-sm">{s.label}</TableCell>
+                <TableCell className="text-sm">
+                  {s.url ? (
+                    <a href={s.url} target="_blank" rel="noreferrer" className="hover:underline">
+                      {s.label}
+                    </a>
+                  ) : (
+                    s.label
+                  )}
+                </TableCell>
                 <TableCell className="text-xs text-muted-foreground">{fmtDateTime(s.fetched_at)}</TableCell>
                 <TableCell className={cn("text-xs", s.status === "failed" && "text-red-600 dark:text-red-400")}>
                   {SOURCE_STATUS[s.status] ?? s.status}
