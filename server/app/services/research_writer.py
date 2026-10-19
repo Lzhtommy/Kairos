@@ -52,8 +52,10 @@ META_PHRASES = [
 SYSTEM_PROMPT = (
     "你是 A 股基本面研究员，为一份程序化研报撰写某一章的文字解读。规则：\n"
     "1. 只能使用「事实」中给出的数字，原样照抄其显示格式；禁止自行计算差值、比值、平均数，禁止出现事实里没有的数字。\n"
-    "2. 不要逐条复述数字，重点解释数字背后的含义与经营的关系。背景材料里有「公司解释（摘自年报）」时，"
-    "用它说明变化原因并注明「据年报」；没有公司解释的变化只客观陈述现象，不要自行推测原因。\n"
+    "2. 不要逐条复述数字，重点解释数字背后的含义与经营的关系。背景材料里有「公司解释（摘自定期报告）」时，"
+    "用它说明变化原因并注明出处（如「据 2026 半年报」「据 2025 年报」）；各报告解释的是各自报告期的同比变化"
+    "（年报 = 全年，半年报 = 上半年，一季报 / 三季报 = 年初至该季末），只能用来解释对应期间的数字，不要张冠李戴。"
+    "没有公司解释的变化只客观陈述现象，不要自行推测原因。\n"
     "3. 正文是写给读者的研报，不要提及你拿到的材料本身：禁止出现「事实中」「背景材料」「未提供解释」"
     "「故此处仅陈述」「需结合公告进一步确认」这类说明材料范围的话。\n"
     "4. 不给任何投资建议：禁止出现买入、卖出、增减持建议、目标价、仓位等表述。\n"
@@ -170,15 +172,17 @@ def _write_validated(user_prompt: str, key: str, allowed: set[float]) -> tuple[d
 
 # ---------------------------------------------------------------- 年报抽取（§10）
 
-EXTRACT_VERSION = "a2"  # 改抽取提示词 / 校验规则时升版本，旧缓存自动失效
+EXTRACT_VERSION = "a3"  # 改抽取提示词 / 校验规则时升版本，旧缓存自动失效
 
 EXTRACT_PROMPT = (
-    "你是上市公司年报信息摘录员。从给定的年报「管理层讨论与分析」片段中摘录信息，只摘录、不评价、不推断。规则：\n"
+    "你是上市公司定期报告信息摘录员。从给定的定期报告片段（年报 / 半年报的「管理层讨论与分析」，"
+    "或季报的「主要会计数据、财务指标发生变动的情况、原因」）中摘录信息，只摘录、不评价、不推断。规则：\n"
     "1. 每条都必须带 quote：从原文逐字复制的一段连续文字（20~120 字），不得改写、拼接、省略中间内容。\n"
-    "2. drivers：公司对经营变化原因的解释（收入、毛利、费用、现金流、资本开支、存货等）。"
-    "topic 取 revenue / margin / expense / cashflow / capex / inventory / other 之一；"
+    "2. drivers：公司对经营变化原因的解释（收入、毛利、费用、现金流、资本开支、存货、利润等）。"
+    "topic 取 revenue / margin / expense / cashflow / capex / inventory / balance / other 之一"
+    "（balance = 应收、预付、借款、合同负债等资产负债科目的变动原因；利润变动原因归 other）；"
     "claim 用一句话概括（≤60 字），只能使用 quote 里出现的数字，不要把表格里的变动比例等 quote 之外的数字加进来。"
-    "年报「XX 变动原因说明」每个科目各算一条。最多 15 条。\n"
+    "「XX 变动原因说明」「注 N：XX 变动主要原因」、季报变动原因表的每一行，各算一条。最多 20 条。\n"
     "3. kpis：公司披露的经营数据（销量、产量、产能、库存、渠道或门店数量、直销占比、在手订单等）。"
     "value 只写数字，照抄原文；unit 写单位；name 写清口径（如「茅台酒销量」）。"
     "也摘录分地区（如省内 / 省外、境内 / 境外）、分销售渠道（经销 / 直销 / 线上）的营业收入及其同比，"
@@ -191,10 +195,11 @@ EXTRACT_PROMPT = (
 )
 
 
-def extract_annual(blocks: list[dict], pages: list[tuple[int, str]]) -> tuple[dict, int]:
-    """一次 LLM 调用抽取 drivers / kpis / risks，再由 verify_extract 按原文校验。"""
+def extract_periodic(blocks: list[dict], pages: list[tuple[int, str]], doc: str) -> tuple[dict, int]:
+    """一份定期报告一次 LLM 调用抽取 drivers / kpis / risks，再由 verify_extract 按原文校验。"""
     text = "\n\n".join(
-        f"【{BLOCK_LABELS.get(b['key'], b['title'])}】（年报第 {b['page']} 页起{'，已截断' if b.get('truncated') else ''}）\n{b['text']}"
+        f"【{doc}·{BLOCK_LABELS.get(b['key'], b['title'])}】（第 {b['page']} 页起{'，已截断' if b.get('truncated') else ''}）"
+        f"\n{b['text']}"
         for b in blocks
     )
     messages = [{"role": "system", "content": EXTRACT_PROMPT}, {"role": "user", "content": text}]
@@ -206,20 +211,24 @@ def extract_annual(blocks: list[dict], pages: list[tuple[int, str]]) -> tuple[di
 SECTION_TOPICS = {
     "profitability": {"margin", "expense"},
     "growth": {"revenue", "other"},
-    "health": {"cashflow", "capex", "inventory"},
+    "health": {"cashflow", "capex", "inventory", "balance"},
 }
 
 
-def _citations(key: str, annual: dict | None) -> list[dict]:
+def _citations(key: str, periodic: dict | None) -> list[dict]:
     topics = SECTION_TOPICS.get(key)
-    if not annual or not topics:
+    if not periodic or not topics:
         return []
-    return [d for d in annual.get("drivers") or [] if d["topic"] in topics]
+    return [d for d in periodic.get("drivers") or [] if d["topic"] in topics]
 
 
-def _annual_block(cites: list[dict]) -> str:
-    return "公司解释（摘自年报）：\n" + "\n".join(
-        f"- {c['claim']}（第 {c['page']} 页原文：「{c['quote']}」）" for c in cites
+def _doc(item: dict) -> str:
+    return item.get("doc") or "年报"  # a1/a2 版报告的条目没有 doc，那时只读年报
+
+
+def _periodic_block(cites: list[dict]) -> str:
+    return "公司解释（摘自定期报告，按报告期由新到旧）：\n" + "\n".join(
+        f"- [{_doc(c)} 第 {c['page']} 页] {c['claim']}（原文：「{c['quote']}」）" for c in cites
     )
 
 
@@ -291,9 +300,9 @@ def _fallback_observations(result: dict) -> list[str]:
 
 
 def write_sections(
-    dataset: dict, result: dict, name: str, code: str, progress=None, annual: dict | None = None
+    dataset: dict, result: dict, name: str, code: str, progress=None, periodic: dict | None = None
 ) -> tuple[list[dict], int]:
-    """annual：年报深读结果（verify_extract 输出 + report 元信息），可为 None。"""
+    """periodic：定期报告深读结果（research_annual.merge_extracts 输出），可为 None。"""
     facts = dataset["facts"]
     sections: list[dict] = []
     tokens = 0
@@ -312,20 +321,20 @@ def write_sections(
         if key == "overview":
             sec["profile"] = dataset.get("profile") or {}
             sec["segments"] = dataset.get("segments") or []
-            sec["kpis"] = (annual or {}).get("kpis") or []
+            sec["kpis"] = (periodic or {}).get("kpis") or []
         if key == "risks":
-            sec["company_risks"] = (annual or {}).get("risks") or []
+            sec["company_risks"] = (periodic or {}).get("risks") or []
 
         context, extra = _context(key, dataset, result)
-        cites = _citations(key, annual)
+        cites = _citations(key, periodic)
         if cites:
             sec["citations"] = cites
-            block = _annual_block(cites)
+            block = _periodic_block(cites)
             context = f"{context}\n{block}" if context else block
             extra = extra + [c["quote"] for c in cites] + [str(c["page"]) for c in cites]
         if key == "overview" and sec["kpis"]:
-            block = "公司披露的经营数据（摘自年报）：\n" + "\n".join(
-                f"- {k['name']}：{k['value']}{k['unit']}（第 {k['page']} 页）" for k in sec["kpis"]
+            block = "公司披露的经营数据（摘自定期报告）：\n" + "\n".join(
+                f"- [{_doc(k)}] {k['name']}：{k['value']}{k['unit']}（第 {k['page']} 页）" for k in sec["kpis"]
             )
             context = f"{context}\n{block}" if context else block
             extra = extra + [block]
@@ -418,8 +427,8 @@ def render_markdown(report: dict) -> str:
                 out.append(f"- {e['date']} [{e['label']}] {e['title']}")
             out.append("")
         if sec.get("kpis"):
-            out += ["**经营数据（摘自年报）**", "", "| 项目 | 数值 | 出处 |", "|---|---|---|"]
-            out += [f"| {k['name']} | {k['value']} {k['unit']} | 年报第 {k['page']} 页 |" for k in sec["kpis"]]
+            out += ["**经营数据（摘自定期报告）**", "", "| 项目 | 数值 | 出处 |", "|---|---|---|"]
+            out += [f"| {k['name']} | {k['value']} {k['unit']} | {_doc(k)} 第 {k['page']} 页 |" for k in sec["kpis"]]
             out.append("")
         if sec.get("md"):
             out.append(sec["md"])
@@ -428,10 +437,10 @@ def render_markdown(report: dict) -> str:
         if sec.get("warning"):
             out += ["", f"> ⚠ {sec['warning']}"]
         if sec.get("citations"):
-            out += ["", "年报原文："] + [f"- 第 {c['page']} 页：「{c['quote']}」" for c in sec["citations"]]
+            out += ["", "定期报告原文："] + [f"- {_doc(c)} 第 {c['page']} 页：「{c['quote']}」" for c in sec["citations"]]
         if sec.get("company_risks"):
-            out += ["", "**公司自述风险（年报原文）**", ""]
-            out += [f"- **{r['title']}**（第 {r['page']} 页）：{r['quote']}" for r in sec["company_risks"]]
+            out += ["", "**公司自述风险（定期报告原文）**", ""]
+            out += [f"- **{r['title']}**（{_doc(r)} 第 {r['page']} 页）：{r['quote']}" for r in sec["company_risks"]]
 
     out += ["", f"## {len(report['sections']) + 1}. 附录：评分明细与数据来源", ""]
     out += ["| 维度 | 指标 | 数值 | 得分 | 零分点 → 满分点 |", "|---|---|---|---|---|"]

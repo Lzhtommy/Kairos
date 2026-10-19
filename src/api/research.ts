@@ -65,10 +65,11 @@ export type RedFlag = { key: string; label: string; detail: string }
 export type EventItem = { date: string | null; title: string; url: string | null; tag: string; label: string }
 export type NewsItem = { title: string; time: string; source: string; url: string | null }
 export type InstReport = { date: string | null; org: string; title: string; rating: string; url: string | null }
-/** 年报深读条目：quote 为年报原文，page 由程序按原文回查 */
-export type AnnualKpi = { name: string; value: string; unit: string; quote: string; page: number }
-export type AnnualRisk = { title: string; quote: string; page: number }
-export type AnnualCitation = { topic: string; claim: string; quote: string; page: number }
+/** 定期报告深读条目：quote 为报告原文，page 由程序按原文回查；doc 为出处（如「2026 半年报」，早期报告无此字段 = 年报） */
+type PeriodicSource = { quote: string; page: number; doc?: string }
+export type AnnualKpi = PeriodicSource & { name: string; value: string; unit: string }
+export type AnnualRisk = PeriodicSource & { title: string }
+export type AnnualCitation = PeriodicSource & { topic: string; claim: string }
 
 export type Section = {
   key: string

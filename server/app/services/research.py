@@ -11,11 +11,11 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.market import FactorSnapshot, Fundamental, Quote, StockInfo
 from app.models.research import ResearchRawCache, ResearchReport
-from app.services.research_annual import select_blocks, split_blocks
-from app.services.research_data import ANNUAL_LABEL, fetch_all, fetch_annual_mdna
+from app.services.research_annual import REPORT_KINDS, choose_reports, merge_extracts, report_blocks
+from app.services.research_data import fetch_all, fetch_report_text, latest_report_meta, report_source
 from app.services.research_facts import build_facts, is_financial
 from app.services.research_score import score
-from app.services.research_writer import EXTRACT_VERSION, extract_annual, llm_enabled, render_markdown, write_sections
+from app.services.research_writer import EXTRACT_VERSION, extract_periodic, llm_enabled, render_markdown, write_sections
 
 logger = logging.getLogger("kairos.research")
 
@@ -67,39 +67,70 @@ def valuation_inputs(db: Session, code: str, industry: str) -> dict:
     return out
 
 
-def annual_insights(db: Session, code: str, progress) -> tuple[dict | None, dict, int]:
-    """年报深读（§10）：MD&A 文本 → 选块 → LLM 抽取 + 原文校验。返回 (annual | None, source, tokens)。
-
-    抽取结果按「公告 ID + EXTRACT_VERSION」缓存，重新生成报告不重复花 LLM。失败一律降级为 None。
-    """
-    if not llm_enabled():
-        # 抽取离不开 LLM；没配 key 就不下载 PDF
-        return None, {"key": "annual", "label": ANNUAL_LABEL, "fetched_at": None, "status": "failed",
-                      "error": "未配置 AI，跳过年报深读"}, 0
-    payload, source = fetch_annual_mdna(db, code, progress)
-    if payload is None:
-        return None, source, 0
+def _extract_cached(db: Session, code: str, kind: str, payload: dict, progress) -> tuple[dict | None, int, str | None]:
+    """一份报告的抽取结果，按「公告 ID + EXTRACT_VERSION」缓存。返回 (extract | None, tokens, error)。"""
     meta = payload["report"]
-    cache_tag = f"{meta['announcement_id']}:{EXTRACT_VERSION}"
-    cached = db.get(ResearchRawCache, ("annual_extract", code))
-    if cached and (cached.payload or {}).get("tag") == cache_tag:
-        return {**cached.payload["extract"], "report": meta}, source, 0
-
-    progress("年报深读：抽取公司解释")
+    tag = f"{meta['announcement_id']}:{EXTRACT_VERSION}"
+    cached = db.get(ResearchRawCache, (f"{kind}_extract", code))
+    if cached and (cached.payload or {}).get("tag") == tag:
+        return cached.payload["extract"], 0, None
+    doc = meta.get("doc") or "定期报告"
+    progress(f"深读{doc}：抽取公司解释")
     pages = [(int(no), text) for no, text in payload["pages"]]
     try:
-        extract, tokens = extract_annual(select_blocks(split_blocks(pages)), pages)
+        extract, tokens = extract_periodic(report_blocks(kind, pages), pages, doc)
     except Exception as exc:  # noqa: BLE001 — 抽取失败不影响报告主体
-        logger.warning("Research annual extract %s failed: %s", code, exc)
-        return None, {**source, "error": f"抽取失败：{type(exc).__name__}"}, 0
+        logger.warning("Research %s extract %s failed: %s", kind, code, exc)
+        return None, 0, f"抽取失败：{type(exc).__name__}"
     now = datetime.now(timezone.utc)
     if cached:
-        cached.payload, cached.fetched_at = {"tag": cache_tag, "extract": extract}, now
+        cached.payload, cached.fetched_at = {"tag": tag, "extract": extract}, now
     else:
-        db.add(ResearchRawCache(source="annual_extract", code=code,
-                                payload={"tag": cache_tag, "extract": extract}, fetched_at=now))
+        db.add(ResearchRawCache(source=f"{kind}_extract", code=code,
+                                payload={"tag": tag, "extract": extract}, fetched_at=now))
     db.commit()
-    return {**extract, "report": meta}, source, tokens
+    return extract, tokens, None
+
+
+def periodic_insights(db: Session, code: str, progress) -> tuple[dict | None, list[dict], int]:
+    """定期报告深读（§10）：选报告（年报 + 更新的半年报 + 更新的季报）→ 切文本 → LLM 抽取 + 原文校验 → 合并。
+
+    返回 (insights | None, sources, tokens)。任一份失败只影响那一份，全部失败降级为 None。
+    """
+    if not llm_enabled():
+        # 抽取离不开 LLM；没配 key 就不查不下载
+        return None, [report_source("annual", None, "failed", None, "未配置 AI，跳过定期报告深读")], 0
+    progress("查询定期报告")
+    metas: dict[str, dict | None] = {}
+    annual_list_failed = False
+    for kind in REPORT_KINDS:
+        try:
+            metas[kind] = latest_report_meta(code, kind)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("Research %s list %s failed: %s", kind, code, exc)
+            metas[kind] = None
+            annual_list_failed |= kind == "annual"
+    chosen = choose_reports(metas)
+    if annual_list_failed:
+        chosen.append("annual")  # 列表查不到时仍可回退年报旧缓存
+
+    sources: list[dict] = []
+    docs: list[tuple[dict, dict]] = []
+    tokens = 0
+    for kind in chosen:
+        payload, src = fetch_report_text(db, code, kind, metas.get(kind), progress)
+        if payload is not None:
+            extract, used, err = _extract_cached(db, code, kind, payload, progress)
+            tokens += used
+            if err:
+                src = {**src, "error": err}
+            if extract is not None:
+                docs.append((payload["report"], extract))
+        sources.append(src)
+    if not docs:
+        return None, sources, tokens
+    docs.sort(key=lambda d: d[0].get("period_end") or "", reverse=True)
+    return merge_extracts(docs), sources, tokens
 
 
 def run_report(db: Session, report: ResearchReport) -> None:
@@ -126,11 +157,11 @@ def run_report(db: Session, report: ResearchReport) -> None:
     dataset = build_facts(raw, valuation_inputs(db, report.code, industry), name)
     result = score(dataset)
 
-    annual, annual_source, annual_tokens = annual_insights(db, report.code, progress)
-    sources.append(annual_source)
+    periodic, periodic_sources, periodic_tokens = periodic_insights(db, report.code, progress)
+    sources = sources + periodic_sources
 
-    sections, tokens = write_sections(dataset, result, name, report.code, progress, annual=annual)
-    tokens += annual_tokens
+    sections, tokens = write_sections(dataset, result, name, report.code, progress, periodic=periodic)
+    tokens += periodic_tokens
 
     report.data_as_of = dataset["data_as_of"]
     report.scoring_version = result["scoring_version"]

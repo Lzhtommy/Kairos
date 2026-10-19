@@ -468,7 +468,7 @@ function Overview({ section, facts }: { section: Section; facts: Record<string, 
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>经营数据（摘自年报）</TableHead>
+                <TableHead>经营数据（摘自定期报告）</TableHead>
                 <TableHead className="text-right">数值</TableHead>
                 <TableHead className="text-right">出处</TableHead>
               </TableRow>
@@ -483,7 +483,9 @@ function Overview({ section, facts }: { section: Section; facts: Record<string, 
                     {k.value}
                     <span className="ml-1 font-sans text-xs text-muted-foreground">{k.unit}</span>
                   </TableCell>
-                  <TableCell className="text-right text-xs text-muted-foreground">第 {k.page} 页</TableCell>
+                  <TableCell className="text-right text-xs whitespace-nowrap text-muted-foreground">
+                    {docLabel(k)} 第 {k.page} 页
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -494,19 +496,24 @@ function Overview({ section, facts }: { section: Section; facts: Record<string, 
   )
 }
 
-/** 本章解读引用的年报原文，默认折叠 */
+const docLabel = (item: { doc?: string }) => item.doc ?? "年报"
+
+/** 本章解读引用的定期报告原文，默认折叠 */
 function Citations({ items }: { items: AnnualCitation[] }) {
   return (
     <details className="group rounded-lg border border-border text-sm">
       <summary className="cursor-pointer select-none px-4 py-2.5 text-muted-foreground hover:text-foreground">
-        年报原文 {items.length} 条
+        定期报告原文 {items.length} 条
       </summary>
       <ul className="divide-y divide-border border-t border-border">
         {items.map((c, i) => (
           <li key={i} className="px-4 py-2.5">
             <div className="text-foreground">{c.claim}</div>
             <blockquote className="mt-1 border-l-2 border-border pl-3 text-xs text-muted-foreground">
-              「{c.quote}」<span className="ml-1">— 第 {c.page} 页</span>
+              「{c.quote}」
+              <span className="ml-1">
+                — {docLabel(c)} 第 {c.page} 页
+              </span>
             </blockquote>
           </li>
         ))}
@@ -518,14 +525,16 @@ function Citations({ items }: { items: AnnualCitation[] }) {
 function CompanyRisks({ items }: { items: AnnualRisk[] }) {
   return (
     <div className="rounded-lg border border-border">
-      <div className="border-b border-border px-4 py-2.5 text-sm font-medium">公司自述风险（年报原文）</div>
+      <div className="border-b border-border px-4 py-2.5 text-sm font-medium">公司自述风险（定期报告原文）</div>
       <ul className="divide-y divide-border text-sm">
         {items.map((r, i) => (
           <li key={i} className="px-4 py-2.5">
             <div className="font-medium text-foreground">{r.title}</div>
             <div className="mt-0.5 text-xs text-muted-foreground">
               {r.quote}
-              <span className="ml-1">— 第 {r.page} 页</span>
+              <span className="ml-1">
+                — {docLabel(r)} 第 {r.page} 页
+              </span>
             </div>
           </li>
         ))}

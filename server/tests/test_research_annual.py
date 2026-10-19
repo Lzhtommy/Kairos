@@ -1,7 +1,9 @@
-"""年报深读：选年报 / 切 MD&A / 切块 / 选块 / 原文引用校验（docs/RESEARCH-DESIGN.md §10）。
+"""定期报告深读：选报告 / 切 MD&A / 切季报变动原因 / 切块 / 选块 / 原文引用校验（docs/RESEARCH-DESIGN.md §10）。
 
-fixtures 是 pypdf 从真实年报抽出的逐页文本（到「第四节」所在页为止）：
-600519 贵州茅台（沪市格式）、002475 立讯精密（深市格式）。
+fixtures 是 pypdf 从真实定期报告抽出的逐页文本：
+- annual_*：2025 年报，到「第四节」所在页为止；600519 贵州茅台（沪市格式）、002475 立讯精密（深市格式）
+- semi_603919：金徽酒 2026 半年报，到「第四节」所在页为止
+- q1_*：2026 一季报，到「二、股东信息」之后一页为止
 """
 
 from __future__ import annotations
@@ -12,9 +14,11 @@ from pathlib import Path
 import pytest
 
 from app.services.research_annual import (
+    choose_reports,
     extract_mdna,
+    extract_quarterly,
     locate_page,
-    pick_annual_report,
+    pick_report,
     read_until_mdna_end,
     select_blocks,
     split_blocks,
@@ -24,8 +28,8 @@ from app.services.research_annual import (
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def load_pages(code: str) -> list[str]:
-    return json.loads((FIXTURES / f"annual_{code}_2025.json").read_text(encoding="utf-8"))
+def load_pages(code: str, name: str = "annual_{code}_2025") -> list[str]:
+    return json.loads((FIXTURES / f"{name.format(code=code)}.json").read_text(encoding="utf-8"))
 
 
 @pytest.fixture(scope="module")
@@ -61,8 +65,11 @@ def test_pick_annual_report_skips_summary_and_english():
         _row("贵州茅台2025年年度报告", "2026-04-17", "13"),
         _row("贵州茅台2024年年度报告", "2025-04-03", "14"),
     ]
-    got = pick_annual_report(rows)
+    got = pick_report(rows, "annual")
     assert got == {
+        "kind": "annual",
+        "doc": "2025 年报",
+        "period_end": "2025-12-31",
         "title": "贵州茅台2025年年度报告",
         "date": "2026-04-17",
         "year": 2025,
@@ -79,12 +86,52 @@ def test_pick_annual_report_prefers_latest_revision_of_same_year():
         _row("2025年年度报告（更正后）", "2026-05-10", "23"),
         _row("关于2025年年度报告的更正公告", "2026-05-10", "24"),
     ]
-    assert pick_annual_report(rows)["announcement_id"] == "23"
+    assert pick_report(rows, "annual")["announcement_id"] == "23"
 
 
 def test_pick_annual_report_none_when_no_full_report():
-    assert pick_annual_report([_row("2025年年度报告摘要", "2026-04-15", "1")]) is None
-    assert pick_annual_report([]) is None
+    assert pick_report([_row("2025年年度报告摘要", "2026-04-15", "1")], "annual") is None
+    assert pick_report([], "annual") is None
+
+
+def test_pick_report_interim_kinds():
+    semi = [_row("金徽酒股份有限公司2026年半年度报告摘要", "2026-08-20", "31"),
+            _row("金徽酒股份有限公司2026年半年度报告", "2026-08-20", "32")]
+    got = pick_report(semi, "semi")
+    assert (got["announcement_id"], got["doc"], got["period_end"]) == ("32", "2026 半年报", "2026-06-30")
+    q = [_row("贵州茅台2026年第一季度报告", "2026-04-25", "41"), _row("贵州茅台2025年第一季度报告", "2025-04-30", "42")]
+    got = pick_report(q, "q1")
+    assert (got["announcement_id"], got["doc"], got["period_end"]) == ("41", "2026 一季报", "2026-03-31")
+    got = pick_report([_row("2025年第三季度报告", "2025-10-25", "51")], "q3")
+    assert (got["doc"], got["period_end"]) == ("2025 三季报", "2025-09-30")
+    # 年报规则不能把半年报认成年报
+    assert pick_report(semi, "annual") is None
+
+
+# ---------------------------------------------------------------- 选哪几份报告
+
+
+def _meta(kind: str, period_end: str) -> dict:
+    return {"kind": kind, "period_end": period_end}
+
+
+def test_choose_reports_by_calendar():
+    a25 = _meta("annual", "2025-12-31")
+    # 4–8 月：年报 + 一季报
+    assert choose_reports({"annual": a25, "semi": _meta("semi", "2025-06-30"),
+                           "q1": _meta("q1", "2026-03-31"), "q3": _meta("q3", "2025-09-30")}) == ["q1", "annual"]
+    # 8–10 月：年报 + 半年报
+    assert choose_reports({"annual": a25, "semi": _meta("semi", "2026-06-30"),
+                           "q1": _meta("q1", "2026-03-31"), "q3": _meta("q3", "2025-09-30")}) == ["semi", "annual"]
+    # 10 月 – 次年 4 月：年报 + 半年报 + 三季报（三季报原因表太简略，半年报保留）
+    assert choose_reports({"annual": a25, "semi": _meta("semi", "2026-06-30"),
+                           "q1": _meta("q1", "2026-03-31"), "q3": _meta("q3", "2026-09-30")}) == ["q3", "semi", "annual"]
+    # 新年报发布后：只读年报
+    assert choose_reports({"annual": _meta("annual", "2026-12-31"), "semi": _meta("semi", "2026-06-30"),
+                           "q1": None, "q3": _meta("q3", "2026-09-30")}) == ["annual"]
+    # 年报缺失（如新股）：照样读中期报告
+    assert choose_reports({"annual": None, "semi": _meta("semi", "2026-06-30"), "q1": None, "q3": None}) == ["semi"]
+    assert choose_reports({"annual": None, "semi": None, "q1": None, "q3": None}) == []
 
 
 # ---------------------------------------------------------------- 切 MD&A
@@ -255,3 +302,38 @@ def test_verify_extract_adjacent_table_numbers_do_not_merge():
     raw = {"drivers": [], "risks": [],
            "kpis": [{"name": "成品酒库存", "value": "24,770.35", "unit": "吨", "quote": "24,770.35 315,207.51"}]}
     assert verify_extract(raw, pages)["kpis"][0]["page"] == 15
+
+
+
+# ---------------------------------------------------------------- 半年报 / 季报
+
+
+def test_split_blocks_semi_report_format():
+    mdna = extract_mdna(load_pages("603919", "semi_{code}_2026"))
+    assert mdna is not None and mdna[0][0] == 10
+    blocks = {b["key"]: b for b in split_blocks(mdna)}
+    # 半年报写「经营情况的讨论与分析」「所属行业及主营业务情况说明」
+    assert "营业收入 18.16亿元" in blocks["discussion"]["text"]
+    assert "business" in blocks
+    # 利润下滑原因写在「（二）其他披露事项」的质量回报行动方案执行情况里；风险块不再吞并它
+    assert "补缴税款" in blocks["disclosure"]["text"]
+    assert "补缴税款" not in blocks["risks"]["text"]
+    # 资产负债情况分析是独立块：应收账款大增的原因在「注 2」
+    assert "应收账款变动主要原因" in blocks["balance"]["text"]
+    assert "投资状况分析" not in blocks["balance"]["text"]
+    assert "市场竞争风险" in blocks["risks"]["text"]
+
+
+def test_extract_quarterly_change_reasons():
+    sec = extract_quarterly(load_pages("603919", "q1_{code}_2026"))
+    assert sec is not None
+    text = "\n".join(t for _, t in sec)
+    assert "消费场景受限" in text and "销售回款较上期同比增加" in text
+    assert "股东信息" not in text and "甘肃亚特投资" not in text
+    assert "2026 年第一季度报告" not in text  # 页眉
+    # 茅台季报还带「销售情况」「经销商情况」
+    sec = extract_quarterly(load_pages("600519", "q1_{code}_2026"))
+    text = "\n".join(t for _, t in sec)
+    assert "同业存款" in text and "销售情况" in text and "经销商情况" in text
+    assert "贵州茅台酒股份有限公司2026 年第一季度报告" not in text
+    assert extract_quarterly(["随便一页", "二、股东信息"]) is None

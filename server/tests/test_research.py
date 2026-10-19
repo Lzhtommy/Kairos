@@ -325,27 +325,47 @@ def test_run_report_rejects_financial_by_csrc_industry(db, monkeypatch):
         research_service.run_report(db, r)
 
 
-# ---------------------------------------------------------------- 年报深读接入（打桩 PDF 与 LLM）
+# ---------------------------------------------------------------- 定期报告深读接入（打桩巨潮与 LLM）
 
 
-def test_run_report_with_annual_insights(db, stocks, monkeypatch):
+def _fixture_pages(name: str) -> list[str]:
     import json
     from pathlib import Path
 
+    return json.loads((Path(__file__).parent / "fixtures" / f"{name}.json").read_text(encoding="utf-8"))
+
+
+def _meta(kind: str, year: int, aid: str) -> dict:
+    doc = {"annual": "年报", "semi": "半年报", "q1": "一季报", "q3": "三季报"}[kind]
+    mmdd = {"annual": "12-31", "semi": "06-30", "q1": "03-31", "q3": "09-30"}[kind]
+    return {"kind": kind, "doc": f"{year} {doc}", "period_end": f"{year}-{mmdd}", "title": f"贵州茅台{year}{doc}",
+            "date": "2026-04-25", "year": year, "announcement_id": aid, "pdf_url": "http://x", "detail_url": "http://x"}
+
+
+def test_run_report_with_periodic_insights(db, stocks, monkeypatch):
     from app.services import research_writer
-    from app.services.research_annual import extract_mdna
+    from app.services.research_annual import extract_mdna, extract_quarterly
 
     monkeypatch.setattr(settings, "deepseek_api_key", "test-key")
     monkeypatch.setattr(settings, "ai_provider", "deepseek")
-    raw = make_raw()
-    monkeypatch.setattr(research_service, "fetch_all", lambda _db, _code, _p=None: (raw, []))
+    monkeypatch.setattr(research_service, "fetch_all", lambda _db, _code, _p=None: (make_raw(), []))
 
-    pages = json.loads((Path(__file__).parent / "fixtures" / "annual_600519_2025.json").read_text(encoding="utf-8"))
-    meta = {"title": "贵州茅台2025年年度报告", "date": "2026-04-17", "year": 2025, "announcement_id": "1225114741",
-            "pdf_url": "http://static.cninfo.com.cn/finalpage/2026-04-17/1225114741.PDF", "detail_url": "http://x"}
-    payload = {"report": meta, "pages": [[no, t] for no, t in extract_mdna(pages)]}
-    src = {"key": "annual", "label": "巨潮资讯·贵州茅台2025年年度报告", "fetched_at": None, "status": "ok"}
-    monkeypatch.setattr(research_service, "fetch_annual_mdna", lambda _db, _code, _p=None: (payload, src))
+    # 4–8 月场景：2025 年报 + 2026 一季报；半年报 / 三季报都是旧的
+    metas = {"annual": _meta("annual", 2025, "A25"), "semi": _meta("semi", 2025, "S25"),
+             "q1": _meta("q1", 2026, "Q126"), "q3": _meta("q3", 2025, "Q325")}
+    monkeypatch.setattr(research_service, "latest_report_meta", lambda _code, kind: metas[kind])
+    sections = {
+        "annual": extract_mdna(_fixture_pages("annual_600519_2025")),
+        "q1": extract_quarterly(_fixture_pages("q1_600519_2026")),
+    }
+    fetched: list[str] = []
+
+    def fake_fetch(_db, _code, kind, meta, _p=None):
+        fetched.append(kind)
+        return {"report": meta, "pages": [[no, t] for no, t in sections[kind]]}, {
+            "key": kind, "label": meta["title"], "fetched_at": None, "status": "ok"}
+
+    monkeypatch.setattr(research_service, "fetch_report_text", fake_fetch)
 
     extract_calls: list[str] = []
 
@@ -353,6 +373,11 @@ def test_run_report_with_annual_insights(db, stocks, monkeypatch):
         system, user = messages[0]["content"], messages[-1]["content"]
         if system == research_writer.EXTRACT_PROMPT:
             extract_calls.append(user)
+            if "2026 一季报" in user:
+                return {"drivers": [{"topic": "cashflow", "claim": "经营现金流增加",
+                                     "quote": "主要是公司控股子公司贵州茅台集团财务有限公司不可随时支取的同业存款净增加额减少"}],
+                        "kpis": [{"name": "国内经销商数量", "value": "2098", "unit": "个", "quote": "国内 2098 6 261"}],
+                        "risks": []}, 50
             return {
                 "drivers": [
                     {"topic": "revenue", "claim": "茅台酒基酒设计产能 46,395.00 吨",
@@ -375,32 +400,37 @@ def test_run_report_with_annual_insights(db, stocks, monkeypatch):
     research_service.run_report(db, r)
 
     assert r.status == "done"
-    # 抽取输入：选中的块带上年报页码
-    assert len(extract_calls) == 1 and "【行业经营性信息】（年报第 15 页起" in extract_calls[0]
+    assert fetched == ["q1", "annual"]  # 只下载选中的两份
+    assert len(extract_calls) == 2
+    assert "【2026 一季报·主要会计数据、财务指标变动原因】" in extract_calls[0]
+    assert "【2025 年报·行业经营性信息】（第 15 页起" in extract_calls[1]
     secs = {s["key"]: s for s in r.sections}
-    # 编造的引用被丢弃，真实引用分配到 topic 对应的章节
-    assert [c["page"] for c in secs["growth"]["citations"]] == [15]
+    # 编造的引用被丢弃；条目带出处，按报告期由新到旧
+    assert [(c["doc"], c["page"]) for c in secs["growth"]["citations"]] == [("2025 年报", 15)]
+    assert [(c["doc"], c["page"]) for c in secs["health"]["citations"]] == [("2026 一季报", 2)]
     assert "citations" not in secs["profitability"]
-    assert secs["overview"]["kpis"][0]["value"] == "24,770.35"
-    assert secs["risks"]["company_risks"][0]["page"] == 23
-    assert any(s["key"] == "annual" and s["status"] == "ok" for s in r.sources)
-    assert "公司自述风险" in r.content_md and "年报第 " in r.content_md
+    assert [k["doc"] for k in secs["overview"]["kpis"]] == ["2026 一季报", "2025 年报"]
+    # 季报不披露风险，风险取年报
+    assert [(x["doc"], x["page"]) for x in secs["risks"]["company_risks"]] == [("2025 年报", 23)]
+    assert [s["key"] for s in r.sources if s["key"] in ("q1", "annual")] == ["q1", "annual"]
+    assert "公司自述风险" in r.content_md and "2026 一季报 第 2 页" in r.content_md
 
-    # 再生成一次：抽取结果命中缓存，不再调 LLM 抽取
+    # 再生成一次：两份抽取都命中缓存
     r2 = ResearchReport(code="600519", status="running")
     db.add(r2)
     db.commit()
     research_service.run_report(db, r2)
-    assert len(extract_calls) == 1
-    assert [c["page"] for c in {s["key"]: s for s in r2.sections}["growth"]["citations"]] == [15]
+    assert len(extract_calls) == 2
+    assert [c["doc"] for c in {s["key"]: s for s in r2.sections}["health"]["citations"]] == ["2026 一季报"]
 
 
-def test_annual_skipped_without_llm(db, monkeypatch):
+def test_periodic_skipped_without_llm(db, monkeypatch):
     monkeypatch.setattr(settings, "deepseek_api_key", "")
 
     def boom(*_a, **_k):
-        raise AssertionError("不该下载年报")
+        raise AssertionError("不该查询定期报告")
 
-    monkeypatch.setattr(research_service, "fetch_annual_mdna", boom)
-    annual, source, tokens = research_service.annual_insights(db, "600519", lambda _t: None)
-    assert annual is None and tokens == 0 and source["status"] == "failed"
+    monkeypatch.setattr(research_service, "latest_report_meta", boom)
+    monkeypatch.setattr(research_service, "fetch_report_text", boom)
+    insights, sources, tokens = research_service.periodic_insights(db, "600519", lambda _t: None)
+    assert insights is None and tokens == 0 and sources[0]["status"] == "failed"

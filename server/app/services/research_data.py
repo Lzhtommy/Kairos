@@ -19,7 +19,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.models.research import ResearchRawCache
-from app.services.research_annual import extract_mdna, pick_annual_report, read_until_mdna_end
+from app.services.research_annual import MAX_PAGES, extract_mdna, extract_quarterly, pick_report, read_until_mdna_end
 
 logger = logging.getLogger("kairos.research")
 
@@ -139,18 +139,23 @@ def fetch_all(db: Session, code: str, progress: Callable[[str], None] | None = N
     return raw, sources
 
 
-# ---------------------------------------------------------------- 年报（docs/RESEARCH-DESIGN.md §10）
+# ---------------------------------------------------------------- 定期报告（docs/RESEARCH-DESIGN.md §10）
 
-ANNUAL_LABEL = "巨潮资讯·年报（管理层讨论与分析）"
 PDF_TIMEOUT = 60  # 秒
 PDF_MAX_BYTES = 60 * 1024 * 1024
+REPORT_CATEGORY = {"annual": "年报", "semi": "半年报", "q1": "一季报", "q3": "三季报"}
+REPORT_LABEL = {"annual": "年报", "semi": "半年报", "q1": "一季报", "q3": "三季报"}
 
 
-def _annual_list(code: str) -> list[dict]:
-    df = _ak().stock_zh_a_disclosure_report_cninfo(
-        symbol=code, market="沪深京", category="年报", start_date=_since(730), end_date=_today()
-    )
-    return _records(df)
+def latest_report_meta(code: str, kind: str) -> dict | None:
+    """该类定期报告最近一期的元信息（一次巨潮请求，不下载 PDF）；网络错误向上抛。"""
+    df = _pool.submit(
+        lambda: _ak().stock_zh_a_disclosure_report_cninfo(
+            symbol=code, market="沪深京", category=REPORT_CATEGORY[kind],
+            start_date=_since(730 if kind == "annual" else 400), end_date=_today(),
+        )
+    ).result(timeout=CALL_TIMEOUT)
+    return pick_report(_records(df), kind)
 
 
 def _download_pdf(url: str) -> bytes:
@@ -166,66 +171,72 @@ def _download_pdf(url: str) -> bytes:
     return bytes(buf)
 
 
-def _pdf_mdna(data: bytes) -> list[list] | None:
+def _pdf_section(data: bytes, kind: str) -> list[list] | None:
+    """年报 / 半年报切 MD&A（读到第四节即停）；季报切「变动的情况、原因」（季报只有十几页，整本读）。"""
     import io  # noqa: PLC0415
+    from itertools import islice  # noqa: PLC0415
 
     from pypdf import PdfReader  # noqa: PLC0415 — 可选依赖（requirements-data.txt）
 
     reader = PdfReader(io.BytesIO(data))
-    pages = read_until_mdna_end(p.extract_text() or "" for p in reader.pages)
-    mdna = extract_mdna(pages)
-    return [[no, text] for no, text in mdna] if mdna else None
+    texts = (p.extract_text() or "" for p in reader.pages)
+    if kind in ("q1", "q3"):
+        section = extract_quarterly(list(islice(texts, MAX_PAGES)))
+    else:
+        section = extract_mdna(read_until_mdna_end(texts))
+    return [[no, text] for no, text in section] if section else None
 
 
-def fetch_annual_mdna(db: Session, code: str, progress: Callable[[str], None] | None = None) -> tuple[dict | None, dict]:
-    """最近一份年报的 MD&A 文本。返回 (payload: {report, pages: [[页码, 文本]]} | None, source)。
+def report_source(kind: str, meta: dict | None, status: str, fetched_at: datetime | None,
+                  err: str | None = None) -> dict:
+    out = {"key": kind, "label": f"巨潮资讯·{meta['title']}" if meta else f"巨潮资讯·{REPORT_LABEL[kind]}",
+           "fetched_at": fetched_at.isoformat() if fetched_at else None, "status": status}
+    if meta:
+        out["url"] = meta["detail_url"]
+    if err:
+        out["error"] = err
+    return out
 
-    每次都查一遍年报列表（一次巨潮请求）；公告 ID 与缓存一致就不再下载 PDF。
-    任一步失败：有旧缓存回退旧缓存（stale），否则 failed。
+
+def fetch_report_text(db: Session, code: str, kind: str, meta: dict | None,
+                      progress: Callable[[str], None] | None = None) -> tuple[dict | None, dict]:
+    """下载并切出一份定期报告的待读文本。返回 (payload: {report, pages: [[页码, 文本]]} | None, source)。
+
+    缓存按 kind 每只股票一行（source=f"{kind}_mdna"）；公告 ID 与缓存一致就不再下载。
+    meta 为 None 表示列表查询失败：有旧缓存回退旧缓存（stale），否则 failed。
     """
-    if progress:
-        progress("采集：年报管理层讨论与分析")
-    cached = db.get(ResearchRawCache, ("annual_mdna", code))
+    cached = db.get(ResearchRawCache, (f"{kind}_mdna", code))
     now = datetime.now(timezone.utc)
-
-    def src(status: str, meta: dict | None, fetched_at: datetime | None, err: str | None = None) -> dict:
-        out = {"key": "annual", "label": f"巨潮资讯·{meta['title']}" if meta else ANNUAL_LABEL,
-               "fetched_at": fetched_at.isoformat() if fetched_at else None, "status": status}
-        if meta:
-            out["url"] = meta["detail_url"]
-        if err:
-            out["error"] = err
-        return out
-
-    try:
-        meta = pick_annual_report(_pool.submit(_annual_list, code).result(timeout=CALL_TIMEOUT))
-        if meta is None:
-            raise LookupError("近两年无年报正文")
+    err = "公告列表查询失败"
+    if meta is not None:
         if cached and (cached.payload or {}).get("report", {}).get("announcement_id") == meta["announcement_id"]:
-            return cached.payload, src("cache", meta, _aware(cached.fetched_at))
-        if progress:
-            progress("采集：下载年报 PDF")
-        data = _pool.submit(_download_pdf, meta["pdf_url"]).result(timeout=PDF_TIMEOUT + 10)
-        if progress:
-            progress("解析年报 PDF")
-        pages = _pdf_mdna(data)
-        if pages is None:
-            raise LookupError("未找到「第三节 管理层讨论与分析」（可能是扫描版）")
-        payload = {"report": meta, "pages": pages}
-        if cached:
-            cached.payload, cached.fetched_at = payload, now
-        else:
-            db.add(ResearchRawCache(source="annual_mdna", code=code, payload=payload, fetched_at=now))
-        db.commit()
-        return payload, src("ok", meta, now)
-    except FutureTimeout:
-        err = "超时"
-    except Exception as exc:  # noqa: BLE001 — 年报深读失败不影响报告主体
-        err = f"{type(exc).__name__}: {str(exc)[:120]}"
-    logger.info("Research annual report %s failed: %s", code, err)
+            # 用新查到的 meta：早期缓存（仅年报）没有 kind / doc / period_end
+            return {**cached.payload, "report": meta}, report_source(kind, meta, "cache", _aware(cached.fetched_at))
+        try:
+            if progress:
+                progress(f"下载{REPORT_LABEL[kind]} PDF")
+            data = _pool.submit(_download_pdf, meta["pdf_url"]).result(timeout=PDF_TIMEOUT + 10)
+            if progress:
+                progress(f"解析{REPORT_LABEL[kind]} PDF")
+            pages = _pdf_section(data, kind)
+            if pages is None:
+                raise LookupError("未找到可读章节（可能是扫描版或格式不同）")
+            payload = {"report": meta, "pages": pages}
+            if cached:
+                cached.payload, cached.fetched_at = payload, now
+            else:
+                db.add(ResearchRawCache(source=f"{kind}_mdna", code=code, payload=payload, fetched_at=now))
+            db.commit()
+            return payload, report_source(kind, meta, "ok", now)
+        except FutureTimeout:
+            err = "超时"
+        except Exception as exc:  # noqa: BLE001 — 定期报告深读失败不影响报告主体
+            err = f"{type(exc).__name__}: {str(exc)[:120]}"
+    logger.info("Research %s report %s failed: %s", kind, code, err)
     if cached and cached.payload:
-        return cached.payload, src("stale", cached.payload.get("report"), _aware(cached.fetched_at), err)
-    return None, src("failed", None, None, err)
+        return cached.payload, report_source(kind, cached.payload.get("report"), "stale",
+                                             _aware(cached.fetched_at), err)
+    return None, report_source(kind, meta, "failed", None, err)
 
 
 def _aware(dt: datetime | None) -> datetime | None:
