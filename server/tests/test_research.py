@@ -18,7 +18,7 @@ from app.models.user import User
 from app.services import research as research_service
 from app.services.research_facts import build_facts, classify_notice, num
 from app.services.research_score import linear, score
-from app.services.research_writer import find_banned, find_bad_numbers, allowed_numbers
+from app.services.research_writer import allowed_numbers, find_bad_numbers, find_banned, find_meta
 
 
 # ---------------------------------------------------------------- 合成数据
@@ -196,6 +196,14 @@ def test_number_validation():
 def test_banned_words():
     assert find_banned("公司现金流稳健，建议买入，目标价 2000 元") == ["建议买入", "目标价"]
     assert find_banned("股东增持彰显信心") == []
+
+
+def test_find_meta_flags_talk_about_materials():
+    # 金徽酒报告原句
+    assert find_meta("事实中未提供公司对各年度 ROE 变化及费用结构的解释，故此处仅陈述数据呈现的现象。") == [
+        "事实中", "未提供公司", "故此处仅", "仅陈述",
+    ]
+    assert find_meta("据年报，销售费用增长主要来自品牌推广投入。") == []
 
 
 # ---------------------------------------------------------------- API

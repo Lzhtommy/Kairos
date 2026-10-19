@@ -267,7 +267,8 @@ def verify_extract(raw: dict, pages: list[tuple[int, str]]) -> dict:
     """校验 LLM 抽取结果，返回 {drivers, kpis, risks, dropped}；每条补上代码回查的 page。
 
     - quote 归一化后须是原文子串，且不短于 MIN_QUOTE；
-    - driver.claim 里的数字必须都出现在其 quote 中（防止改写时改数）；
+    - driver.claim 里的数字必须都出现在其 quote 中，否则 claim 退回为 quote 原文（防止改写时改数 / 借表格里的数，
+      但条目本身已由 quote 证实，不丢——年报「变动原因说明」常不带数字，LLM 爱把上方表格的变动比例拼进 claim）；
     - kpi.value 至少含一个数字，且都出现在其 quote 中。
     """
     out: dict = {"drivers": [], "kpis": [], "risks": [], "dropped": 0}
@@ -285,9 +286,11 @@ def verify_extract(raw: dict, pages: list[tuple[int, str]]) -> dict:
     for d in items("drivers"):
         page = quoted_page(d) if isinstance(d, dict) else None
         claim = _str(d, "claim") if isinstance(d, dict) else ""
-        if page is None or not claim or not _numbers(claim) <= _numbers(d["quote"]):
+        if page is None:
             out["dropped"] += 1
             continue
+        if not claim or not _numbers(claim) <= _numbers(d["quote"]):
+            claim = _str(d, "quote")
         topic = _str(d, "topic")
         out["drivers"].append({
             "topic": topic if topic in DRIVER_TOPICS else "other",

@@ -180,7 +180,7 @@ def test_verify_extract_number_rules():
     raw = {
         "drivers": [
             {"topic": "revenue", "claim": "销量同比增长 5.10%", "quote": "茅台酒销量为4.2万吨，同比增长5.10%"},
-            # claim 里的数字不在 quote 里 → 丢弃
+            # claim 里的数字不在 quote 里 → 不丢条目，claim 退回为已校验的原文
             {"topic": "revenue", "claim": "销量同比增长 8%", "quote": "茅台酒销量为4.2万吨，同比增长5.10%"},
         ],
         "kpis": [
@@ -191,10 +191,23 @@ def test_verify_extract_number_rules():
         "risks": [],
     }
     got = verify_extract(raw, pages)
-    assert [d["claim"] for d in got["drivers"]] == ["销量同比增长 5.10%"]
+    assert [d["claim"] for d in got["drivers"]] == ["销量同比增长 5.10%", "茅台酒销量为4.2万吨，同比增长5.10%"]
     assert [k["name"] for k in got["kpis"]] == ["茅台酒销量"]
     assert got["kpis"][0]["page"] == 10
-    assert got["dropped"] == 2
+    assert got["dropped"] == 1
+
+
+def test_verify_extract_keeps_reason_line_when_claim_borrows_table_number():
+    # 金徽酒 2025 年报：变动比例在表格行，「变动原因说明」那句不带数字；LLM 概括时把表里的 -3.40% 拼进 claim。
+    # 旧规则整条丢弃，导致 9 条公司解释全军覆没——现在 claim 退回原文。
+    pages = [(17, "营业收入 2,918,472,595.78 3,021,264,528.01 -3.40\n"
+                  "营业收入变动原因说明：主要是受白酒行业政策管控以及行业深度调整影响，导致销量下降。")]
+    raw = {"drivers": [{"topic": "revenue", "claim": "营业收入下降3.40%，主要受行业政策管控影响",
+                        "quote": "营业收入变动原因说明：主要是受白酒行业政策管控以及行业深度调整影响，导致销量下降。"}],
+           "kpis": [], "risks": []}
+    got = verify_extract(raw, pages)
+    assert got["dropped"] == 0
+    assert got["drivers"][0]["claim"] == "营业收入变动原因说明：主要是受白酒行业政策管控以及行业深度调整影响，导致销量下降。"
 
 
 def test_verify_extract_normalizes_width_and_rejects_short_quotes():
