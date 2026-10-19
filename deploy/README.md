@@ -81,6 +81,32 @@ ssh-keygen -t ed25519 -f kairos-deploy -N "" -C "kairos-deploy"
 
 配置完成后，推送到 main 即自动部署（前端 + 后端）；也可以在 Actions 页面手动触发（workflow_dispatch）。
 
+## 数据库备份
+
+后端每天 03:00（北京时间）自动把 SQLite 在线快照、gzip 压缩到数据卷内的
+`/app/data/backups/kairos-YYYYMMDD-HHMMSS.db.gz`，保留最近 3 份（`BACKUP_KEEP` 可调；
+1.4G 的库压缩后约 340M）。手动备份一次：
+
+```bash
+cd /opt/kairos && docker compose exec api python -m app.jobs.backup
+```
+
+这些备份和数据库在同一块盘上，只防误删/损坏，不防磁盘或机器丢失。建议定期拉一份到本地（或传到 OSS）：
+
+```bash
+# 本地执行：取最新一份
+ssh deploy@<ECS公网IP> 'cd /opt/kairos && docker compose exec -T api sh -c "ls -t data/backups/*.db.gz | head -1 | xargs cat"' > kairos-latest.db.gz
+```
+
+恢复：停容器 → 解压覆盖 → 启动（删掉旧的 `-wal` / `-shm` 文件）：
+
+```bash
+cd /opt/kairos && docker compose stop api
+docker compose run --rm --no-deps -v "$PWD/kairos-latest.db.gz:/restore.db.gz" --entrypoint sh api \
+  -c 'gunzip -c /restore.db.gz > data/kairos.db && rm -f data/kairos.db-wal data/kairos.db-shm'
+docker compose start api
+```
+
 ## 验证
 
 浏览器访问 `http://<ECS公网IP>`。直接 IP 访问无需 ICP 备案；绑定域名并解析到大陆服务器则需要先完成备案。

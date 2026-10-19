@@ -21,6 +21,8 @@ if _is_sqlite:
         cur = dbapi_conn.cursor()
         cur.execute("PRAGMA foreign_keys=ON")
         cur.execute("PRAGMA journal_mode=WAL")
+        # 采集 / 研报 / 策略任务和 API 并发写时排队等锁，而不是立即抛 database is locked
+        cur.execute("PRAGMA busy_timeout=5000")
         cur.close()
 
 

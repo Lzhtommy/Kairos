@@ -39,6 +39,7 @@ async def lifespan(_app: FastAPI):
             conn.execute(text("ALTER TABLE users ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT 0"))
         conn.commit()
 
+    from app.jobs.backup import backup_database
     from app.jobs.collect import (
         collect_once,
         refresh_reference,
@@ -138,6 +139,16 @@ async def lifespan(_app: FastAPI):
             "interval",
             seconds=20,
             id="research_queue",
+            max_instances=1,
+            coalesce=True,
+        )
+        # 凌晨 03:00 CST（19:00 UTC）SQLite 备份，避开盘中采集与盘后任务
+        _scheduler.add_job(
+            backup_database,
+            "cron",
+            hour=19,
+            minute=0,
+            id="db_backup",
             max_instances=1,
             coalesce=True,
         )

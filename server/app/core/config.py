@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     # Where backtest curve files are written
     reports_dir: str = "./data/reports"
 
+    # SQLite 每日备份（gzip 压缩，保留最近 N 份）；仍在同一数据卷上，异地副本见 deploy/README.md
+    backup_dir: str = "./data/backups"
+    backup_keep: int = 3
+
 
 @lru_cache
 def get_settings() -> Settings:
