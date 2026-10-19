@@ -16,6 +16,7 @@ import {
   fetchSectorOverview,
   type NarrativeItem,
   type SectorRow,
+  type SectorValuationInfo,
 } from "@/api/sector"
 import { cn } from "@/lib/utils"
 
@@ -36,6 +37,35 @@ function TiltBadge({ suggestion }: { suggestion: string }) {
   return <Badge variant="secondary">标配</Badge>
 }
 
+function fmtNum(v: number | null | undefined, digits = 2) {
+  return v == null ? "—" : v.toFixed(digits)
+}
+
+function ValuationCell({ v }: { v: SectorValuationInfo | null }) {
+  if (!v || v.pct == null) return <span className="text-muted-foreground">—</span>
+  const tone =
+    v.label === "低位"
+      ? "bg-sky-500/15 text-sky-600 dark:text-sky-400"
+      : v.label === "高位"
+        ? "bg-amber-500/15 text-amber-600 dark:text-amber-400"
+        : ""
+  const title = [
+    `市盈率 ${fmtNum(v.pe)}（分位 ${v.pe_pct == null ? "—" : Math.round(v.pe_pct * 100) + "%"}）`,
+    `市净率 ${fmtNum(v.pb)}（分位 ${v.pb_pct == null ? "—" : Math.round(v.pb_pct * 100) + "%"}）`,
+    `股息率 ${fmtNum(v.dp)}%`,
+  ].join("\n")
+  return (
+    <span className="flex items-center gap-2" title={title}>
+      <Badge variant={tone ? "outline" : "secondary"} className={cn(tone && "border-transparent", tone)}>
+        {v.label}
+      </Badge>
+      <span className="font-mono text-xs tabular-nums text-muted-foreground">
+        {v.primary.toUpperCase()} {Math.round(v.pct * 100)}%
+      </span>
+    </span>
+  )
+}
+
 function NarrativeCell({ item }: { item: NarrativeItem | null }) {
   if (!item || item.strength == null || item.strength === 0)
     return <span className="text-muted-foreground">—</span>
@@ -54,7 +84,7 @@ function NarrativeCell({ item }: { item: NarrativeItem | null }) {
   )
 }
 
-type SortKey = "tilt" | "crowd" | "chg"
+type SortKey = "tilt" | "crowd" | "chg" | "val"
 
 export function SectorPage() {
   const [sort, setSort] = useState<SortKey>("tilt")
@@ -71,6 +101,7 @@ export function SectorPage() {
       tilt: (s: SectorRow) => s.tilt?.rank ?? 999,
       crowd: (s: SectorRow) => -(s.crowd?.crowd ?? -1),
       chg: (s: SectorRow) => -(s.chg_pct ?? -999),
+      val: (s: SectorRow) => s.valuation?.pct ?? 999,
     }[sort]
     return rows.slice().sort((a, b) => key(a) - key(b))
   }, [overview, sort])
@@ -156,6 +187,8 @@ export function SectorPage() {
               +0.069 / t=2.73），月初更新{overview.tilt_month ? `（当前 ${overview.tilt_month} 月末信号）` : ""}；
               拥挤度是过热预警而非选股信号；叙事分只前向记录、不参与建议，
               读法与拥挤度配对——叙事升温且不拥挤是机会，叙事沸腾且高拥挤是出口。
+              估值分位是行业对自身近 5 年的历史位置（周期、金融、地产看市净率，其余看市盈率），
+              只描述贵贱位置、不参与建议；长期处于低位可能是盈利中枢下移而非便宜。
             </p>
           </div>
         </div>
@@ -174,6 +207,9 @@ export function SectorPage() {
               </TableHead>
               <TableHead className="cursor-pointer" onClick={() => setSort("tilt")}>
                 倾斜建议{sort === "tilt" && " ↓"}
+              </TableHead>
+              <TableHead className="cursor-pointer" onClick={() => setSort("val")}>
+                估值分位{sort === "val" && " ↑"}
               </TableHead>
               <TableHead className="hidden md:table-cell">因子 z（反转/季节/残差动量）</TableHead>
               <TableHead className="hidden lg:table-cell">今日叙事</TableHead>
@@ -222,6 +258,9 @@ export function SectorPage() {
                     ) : (
                       <span className="text-muted-foreground">—</span>
                     )}
+                  </TableCell>
+                  <TableCell>
+                    <ValuationCell v={s.valuation} />
                   </TableCell>
                   <TableCell className="hidden font-mono text-xs tabular-nums text-muted-foreground md:table-cell">
                     {s.tilt

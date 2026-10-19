@@ -1,10 +1,12 @@
-"""行业板块日更任务：K 线增量 → 拥挤度快照 → 月度倾斜留痕。
+"""行业板块日更任务：K 线增量 → 拥挤度快照 → 月度倾斜留痕 → 估值分位。
 
 盘后 cron 触发（见 main.py），全流程幂等：
 - K 线按 (code, ts) 只插缺的；首轮自动全量 bootstrap；
 - 拥挤度只算 sector_metric 里还没有的日期（限最近 METRIC_BACKFILL 根，
   纯 Python 滚动分位全量回填太慢且展示只需一年）；
-- 倾斜只算 sector_tilt 里还没有的完整月份。
+- 倾斜只算 sector_tilt 里还没有的完整月份；
+- 估值（仅申万源）首采逐行业拉 VAL_FULL_YEARS 年，之后一次请求取全行业增量；
+  分位只补最近 VALUATION_BACKFILL 日里还没算的行。
 
 口径锁定：库里已有 sector_info 时沿用其 source，避免申万/东财混面板。
 """
@@ -12,22 +14,26 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import func, select
 
 from app.core.config import settings
 from app.core.db import SessionLocal
 from app.jobs.collect import in_trading_session
-from app.models.sector import SectorBar, SectorInfo, SectorMetric, SectorTilt
+from app.models.sector import SectorBar, SectorInfo, SectorMetric, SectorTilt, SectorValuation
 from app.providers.sector_provider import get_sector_source, throttle
 from app.services.sector_metrics import build_panel, crowding_rows, month_key, tilt_rows
+from app.services.sector_valuation import rolling_pct
 
 logger = logging.getLogger("kairos.sector")
 
 FULL_DEPTH = 3200      # 首采深度（约 13 年，season 因子需要 ≥6 年同月样本）
 INCR_DEPTH = 40        # 日常增量深度（覆盖停机数日的缺口）
 METRIC_BACKFILL = 420  # 拥挤度最多回填的交易日数（展示约一年足够）
+VAL_FULL_YEARS = 8     # 估值首采年数（5 年分位窗口 + 一年多回填）
+VAL_INCR_DAYS = 15     # 估值增量回看自然日数（覆盖停机缺口）
+VALUATION_BACKFILL = 420
 
 
 def _locked_source(db) -> str | None:
@@ -138,6 +144,64 @@ def _sync_tilts(db) -> int:
     return written
 
 
+def _sync_valuations(db, src) -> int:
+    """估值原值增量入库 + 补算分位。东财源没有估值接口，直接跳过。"""
+    if not hasattr(src, "get_valuations"):
+        return 0
+    codes = [code for code, _ in src.list_sectors()]
+    last_ts = {
+        code: ts
+        for code, ts in db.execute(
+            select(SectorValuation.code, func.max(SectorValuation.ts)).group_by(SectorValuation.code)
+        )
+    }
+    today = datetime.now()
+    batches = []
+    missing = [c for c in codes if c not in last_ts]
+    for code in missing:  # 首采：单行业长区间
+        try:
+            batches.append(src.get_valuations(code, today - timedelta(days=365 * VAL_FULL_YEARS), today))
+        except Exception as exc:  # noqa: BLE001 — 单个板块失败不拦全局
+            logger.warning("Sector valuation fetch failed for %s: %s", code, exc)
+        throttle()
+    if last_ts:  # 增量：一次请求取全部行业
+        start = min(last_ts.values()) - timedelta(days=VAL_INCR_DAYS)
+        try:
+            batches.append(src.get_valuations("all", start, today))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Sector valuation incremental fetch failed: %s", exc)
+
+    inserted = 0
+    seen: set[tuple[str, datetime]] = set()
+    for rows in batches:
+        for v in rows:
+            floor = last_ts.get(v.code)
+            key = (v.code, v.ts)
+            if v.code not in codes or (floor is not None and v.ts <= floor) or key in seen:
+                continue
+            seen.add(key)
+            db.add(SectorValuation(code=v.code, ts=v.ts, pe=v.pe, pb=v.pb, dp=v.dp))
+            inserted += 1
+    db.commit()
+
+    # 补算分位：每个板块最近 VALUATION_BACKFILL 行里两个分位都还空的
+    by_code: dict[str, list[SectorValuation]] = {}
+    for row in db.execute(
+        select(SectorValuation).order_by(SectorValuation.code, SectorValuation.ts)
+    ).scalars():
+        by_code.setdefault(row.code, []).append(row)
+    for rows in by_code.values():
+        pes = [r.pe for r in rows]
+        pbs = [r.pb for r in rows]
+        for i in range(max(0, len(rows) - VALUATION_BACKFILL), len(rows)):
+            r = rows[i]
+            if r.pe_pct is None and r.pb_pct is None:
+                r.pe_pct = rolling_pct(pes, i)
+                r.pb_pct = rolling_pct(pbs, i)
+    db.commit()
+    return inserted
+
+
 def update_sectors() -> None:
     """盘后日更入口。盘中跳过（收盘值才有意义）；数据源探测失败跳过本轮。"""
     if settings.sector_source == "off":
@@ -153,9 +217,10 @@ def update_sectors() -> None:
         n_bars = _sync_bars(db, src)
         n_metrics = _sync_metrics(db)
         n_tilts = _sync_tilts(db)
+        n_vals = _sync_valuations(db, src)
         logger.info(
-            "Sector update (%s): %d bars, %d metrics, %d tilt rows",
-            src.name, n_bars, n_metrics, n_tilts,
+            "Sector update (%s): %d bars, %d metrics, %d tilt rows, %d valuation rows",
+            src.name, n_bars, n_metrics, n_tilts, n_vals,
         )
     except Exception as exc:  # noqa: BLE001 — keep the scheduler alive
         logger.warning("Sector update failed: %s", exc)

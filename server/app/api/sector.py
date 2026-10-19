@@ -1,4 +1,4 @@
-"""行业轮动 API：RRG / 拥挤度预警 / 倾斜建议 / 叙事。
+"""行业轮动 API：RRG / 拥挤度预警 / 倾斜建议 / 叙事 / 估值分位。
 
 只读市场数据，与 quotes 一样不鉴权。产品形态（research PLAN Step 5）：
 等权基准 ± 有限倾斜 + 过热预警，不做 Top-N 满仓信号。
@@ -14,8 +14,9 @@ from sqlalchemy.orm import Session
 
 from app.core.db import get_db
 from app.jobs.sector import load_bar_panel
-from app.models.sector import SectorInfo, SectorMetric, SectorNarrative, SectorTilt
+from app.models.sector import SectorInfo, SectorMetric, SectorNarrative, SectorTilt, SectorValuation
 from app.services.sector_metrics import calc_rrg
+from app.services.sector_valuation import label, primary_metric
 
 router = APIRouter(prefix="/sector", tags=["sector"])
 
@@ -76,6 +77,20 @@ def overview(db: Session = Depends(get_db)):
                 "resmom_z": _round(t.resmom_z, 2),
             }
 
+    val_ts = db.execute(select(func.max(SectorValuation.ts))).scalar()
+    valuations = {}
+    if val_ts is not None:
+        for v in db.execute(
+            select(SectorValuation).where(SectorValuation.ts == val_ts)
+        ).scalars():
+            key = primary_metric(v.code)
+            pct = v.pb_pct if key == "pb" else v.pe_pct
+            valuations[v.code] = {
+                "pe": _round(v.pe, 2), "pb": _round(v.pb, 2), "dp": _round(v.dp, 2),
+                "pe_pct": _round(v.pe_pct), "pb_pct": _round(v.pb_pct),
+                "primary": key, "pct": _round(pct), "label": label(pct),
+            }
+
     narr_date = db.execute(select(func.max(SectorNarrative.date))).scalar()
     narratives, market_narr = {}, None
     if narr_date is not None:
@@ -103,6 +118,7 @@ def overview(db: Session = Depends(get_db)):
                 "crowd": metrics.get(code),
                 "tilt": tilts.get(code),
                 "narrative": narratives.get(code),
+                "valuation": valuations.get(code),
             }
         )
     return {
@@ -110,6 +126,7 @@ def overview(db: Session = Depends(get_db)):
         "asof": rrg["asof"] or (metric_ts.date().isoformat() if metric_ts else None),
         "metric_date": metric_ts.date().isoformat() if metric_ts else None,
         "tilt_month": tilt_month.strftime("%Y-%m") if tilt_month else None,
+        "valuation_date": val_ts.date().isoformat() if val_ts else None,
         "market_narrative": market_narr,
         "sectors": sectors,
     }

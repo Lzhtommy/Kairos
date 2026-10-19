@@ -1,4 +1,4 @@
-"""行业轮动模块：指标公式、倾斜符号自适应、日更任务幂等、API 形状、叙事落库。"""
+"""行业轮动模块：指标公式、倾斜符号自适应、日更任务幂等、API 形状、叙事落库、估值分位。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core.db import get_db
-from app.models.sector import SectorBar, SectorInfo, SectorMetric, SectorNarrative, SectorTilt
+from app.models.sector import (SectorBar, SectorInfo, SectorMetric, SectorNarrative, SectorTilt,
+                               SectorValuation)
 from app.services.sector_metrics import build_panel, calc_rrg, crowding_rows, tilt_rows
 from tests.conftest import trading_days
 
@@ -174,6 +175,66 @@ def test_update_sectors_idempotent(db, _sector_env):
     assert db.query(SectorTilt).count() == n_tilts
 
 
+# ---------------------------------------------------------------- 估值
+def test_rolling_pct_window_and_missing():
+    from app.services.sector_valuation import MIN_DAYS, label, primary_metric, rolling_pct
+
+    vals = [float(i) for i in range(1, MIN_DAYS + 1)]
+    assert rolling_pct(vals, MIN_DAYS - 2) is None           # 历史不足
+    assert rolling_pct(vals, MIN_DAYS - 1) == 1.0          # 新高 → 顶部（对齐 pandas）
+    assert rolling_pct(vals + [-5.0], MIN_DAYS) is None      # 整体亏损（PE ≤ 0）不出分位
+    assert rolling_pct(vals + [0.5], MIN_DAYS) < 0.01        # 新低 → 底部
+    assert [label(x) for x in (None, 0.1, 0.5, 0.9)] == [None, "低位", "中位", "高位"]
+    assert primary_metric("801780") == "pb" and primary_metric("801120") == "pe"
+
+
+class FakeValSource(FakeSource):
+    """带估值接口的假源：PE 线性抬升（末端处于历史高位），PB 线性下降。"""
+
+    def __init__(self, panel_bars):
+        super().__init__(panel_bars)
+        self.calls: list[str] = []
+
+    def get_valuations(self, code, start, end):
+        from app.providers.sector_provider import SectorValuationData
+
+        self.calls.append(code)
+        codes = list(self._bars) if code == "all" else [code]
+        out = []
+        for c in codes:
+            for k, (d, _c, _a) in enumerate(self._bars[c]):
+                if start <= d <= end:
+                    out.append(SectorValuationData(code=c, ts=d, pe=10 + k * 0.01,
+                                                   pb=5 - k * 0.001, dp=2.0))
+        return out
+
+
+def test_update_sectors_valuation(db, monkeypatch):
+    from app.jobs import sector as sector_job
+
+    days = trading_days("2022-01-03", 900)
+    bars = {f"S{i:02d}": _bars(days, [100.0] * 900) for i in range(2)}
+    src = FakeValSource(bars)
+    monkeypatch.setattr(sector_job, "SessionLocal", lambda: db)
+    monkeypatch.setattr(sector_job, "in_trading_session", lambda: False)
+    monkeypatch.setattr(sector_job, "get_sector_source", lambda preferred: src)
+    monkeypatch.setattr(sector_job, "throttle", lambda: None)
+    monkeypatch.setattr(sector_job, "datetime", type("D", (), {"now": staticmethod(lambda: days[-1])}))
+    monkeypatch.setattr(sector_job, "VAL_FULL_YEARS", 10)
+
+    sector_job.update_sectors()
+    assert src.calls == ["S00", "S01"]  # 首采逐行业
+    assert db.query(SectorValuation).count() == 2 * 900
+    last = db.query(SectorValuation).filter(SectorValuation.ts == days[-1]).all()
+    assert all(v.pe_pct > 0.99 and v.pb_pct < 0.01 for v in last)
+    early = db.query(SectorValuation).filter(SectorValuation.ts == days[0]).first()
+    assert early.pe_pct is None  # 回填窗口外 / 历史不足
+
+    sector_job.update_sectors()  # 增量走一次全行业请求，不重复写
+    assert src.calls[-1] == "all"
+    assert db.query(SectorValuation).count() == 2 * 900
+
+
 # ---------------------------------------------------------------- 叙事
 def test_update_narrative_writes_and_skips(db, monkeypatch):
     from app.core.config import settings
@@ -276,6 +337,8 @@ def test_overview_shape(db):
                         crowd_share=0.8, crowd_heat=0.95, crowd_bias=0.85))
     db.add(SectorTilt(code="801080", month=datetime(2024, 9, 1), rev1_z=1.2,
                       season_z=None, resmom_z=None, score=1.2, rank=1, suggestion="高配"))
+    db.add(SectorValuation(code="801780", ts=days[-1], pe=6.0, pb=0.6, dp=5.0,
+                           pe_pct=0.5, pb_pct=0.1))
     db.add(SectorNarrative(date=days[-1], code="801080", direction=0.5,
                            strength=0.6, summary="利好", evidence=["标题"], model="deepseek-chat"))
     db.add(SectorNarrative(date=days[-1], code="_market", direction=0.1,
@@ -292,6 +355,10 @@ def test_overview_shape(db):
     assert by_code["801080"]["narrative"]["summary"] == "利好"
     assert by_code["801080"]["rrg"] is not None
     assert math.isclose(by_code["801080"]["close"], 100.0)
+    bank = by_code["801780"]["valuation"]
+    assert bank["primary"] == "pb" and bank["pct"] == 0.1 and bank["label"] == "低位"
+    assert by_code["801080"]["valuation"] is None
+    assert body["valuation_date"] == days[-1].date().isoformat()
 
     hist = _api_client(db).get("/sector/narrative").json()
     assert len(hist) == 1

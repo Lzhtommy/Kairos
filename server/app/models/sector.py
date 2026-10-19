@@ -1,11 +1,12 @@
 """行业轮动模块的数据表（research/sector_rotation Phase 1-3 的产品化落地）。
 
-四张表全部是新表（create_all 直接建，无需 Alembic 迁移）：
+这些表全部是新表（create_all 直接建，无需 Alembic 迁移）：
 - sector_info / sector_bar：板块元数据 + 日线（provider 日更）
 - sector_metric：日频拥挤度快照（前向留痕，公式改动不影响历史记录）
 - sector_tilt：月频倾斜建议留痕（模型当时怎么说，事后可核对）
 - sector_narrative：LLM 叙事打分，**只前向记录，永不回测**
   （LLM 训练数据污染使历史回测天然虚高，见 research PLAN Step 4）
+- sector_valuation：日频行业 PE/PB/股息率 + 自身历史分位（仅申万口径，展示层）
 """
 
 from datetime import datetime, timezone
@@ -57,6 +58,21 @@ class SectorMetric(Base):
     crowd_share: Mapped[float | None] = mapped_column(Float, nullable=True)  # 成交额占比分位
     crowd_heat: Mapped[float | None] = mapped_column(Float, nullable=True)   # 换手热度分位
     crowd_bias: Mapped[float | None] = mapped_column(Float, nullable=True)   # 乖离率分位
+
+
+class SectorValuation(Base):
+    """日频行业估值（申万指数分析日报表，整体法）+ 自身 5 年滚动分位。
+    分位只算最近 VALUATION_BACKFILL 日（展示用），更早的行只存原值供分位窗口。"""
+
+    __tablename__ = "sector_valuation"
+
+    code: Mapped[str] = mapped_column(String(16), primary_key=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True, index=True)
+    pe: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pb: Mapped[float | None] = mapped_column(Float, nullable=True)
+    dp: Mapped[float | None] = mapped_column(Float, nullable=True)       # 股息率（%）
+    pe_pct: Mapped[float | None] = mapped_column(Float, nullable=True)   # 0~1
+    pb_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class SectorTilt(Base):

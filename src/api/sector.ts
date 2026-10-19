@@ -22,6 +22,17 @@ export type SectorTiltInfo = {
   resmom_z: number | null
 }
 
+export type SectorValuationInfo = {
+  pe: number | null
+  pb: number | null
+  dp: number | null
+  pe_pct: number | null
+  pb_pct: number | null
+  primary: "pe" | "pb"
+  pct: number | null
+  label: "低位" | "中位" | "高位" | null
+}
+
 export type NarrativeItem = {
   date?: string
   code?: string
@@ -41,6 +52,7 @@ export type SectorRow = {
   crowd: SectorCrowd | null
   tilt: SectorTiltInfo | null
   narrative: NarrativeItem | null
+  valuation: SectorValuationInfo | null
 }
 
 export type SectorOverview = {
@@ -48,6 +60,7 @@ export type SectorOverview = {
   asof: string | null
   metric_date: string | null
   tilt_month: string | null
+  valuation_date: string | null
   market_narrative: NarrativeItem | null
   sectors: SectorRow[]
 }

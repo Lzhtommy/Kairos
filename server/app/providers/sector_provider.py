@@ -5,6 +5,7 @@
 
 - sw：申万一级 31 个（2021 版），经 akshare index_hist_sw 直连申万宏源研究。
   研究阶段全部结论基于此口径；本地网络可用，生产 ECS 可用性未验证。
+  另有日频估值（PE/PB/股息率，申万指数分析日报表），直连 httpx，不经 akshare。
 - eastmoney：东财行业板块（BK 代码，约 86 个），push2delay 列板块 +
   push2his 拉 K 线，纯 httpx 无额外依赖。生产 ECS 上用 scripts.probe_eastmoney
   验证过可用性后作为主源或兜底。
@@ -40,6 +41,27 @@ _QUOTE_HOST = "https://push2delay.eastmoney.com"
 _HIS_HOST = "https://push2his.eastmoney.com"
 _BOARD_FS = "m:90+t:2+f:!50"  # 东财行业板块
 _THROTTLE = 0.3               # 板块逐个拉 K 线的请求间隔
+
+
+_SW_VAL_URL = "https://www.swsresearch.com/institute-sw/api/index_analysis/index_analysis_report/"
+_SW_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
+
+
+@dataclass
+class SectorValuationData:
+    code: str
+    ts: datetime
+    pe: float | None
+    pb: float | None
+    dp: float | None  # 股息率（%）
+
+
+def _num(v) -> float | None:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
 
 
 @dataclass
@@ -167,6 +189,41 @@ class SWSectorSource:
                 )
             )
         return out
+
+    def get_valuations(self, code: str, start: datetime, end: datetime) -> list[SectorValuationData]:
+        """code="all" 一次取全部一级行业（增量用）；单个代码 + 长区间用于首采。
+
+        akshare 的 index_analysis_daily_sw 固定 page_size=50、每页 ~15s，十年历史
+        要翻上千页；直接请求同一接口、page_size 放大到一次取完。接口偶发返回
+        非 JSON（限流），重试带退避。
+        """
+        params = {
+            "page": "1", "page_size": "10000", "index_type": "一级行业", "type": "DAY",
+            "start_date": start.strftime("%Y-%m-%d"), "end_date": end.strftime("%Y-%m-%d"),
+            "swindexcode": code,
+        }
+        last: Exception | None = None
+        for attempt in range(4):
+            try:
+                # 申万官网证书链不全，与 akshare 一致关闭校验（只读公开行情）
+                r = httpx.get(_SW_VAL_URL, params=params, headers={"User-Agent": _SW_UA},
+                              timeout=90, verify=False)
+                r.raise_for_status()
+                rows = r.json()["data"]["results"]
+                break
+            except Exception as exc:  # noqa: BLE001
+                last = exc
+                time.sleep(5 * 2**attempt)
+        else:
+            raise RuntimeError(f"sw valuation {code} 拉取失败: {last}")
+        return [
+            SectorValuationData(
+                code=str(row["swindexcode"]),
+                ts=datetime.fromisoformat(str(row["bargaindate"])[:10]),
+                pe=_num(row.get("pe")), pb=_num(row.get("pb")), dp=_num(row.get("dp")),
+            )
+            for row in rows
+        ]
 
 
 def _try_sw() -> SWSectorSource | None:
