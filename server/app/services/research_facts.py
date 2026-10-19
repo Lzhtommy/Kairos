@@ -185,6 +185,9 @@ def build_facts(raw: dict[str, list[dict] | None], valuation: dict, name: str = 
             "%", "营收 3 年复合增速", "abstract_annual", f"{last_y - 3}-{last_y}", "growth")
         put("deducted_np_cagr_3y", _cagr(num(start.get("扣非净利润")), num(end.get("扣非净利润")), 3),
             "%", "扣非净利润 3 年复合增速", "abstract_annual", f"{last_y - 3}-{last_y}", "growth")
+        # 终点 ≤ 0 时 CAGR 无定义，评分据此记 0 分而不是当缺失（见 research_score）
+        put("deducted_np_cagr_end", num(end.get("扣非净利润")), "亿元", f"{last_y} 年扣非净利润（复合增速终点）",
+            "abstract_annual", str(last_y), "growth")
 
     # ---------- 报告期摘要（同花顺）：最新累计同比
     periodic = sorted(
@@ -330,6 +333,12 @@ def build_facts(raw: dict[str, list[dict] | None], valuation: dict, name: str = 
         put("ocf_to_np_3y", ocf_sum / np_sum, "倍", f"近 {n_years} 年经营现金流 / 净利润", "cashflow", period, "cashflow")
         put("fcf_3y", fcf_sum, "亿元", f"近 {n_years} 年累计自由现金流", "cashflow", period, "cashflow")
         put("fcf_to_np_3y", fcf_sum / np_sum, "倍", f"近 {n_years} 年累计自由现金流 / 净利润", "cashflow", period, "cashflow")
+    elif n_years >= 2:
+        # 累计净利润 ≤ 0 时比值无意义；保留累计值，评分按现金流正负给分（见 research_score）
+        period = f"{years[-3:][0]}-{years[-1]}"
+        put("np_3y", np_sum, "亿元", f"近 {n_years} 年累计净利润", "income", period, "cashflow")
+        put("ocf_3y", ocf_sum, "亿元", f"近 {n_years} 年累计经营现金流", "cashflow", period, "cashflow")
+        put("fcf_3y", fcf_sum, "亿元", f"近 {n_years} 年累计自由现金流", "cashflow", period, "cashflow")
 
     # ---------- 分红率：每股派息 / 基本每股收益
     dividend = raw.get("dividend")
@@ -365,6 +374,7 @@ def build_facts(raw: dict[str, list[dict] | None], valuation: dict, name: str = 
     if pe and pe > 0 and len(pe_hist) >= 120:
         put("pe_pct_self", _pct_rank(pe_hist, pe), "%", f"市盈率自身历史分位（{len(pe_hist)} 个交易日）",
             "factor_history", valuation.get("as_of"), "valuation")
+        facts["pe_pct_self"]["days"] = len(pe_hist)
     pb = valuation.get("pb")
     if pb and pb > 0 and len(pb_hist) >= 120:
         put("pb_pct_self", _pct_rank(pb_hist, pb), "%", f"市净率自身历史分位（{len(pb_hist)} 个交易日）",

@@ -166,8 +166,63 @@ def test_red_flags_cap_grade():
     res = score(build_facts(raw, VALUATION, "*ST测试"))
     keys = {f["key"] for f in res["red_flags"]}
     assert {"st", "goodwill", "investigation"} <= keys
-    assert res["grade"] in ("C", "D", None)
+    assert res["grade"] == "D"  # ST / 立案调查直接定 D
     assert res["sub_scores"]["events"]["score"] == 0  # 5 - 5
+
+
+def test_soft_red_flag_caps_at_c():
+    res = score(build_facts(make_raw(goodwill=300), VALUATION, "测试股份"))
+    assert [f["key"] for f in res["red_flags"]] == ["goodwill"]
+    assert res["total_score"] >= 65  # 不封顶本该是 A / B
+    assert res["grade"] == "C"
+
+
+def _items(res: dict, dim: str) -> dict:
+    return {i["key"]: i for i in res["sub_scores"][dim]["items"]}
+
+
+def test_turned_loss_cagr_scores_zero_not_missing():
+    res = score(build_facts(make_raw(deducted=(60, 70, 80, -5)), VALUATION, "测试股份"))
+    item = _items(res, "growth")["deducted_np_cagr_3y"]
+    assert item["points"] == 0 and "≤ 0" in item["note"]
+
+
+def test_turnaround_cagr_stays_missing():
+    res = score(build_facts(make_raw(deducted=(-10, 20, 40, 60)), VALUATION, "测试股份"))
+    assert _items(res, "growth")["deducted_np_cagr_3y"]["points"] is None
+
+
+def _loss_cashflow(raw: dict, ocf: float, capex: float) -> dict:
+    yi = 1e8
+    for d in list(raw["cashflow"]):
+        d["经营活动产生的现金流量净额"] = ocf * yi
+        d["购建固定资产、无形资产和其他长期资产所支付的现金"] = capex * yi
+    for row in raw["income"]:
+        if row["报告日"].endswith("1231"):
+            row["净利润"] = -10 * yi
+    return raw
+
+
+@pytest.mark.parametrize(("ocf", "capex", "ocf_pts", "fcf_pts"), [(30, 10, 3.5, 2), (30, 50, 3.5, 0), (-5, 10, 0, 0)])
+def test_cumulative_loss_cashflow_by_sign(ocf, capex, ocf_pts, fcf_pts):
+    raw = _loss_cashflow(make_raw(), ocf, capex)
+    res = score(build_facts(raw, VALUATION, "测试股份"))
+    items = _items(res, "cashflow")
+    assert items["ocf_to_np_3y"]["points"] == ocf_pts
+    assert items["fcf_to_np_3y"]["points"] == fcf_pts
+    assert res["sub_scores"]["cashflow"]["score"] is not None  # 不再因缺失被整维剔除
+
+
+def test_short_self_history_shifts_weight_to_industry():
+    short = score(build_facts(make_raw(), VALUATION, "测试股份"))  # 200 个交易日
+    items = _items(short, "valuation")
+    assert (items["pe_pct_self"]["max"], items["pb_pct_self"]["max"], items["pe_pct_industry"]["max"]) == (2.5, 1.5, 11)
+    assert "200 个交易日" in items["pe_pct_self"]["note"]
+
+    long_val = VALUATION | {"pe_hist": [10 + i * 0.004 for i in range(500)], "pb_hist": [2 + i * 0.004 for i in range(500)]}
+    items = _items(score(build_facts(make_raw(), long_val, "测试股份")), "valuation")
+    assert (items["pe_pct_self"]["max"], items["pe_pct_industry"]["max"]) == (5, 7)
+    assert items["pe_pct_self"]["note"] is None
 
 
 def test_same_event_tag_counted_once():

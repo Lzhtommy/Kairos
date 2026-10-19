@@ -52,6 +52,8 @@ const DISCLAIMER = "本报告由程序基于公开数据自动生成，仅供研
 const SOURCE_FALLBACK: Record<string, string> = { factor_history: "本地行情快照" }
 
 const NEGATIVE_TAGS = new Set(["reduce", "inquiry", "investigation", "forecast_down", "lawsuit", "audit_nonstandard"])
+// 与后端 research_score.GRADE_D_FLAGS 一致：命中直接定 D（v1.1 起）
+const GRADE_D_FLAGS = new Set(["st", "investigation"])
 
 function fmtFact(f: Fact | undefined): string {
   if (!f) return "—"
@@ -178,7 +180,11 @@ function ReportView({ report }: { report: ResearchDetail }) {
         <section className="mt-4 rounded-lg border border-red-500/40 bg-red-500/5 p-4">
           <div className="flex items-center gap-2 text-sm font-medium text-red-600 dark:text-red-400">
             <Warning weight="fill" className="size-4" />
-            排雷提示（评级封顶 C）
+            排雷提示（
+            {report.scoring_version !== "v1" && report.red_flags.some((f) => GRADE_D_FLAGS.has(f.key))
+              ? "评级定为 D"
+              : "评级封顶 C"}
+            ）
           </div>
           <ul className="mt-2 space-y-1 text-sm text-foreground/90">
             {report.red_flags.map((f) => (
@@ -792,7 +798,7 @@ function Appendix({ report, sourceLabel }: { report: ResearchDetail; sourceLabel
       </div>
       <p className="text-xs leading-5 text-muted-foreground">
         计分规则：每个指标在「零分点 → 满分点」之间线性插值、两端截断；缺失指标不计分，维度按剩余权重折算；维度可用满分不足一半记为「数据不足」；
-        整体覆盖率低于 70% 不给评级；命中排雷项评级封顶 C。评分完全由程序按规则计算，AI 只负责文字解读。
+        整体覆盖率低于 70% 不给评级；命中排雷项评级封顶 C，其中 ST / 立案调查直接定 D（v1.1 起）。评分完全由程序按规则计算，AI 只负责文字解读。
       </p>
       <div className="rounded-lg border border-border">
         <Table>

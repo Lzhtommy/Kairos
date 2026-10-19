@@ -1,15 +1,16 @@
-"""基本面评分 v1（docs/RESEARCH-DESIGN.md §3）——纯函数，同输入永远同输出。
+"""基本面评分 v1.1（docs/RESEARCH-DESIGN.md §3）——纯函数，同输入永远同输出。
 
 每个指标分段线性：零分点 → 满分点之间插值，两端截断（零分点 > 满分点即反向指标）。
 缺失指标不计分；维度可用满分 < 50% 时该维度「数据不足」不进总分；
-整体覆盖率 < 70% 不给评级；命中排雷项评级封顶 C（总分不改）。
+整体覆盖率 < 70% 不给评级；命中排雷项评级封顶 C，ST / 立案调查直接定 D（总分不改）。
+业绩恶化导致比值无定义（扣非转亏、累计亏损）按规则给分，不当缺失——否则维度归一会替它免掉扣分。
 """
 
 from __future__ import annotations
 
 from app.services.research_facts import EVENT_LABELS, fmt
 
-SCORING_VERSION = "v1"
+SCORING_VERSION = "v1.1"
 
 # (维度 key, 维度名, 满分, [(fact_id, 满分, 零分点, 满分点)])
 DIMENSIONS: list[tuple[str, str, float, list[tuple[str, float, float, float]]]] = [
@@ -54,6 +55,8 @@ EVENT_POINTS = {
 }
 
 GRADES = [(80, "A"), (65, "B"), (50, "C"), (float("-inf"), "D")]
+GRADE_D_FLAGS = {"st", "investigation"}  # 命中直接定 D；其余排雷项封顶 C
+SELF_HIST_MIN_DAYS = 480  # 自身历史不足约 2 年时，自身分位权重一半移给同行业分位
 MIN_COVERAGE = 0.7
 DIM_MIN_AVAILABLE = 0.5
 
@@ -67,17 +70,47 @@ def linear(value: float, max_points: float, zero: float, full: float) -> float:
 
 def _item_points(fid: str, facts: dict, max_pts: float, zero: float, full: float) -> tuple[float | None, str | None]:
     """返回 (得分 | None=缺失, 说明)。"""
-    pe = facts.get("pe", {}).get("value")
+    def v(key: str) -> float | None:
+        return facts.get(key, {}).get("value")
+
+    pe = v("pe")
     if fid in ("pe_pct_self", "pe_pct_industry") and pe is not None and pe <= 0:
         return 0.0, "亏损（市盈率 ≤ 0）记 0 分"
     if fid == "ar_minus_rev_growth":
-        ratio = facts.get("ar_to_revenue", {}).get("value")
+        ratio = v("ar_to_revenue")
         if ratio is not None and ratio < 2:
             return max_pts, "应收账款占营收 < 2%，视为无应收风险"
     f = facts.get(fid)
-    if f is None:
-        return None, None
-    return linear(f["value"], max_pts, zero, full), None
+    if f is not None:
+        return linear(f["value"], max_pts, zero, full), None
+    if fid == "deducted_np_cagr_3y":
+        end = v("deducted_np_cagr_end")
+        if end is not None and end <= 0:
+            return 0.0, "最近年报扣非净利润 ≤ 0，复合增速无定义，记 0 分"
+    if fid in ("ocf_to_np_3y", "fcf_to_np_3y") and v("np_3y") is not None:
+        cash = v("ocf_3y") if fid == "ocf_to_np_3y" else v("fcf_3y")
+        if cash is not None and cash > 0:
+            return max_pts / 2, "累计净利润 ≤ 0，比值无意义；累计现金流为正记一半分"
+        if cash is not None:
+            return 0.0, "累计净利润 ≤ 0 且累计现金流 ≤ 0，记 0 分"
+    return None, None
+
+
+def _weights(key: str, items: list, facts: dict) -> tuple[list, dict[str, str]]:
+    """自身估值历史过短时，把自身分位的一半权重移给同行业分位。返回 (items, {fid: 说明})。"""
+    days = facts.get("pe_pct_self", {}).get("days")
+    if key != "valuation" or days is None or days >= SELF_HIST_MIN_DAYS or "pe_pct_industry" not in facts:
+        return items, {}
+    note = f"自身历史仅 {days} 个交易日（< {SELF_HIST_MIN_DAYS}），一半权重移至同行业分位"
+    moved = sum(m / 2 for fid, m, _, _ in items if fid in ("pe_pct_self", "pb_pct_self"))
+    out = []
+    for fid, m, zero, full in items:
+        if fid in ("pe_pct_self", "pb_pct_self"):
+            m = m / 2
+        elif fid == "pe_pct_industry":
+            m = m + moved
+        out.append((fid, m, zero, full))
+    return out, {"pe_pct_self": note, "pb_pct_self": note, "pe_pct_industry": note}
 
 
 def score(dataset: dict) -> dict:
@@ -92,8 +125,11 @@ def score(dataset: dict) -> dict:
     for key, label, dim_max, items in DIMENSIONS:
         got = avail = 0.0
         rows = []
+        items, weight_notes = _weights(key, items, facts)
         for fid, max_pts, zero, full in items:
             pts, note = _item_points(fid, facts, max_pts, zero, full)
+            if pts is not None and fid in weight_notes:
+                note = "；".join(x for x in (note, weight_notes[fid]) if x)
             f = facts.get(fid)
             rows.append({
                 "key": fid,
@@ -155,7 +191,9 @@ def score(dataset: dict) -> dict:
     grade = None
     if total is not None and coverage >= MIN_COVERAGE:
         grade = next(g for th, g in GRADES if total >= th)
-        if flags and grade in ("A", "B"):
+        if any(f["key"] in GRADE_D_FLAGS for f in flags):
+            grade = "D"
+        elif flags and grade in ("A", "B"):
             grade = "C"
 
     return {
