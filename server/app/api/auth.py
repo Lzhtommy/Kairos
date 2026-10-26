@@ -13,7 +13,7 @@ from app.core.security import (
     verify_password,
 )
 from app.models.user import InviteCode, User
-from app.schemas import LoginIn, ProfileIn, RegisterIn, TokenOut, UserOut
+from app.schemas import LoginIn, RegisterIn, TokenOut, UserOut
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -24,7 +24,6 @@ def _user_public(u: User) -> dict:
     return {
         "id": u.id,
         "username": u.username,
-        "nickname": u.nickname,
         "tier": u.tier,
         "is_admin": u.is_admin,
     }
@@ -49,7 +48,6 @@ def register(body: RegisterIn, db: Session = Depends(get_db)):
     user = User(
         username=username,
         password_hash=hash_password(body.password),
-        nickname=username,
         tier="专业版",
     )
     db.add(user)
@@ -81,14 +79,3 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
 def me(user: User = Depends(get_current_user)):
     return _user_public(user)
 
-
-@router.patch("/me", response_model=UserOut)
-def update_me(
-    body: ProfileIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)
-):
-    nickname = body.nickname.strip()
-    if not nickname:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "昵称不能为空")
-    user.nickname = nickname
-    db.commit()
-    return _user_public(user)

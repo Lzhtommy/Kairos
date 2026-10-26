@@ -38,10 +38,10 @@ export function MarketingNav() {
             >
               <Avatar className="size-7">
                 <AvatarFallback className="bg-primary/15 text-primary text-xs font-medium">
-                  {user.nickname?.[0] ?? "K"}
+                  {user.username[0]?.toUpperCase() ?? "K"}
                 </AvatarFallback>
               </Avatar>
-              <span className="text-sm font-medium text-foreground">{user.nickname}</span>
+              <span className="text-sm font-medium text-foreground">{user.username}</span>
             </Link>
           ) : (
             <Link to="/login" className={cn(buttonVariants({ variant: "ghost", size: "sm" }))}>
@@ -69,7 +69,7 @@ export function MarketingNav() {
               </a>
             ))}
             <Link to="/app" className={cn(buttonVariants({ size: "sm" }), "mt-1 w-full")}>
-              {user ? `进入应用（${user.nickname}）` : "开始使用"}
+              {user ? `进入应用（${user.username}）` : "开始使用"}
             </Link>
           </nav>
         </div>

@@ -14,7 +14,7 @@ from app.models.user import User
 
 
 def _make_user(db, email: str) -> User:
-    user = User(username=email.split("@")[0], email=email, password_hash="x", nickname=email.split("@")[0])
+    user = User(username=email.split("@")[0], email=email, password_hash="x")
     db.add(user)
     db.commit()
     db.refresh(user)

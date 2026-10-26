@@ -3,7 +3,6 @@ import { api, setToken } from "@/api/client"
 export type User = {
   id: number
   username: string
-  nickname: string
   tier: string
   is_admin: boolean
 }
@@ -34,10 +33,6 @@ export async function register(
 
 export async function fetchMe(): Promise<User> {
   return api<User>("/auth/me")
-}
-
-export async function updateProfile(nickname: string): Promise<User> {
-  return api<User>("/auth/me", { method: "PATCH", body: { nickname } })
 }
 
 export function logout() {

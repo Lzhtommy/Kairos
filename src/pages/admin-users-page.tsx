@@ -53,7 +53,7 @@ export function AdminUsersPage() {
     try {
       const updated = await setUserAdmin(u.id, isAdmin)
       setUsers((prev) => prev?.map((x) => (x.id === u.id ? updated : x)) ?? null)
-      toast.success(isAdmin ? `已将 ${u.nickname} 设为管理员` : `已撤销 ${u.nickname} 的管理员`)
+      toast.success(isAdmin ? `已将 ${u.username} 设为管理员` : `已撤销 ${u.username} 的管理员`)
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "操作失败")
     }
@@ -66,7 +66,7 @@ export function AdminUsersPage() {
       if (pending.kind === "delete") {
         await deleteUser(pending.user.id)
         setUsers((prev) => prev?.filter((x) => x.id !== pending.user.id) ?? null)
-        toast.success(`已删除 ${pending.user.nickname}`)
+        toast.success(`已删除 ${pending.user.username}`)
         setPending(null)
       } else {
         const password = await resetUserPassword(pending.user.id)
@@ -119,10 +119,9 @@ export function AdminUsersPage() {
                 <TableRow key={u.id}>
                   <TableCell>
                     <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-foreground">{u.nickname}</span>
+                      <span className="text-sm font-medium text-foreground">{u.username}</span>
                       {isMe && <Badge variant="secondary">你</Badge>}
                     </div>
-                    <p className="text-xs text-muted-foreground">{u.username}</p>
                   </TableCell>
                   <TableCell className="font-mono text-xs tabular-nums text-muted-foreground">
                     {u.strategyCount}
@@ -133,7 +132,7 @@ export function AdminUsersPage() {
                       checked={u.isAdmin}
                       disabled={isMe}
                       onCheckedChange={(v) => toggleAdmin(u, v)}
-                      aria-label={`${u.nickname} 管理员权限`}
+                      aria-label={`${u.username} 管理员权限`}
                     />
                   </TableCell>
                   <TableCell className="text-right">
@@ -172,7 +171,7 @@ export function AdminUsersPage() {
               <DialogHeader>
                 <DialogTitle>删除用户</DialogTitle>
                 <DialogDescription>
-                  将永久删除 {pending.user.nickname}（{pending.user.username}）及其{" "}
+                  将永久删除 {pending.user.username} 及其{" "}
                   {pending.user.strategyCount} 个策略、回测与模拟盘数据，无法恢复。
                 </DialogDescription>
               </DialogHeader>
@@ -193,7 +192,7 @@ export function AdminUsersPage() {
                 <DialogDescription>
                   {pending.password
                     ? "新密码只显示这一次，请复制后发给用户。"
-                    : `将为 ${pending.user.nickname}（${pending.user.username}）生成一个随机新密码，原密码立即失效。`}
+                    : `将为 ${pending.user.username} 生成一个随机新密码，原密码立即失效。`}
                 </DialogDescription>
               </DialogHeader>
               {pending.password && (

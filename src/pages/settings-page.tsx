@@ -19,7 +19,6 @@ import {
   testNotification,
   type UserSettings,
 } from "@/api/settings"
-import { updateProfile } from "@/api/auth"
 
 const CHANNEL_LABELS: Record<string, string> = {
   none: "关闭",
@@ -33,9 +32,7 @@ const TARGET_PLACEHOLDER: Record<string, string> = {
 }
 
 export function SettingsPage() {
-  const { user, setUser, logout } = useAuth()
-  const [nickname, setNickname] = useState(user?.nickname ?? "")
-  const [savingName, setSavingName] = useState(false)
+  const { user, logout } = useAuth()
   const [settings, setSettings] = useState<UserSettings | null>(null)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -54,18 +51,6 @@ export function SettingsPage() {
       toast.error("保存失败，请重试")
     } finally {
       setSaving(false)
-    }
-  }
-
-  async function saveNickname() {
-    setSavingName(true)
-    try {
-      setUser(await updateProfile(nickname.trim()))
-      toast.success("昵称已更新")
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "保存失败，请重试")
-    } finally {
-      setSavingName(false)
     }
   }
 
@@ -103,43 +88,23 @@ export function SettingsPage() {
         <div className="flex items-center gap-3">
           <Avatar className="size-10">
             <AvatarFallback className="bg-primary/15 text-primary text-sm font-medium">
-              {user?.nickname?.[0] ?? "K"}
+              {user?.username?.[0]?.toUpperCase() ?? "K"}
             </AvatarFallback>
           </Avatar>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <p className="truncate text-sm font-medium text-foreground">{user?.nickname}</p>
+              <p className="truncate text-sm font-medium text-foreground">{user?.username}</p>
               {user?.tier && (
                 <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
                   {user.tier}
                 </span>
               )}
             </div>
-            <p className="truncate text-xs text-muted-foreground">{user?.username}</p>
           </div>
           <Button variant="outline" size="sm" className="gap-1.5" onClick={logout}>
             <SignOut className="size-3.5" />
             退出登录
           </Button>
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="nickname" className="text-xs text-muted-foreground">昵称</Label>
-          <div className="flex gap-2">
-            <Input
-              id="nickname"
-              maxLength={64}
-              value={nickname}
-              onChange={(e) => setNickname(e.target.value)}
-              placeholder="显示名称，可用中文"
-            />
-            <Button
-              variant="outline"
-              onClick={saveNickname}
-              disabled={savingName || !nickname.trim() || nickname.trim() === user?.nickname}
-            >
-              {savingName ? "保存中…" : "保存"}
-            </Button>
-          </div>
         </div>
       </section>
 

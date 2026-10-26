@@ -78,10 +78,10 @@ function QuickActions() {
   )
 }
 
-/** 登录信息区：头像 + 昵称/套餐 + 退出，桌面侧栏与移动端抽屉共用 */
+/** 登录信息区：头像 + 用户名/套餐 + 退出，桌面侧栏与移动端抽屉共用 */
 function UserFooter() {
   const { user, logout } = useAuth()
-  const initial = user?.nickname?.[0] ?? "K"
+  const initial = user?.username?.[0]?.toUpperCase() ?? "K"
   return (
     <div className="flex items-center gap-2.5 rounded-md px-2 py-2">
       <Avatar className="size-7">
@@ -91,10 +91,7 @@ function UserFooter() {
       </Avatar>
       <div className="min-w-0 flex-1">
         <p className="truncate text-xs font-medium text-foreground">
-          {user?.nickname ?? "未登录"}
-        </p>
-        <p className="truncate text-[11px] text-muted-foreground">
-          {user?.username ?? ""}
+          {user?.username ?? "未登录"}
         </p>
       </div>
       {user?.tier && (

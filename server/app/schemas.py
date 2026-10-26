@@ -14,10 +14,6 @@ class LoginIn(BaseModel):
     password: str
 
 
-class ProfileIn(BaseModel):
-    nickname: str = Field(min_length=1, max_length=64)
-
-
 class TokenOut(BaseModel):
     token: str
     user: dict[str, Any]
@@ -26,7 +22,6 @@ class TokenOut(BaseModel):
 class UserOut(BaseModel):
     id: int
     username: str
-    nickname: str
     tier: str
     is_admin: bool = False
 

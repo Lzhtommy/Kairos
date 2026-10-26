@@ -16,7 +16,7 @@ from app.models.user import InviteCode, User
 
 def _make_user(db, email: str, is_admin: bool) -> User:
     name = email.split("@")[0]
-    user = User(username=name, email=email, password_hash="x", nickname=name, is_admin=is_admin)
+    user = User(username=name, email=email, password_hash="x", is_admin=is_admin)
     db.add(user)
     db.commit()
     db.refresh(user)

@@ -1,4 +1,4 @@
-"""注册 / 登录：邀请码核销、用户名规则、只能用用户名登录、改昵称。"""
+"""注册 / 登录：邀请码核销、用户名规则、只能用用户名登录。"""
 
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ def test_register_consumes_code(client, db):
     assert resp.status_code == 200
     user = resp.json()["user"]
     assert user["username"] == "alice"
-    assert user["nickname"] == "alice"  # 昵称默认等于用户名
+    assert "nickname" not in user
     assert "email" not in user
 
     invite = db.query(InviteCode).filter_by(code="CODE1").one()
@@ -128,7 +128,6 @@ def test_legacy_user_cannot_login_with_email(client, db):
             username="old",
             email="Old@Example.com",
             password_hash=hash_password("secret123"),
-            nickname="old",
         )
     )
     db.commit()
@@ -138,16 +137,3 @@ def test_legacy_user_cannot_login_with_email(client, db):
     assert resp.status_code == 200
     assert "email" not in resp.json()["user"]
 
-
-def test_update_nickname(client, db):
-    _invite(db)
-    token = _register(client).json()["token"]
-    headers = {"Authorization": f"Bearer {token}"}
-
-    resp = client.patch("/auth/me", json={"nickname": "  老王  "}, headers=headers)
-    assert resp.status_code == 200
-    assert resp.json()["nickname"] == "老王"
-    assert client.get("/auth/me", headers=headers).json()["nickname"] == "老王"
-
-    assert client.patch("/auth/me", json={"nickname": "   "}, headers=headers).status_code == 400
-    assert client.patch("/auth/me", json={"nickname": "x"}).status_code == 401

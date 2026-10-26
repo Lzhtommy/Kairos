@@ -56,6 +56,6 @@ def test_notification(db: Session = Depends(get_db), user: User = Depends(get_cu
         us.notify_channel,
         us.notify_target,
         "Kairos 测试通知",
-        f"你好 {user.nickname}，这是一条测试消息。收到即代表策略日报通知配置成功。",
+        f"你好 {user.username}，这是一条测试消息。收到即代表策略日报通知配置成功。",
     )
     return {"ok": ok, "detail": "已发送，请查收" if ok else "发送失败，请检查地址或服务端 SMTP 配置"}

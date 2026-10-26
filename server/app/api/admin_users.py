@@ -21,7 +21,6 @@ def _user_public(u: User, strategy_count: int) -> dict:
     return {
         "id": u.id,
         "username": u.username,
-        "nickname": u.nickname,
         "tier": u.tier,
         "isAdmin": u.is_admin,
         "strategyCount": strategy_count,

@@ -19,7 +19,6 @@ class User(Base):
     # 早期按邮箱注册的遗留字段，新用户为空；不再用于登录，也不对外返回
     email: Mapped[str | None] = mapped_column(String(255), unique=True, index=True, default=None)
     password_hash: Mapped[str] = mapped_column(String(255))
-    nickname: Mapped[str] = mapped_column(String(64))
     tier: Mapped[str] = mapped_column(String(32), default="免费版")
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
