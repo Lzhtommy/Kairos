@@ -294,7 +294,7 @@ export function StrategyBuilderPage() {
   const activeCode = draftCode || PLACEHOLDER_CODE
 
   return (
-    <div className="grid h-[calc(100dvh-4rem)] grid-cols-1 lg:grid-cols-[240px_1fr_440px]">
+    <div className="grid h-[calc(100dvh-4rem)] grid-cols-1 lg:h-[100dvh] lg:grid-cols-[240px_1fr_440px]">
       {/* Strategy list */}
       <aside className="hidden min-h-0 border-r border-border lg:flex lg:flex-col">
         <div className="flex items-center justify-between p-3">
