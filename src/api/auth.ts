@@ -2,7 +2,8 @@ import { api, setToken } from "@/api/client"
 
 export type User = {
   id: number
-  email: string
+  username: string
+  email: string | null
   nickname: string
   tier: string
   is_admin: boolean
@@ -10,24 +11,23 @@ export type User = {
 
 type TokenResp = { token: string; user: User }
 
-export async function login(email: string, password: string): Promise<User> {
+export async function login(username: string, password: string): Promise<User> {
   const res = await api<TokenResp>("/auth/login", {
     method: "POST",
-    body: { email, password },
+    body: { username, password },
   })
   setToken(res.token)
   return res.user
 }
 
 export async function register(
-  email: string,
+  username: string,
   password: string,
-  nickname: string,
   inviteCode: string,
 ): Promise<User> {
   const res = await api<TokenResp>("/auth/register", {
     method: "POST",
-    body: { email, password, nickname, invite_code: inviteCode },
+    body: { username, password, invite_code: inviteCode },
   })
   setToken(res.token)
   return res.user
@@ -35,6 +35,10 @@ export async function register(
 
 export async function fetchMe(): Promise<User> {
   return api<User>("/auth/me")
+}
+
+export async function updateProfile(nickname: string): Promise<User> {
+  return api<User>("/auth/me", { method: "PATCH", body: { nickname } })
 }
 
 export function logout() {

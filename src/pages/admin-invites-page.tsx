@@ -61,7 +61,7 @@ export function AdminInvitesPage() {
     )
   }
 
-  const unused = invites?.filter((i) => !i.usedBy) ?? []
+  const unused = invites?.filter((i) => !i.usedAt) ?? []
 
   if (!invites) {
     return <div className="p-6 text-sm text-muted-foreground">加载中…</div>
@@ -129,7 +129,7 @@ export function AdminInvitesPage() {
               <TableRow key={i.id}>
                 <TableCell className="font-mono text-xs">{i.code}</TableCell>
                 <TableCell>
-                  {i.usedBy ? (
+                  {i.usedAt ? (
                     <Badge variant="secondary">已使用</Badge>
                   ) : (
                     <Badge className="bg-primary/10 text-primary hover:bg-primary/10">
@@ -138,7 +138,7 @@ export function AdminInvitesPage() {
                   )}
                 </TableCell>
                 <TableCell className="text-xs text-muted-foreground">
-                  {i.usedBy ?? "—"}
+                  {i.usedBy ?? (i.usedAt ? "已删除用户" : "—")}
                 </TableCell>
                 <TableCell className="text-xs text-muted-foreground">
                   {fmtTime(i.usedAt)}
@@ -152,7 +152,7 @@ export function AdminInvitesPage() {
                     >
                       <Copy className="size-3.5" />
                     </button>
-                    {!i.usedBy && (
+                    {!i.usedAt && (
                       <button
                         onClick={() => remove(i.id)}
                         className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive"

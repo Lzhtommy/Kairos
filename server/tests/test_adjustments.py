@@ -25,7 +25,7 @@ def _quote(code: str, prev_close: float, ts: datetime) -> QuoteData:
 def test_dividend_rescales_history_and_positions(db):
     days = trading_days("2026-03-02", 3)
     add_stock(db, "600000", days, [10.0, 10.0, 10.0])
-    user = User(email="a@a.co", password_hash="x", nickname="a")
+    user = User(username="a", password_hash="x", nickname="a")
     db.add(user)
     db.commit()
     s = Strategy(user_id=user.id, name="s", dsl={})

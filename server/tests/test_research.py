@@ -266,7 +266,7 @@ def test_find_meta_flags_talk_about_materials():
 
 
 def _user(db, email, is_admin):
-    u = User(email=email, password_hash="x", nickname=email.split("@")[0], is_admin=is_admin)
+    u = User(username=email.split("@")[0], email=email, password_hash="x", nickname=email.split("@")[0], is_admin=is_admin)
     db.add(u)
     db.commit()
     db.refresh(u)

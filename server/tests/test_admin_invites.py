@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -13,7 +15,8 @@ from app.models.user import InviteCode, User
 
 
 def _make_user(db, email: str, is_admin: bool) -> User:
-    user = User(email=email, password_hash="x", nickname=email.split("@")[0], is_admin=is_admin)
+    name = email.split("@")[0]
+    user = User(username=name, email=email, password_hash="x", nickname=name, is_admin=is_admin)
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -51,7 +54,7 @@ def test_generate_and_list(admin_client):
 def test_delete_unused_only(admin_client, db):
     unused = InviteCode(code="FREE")
     user = _make_user(db, "someone@x.com", is_admin=False)
-    used = InviteCode(code="TAKEN", used_by=user.id)
+    used = InviteCode(code="TAKEN", used_by=user.id, used_at=datetime.now(timezone.utc))
     db.add_all([unused, used])
     db.commit()
 
@@ -61,4 +64,4 @@ def test_delete_unused_only(admin_client, db):
 
     listed = admin_client.get("/admin/invites").json()
     assert [c["code"] for c in listed] == ["TAKEN"]
-    assert listed[0]["usedBy"] == "someone@x.com"
+    assert listed[0]["usedBy"] == "someone"

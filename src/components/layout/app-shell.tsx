@@ -94,7 +94,7 @@ function UserFooter() {
           {user?.nickname ?? "未登录"}
         </p>
         <p className="truncate text-[11px] text-muted-foreground">
-          {user?.email ?? ""}
+          {user?.username ?? ""}
         </p>
       </div>
       {user?.tier && (

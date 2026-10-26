@@ -15,7 +15,8 @@ from app.models.user import InviteCode, User
 
 
 def _make_user(db, email: str, is_admin: bool = False) -> User:
-    user = User(email=email, password_hash="x", nickname=email.split("@")[0], is_admin=is_admin)
+    name = email.split("@")[0]
+    user = User(username=name, email=email, password_hash="x", nickname=name, is_admin=is_admin)
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -54,7 +55,7 @@ def test_list_with_strategy_count(admin_client, db):
     db.commit()
 
     users = admin_client.get("/admin/users").json()
-    assert [u["email"] for u in users] == ["admin@x.com", "bob@x.com"]
+    assert [u["username"] for u in users] == ["admin", "bob"]
     assert users[0]["isAdmin"] is True
     assert users[1]["strategyCount"] == 2
 

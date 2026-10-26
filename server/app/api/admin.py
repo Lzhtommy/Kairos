@@ -21,7 +21,7 @@ def _invite_public(c: InviteCode, users: dict[int, User]) -> dict:
     return {
         "id": c.id,
         "code": c.code,
-        "usedBy": used_by.email if used_by else None,
+        "usedBy": used_by.username if used_by else None,
         "usedAt": c.used_at.isoformat() if c.used_at else None,
         "createdAt": c.created_at.isoformat() if c.created_at else None,
     }
@@ -52,7 +52,7 @@ def delete_invite(invite_id: int, db: Session = Depends(get_db)):
     invite = db.get(InviteCode, invite_id)
     if invite is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "邀请码不存在")
-    if invite.used_by is not None:
+    if invite.used_at is not None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "已使用的邀请码不能删除")
     db.delete(invite)
     db.commit()

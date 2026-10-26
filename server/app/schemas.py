@@ -4,15 +4,18 @@ from pydantic import BaseModel, Field
 
 
 class RegisterIn(BaseModel):
-    email: str = Field(min_length=3, max_length=255)
+    username: str = Field(min_length=1, max_length=64)  # 格式在路由里校验，报错才是中文
     password: str = Field(min_length=6, max_length=128)
-    nickname: str = Field(min_length=1, max_length=64)
     invite_code: str = Field(min_length=1, max_length=64)
 
 
 class LoginIn(BaseModel):
-    email: str
+    username: str = Field(min_length=1, max_length=255)  # 用户名，老用户也可填邮箱
     password: str
+
+
+class ProfileIn(BaseModel):
+    nickname: str = Field(min_length=1, max_length=64)
 
 
 class TokenOut(BaseModel):
@@ -22,7 +25,8 @@ class TokenOut(BaseModel):
 
 class UserOut(BaseModel):
     id: int
-    email: str
+    username: str
+    email: str | None = None
     nickname: str
     tier: str
     is_admin: bool = False

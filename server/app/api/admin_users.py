@@ -20,6 +20,7 @@ class UserPatch(BaseModel):
 def _user_public(u: User, strategy_count: int) -> dict:
     return {
         "id": u.id,
+        "username": u.username,
         "email": u.email,
         "nickname": u.nickname,
         "tier": u.tier,

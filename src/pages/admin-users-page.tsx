@@ -122,7 +122,7 @@ export function AdminUsersPage() {
                       <span className="text-sm font-medium text-foreground">{u.nickname}</span>
                       {isMe && <Badge variant="secondary">你</Badge>}
                     </div>
-                    <p className="text-xs text-muted-foreground">{u.email}</p>
+                    <p className="text-xs text-muted-foreground">{u.username}</p>
                   </TableCell>
                   <TableCell className="font-mono text-xs tabular-nums text-muted-foreground">
                     {u.strategyCount}
@@ -172,7 +172,7 @@ export function AdminUsersPage() {
               <DialogHeader>
                 <DialogTitle>删除用户</DialogTitle>
                 <DialogDescription>
-                  将永久删除 {pending.user.nickname}（{pending.user.email}）及其{" "}
+                  将永久删除 {pending.user.nickname}（{pending.user.username}）及其{" "}
                   {pending.user.strategyCount} 个策略、回测与模拟盘数据，无法恢复。
                 </DialogDescription>
               </DialogHeader>
@@ -193,7 +193,7 @@ export function AdminUsersPage() {
                 <DialogDescription>
                   {pending.password
                     ? "新密码只显示这一次，请复制后发给用户。"
-                    : `将为 ${pending.user.nickname}（${pending.user.email}）生成一个随机新密码，原密码立即失效。`}
+                    : `将为 ${pending.user.nickname}（${pending.user.username}）生成一个随机新密码，原密码立即失效。`}
                 </DialogDescription>
               </DialogHeader>
               {pending.password && (

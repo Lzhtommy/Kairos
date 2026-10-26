@@ -13,23 +13,29 @@ export function LoginPage() {
   const navigate = useNavigate()
   const { user, setUser } = useAuth()
   const [mode, setMode] = useState<"login" | "register">("login")
-  const [email, setEmail] = useState("")
+  const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
-  const [nickname, setNickname] = useState("")
+  const [confirm, setConfirm] = useState("")
   const [inviteCode, setInviteCode] = useState("")
   const [busy, setBusy] = useState(false)
 
   // 已登录还访问 /login → 直接回应用
   if (user) return <Navigate to="/app" replace />
 
+  const mismatch = mode === "register" && confirm !== "" && confirm !== password
+
   async function submit(e: React.FormEvent) {
     e.preventDefault()
+    if (mode === "register" && confirm !== password) {
+      toast.error("两次输入的密码不一致")
+      return
+    }
     setBusy(true)
     try {
       const user =
         mode === "login"
-          ? await login(email, password)
-          : await register(email, password, nickname || email.split("@")[0], inviteCode.trim())
+          ? await login(username.trim(), password)
+          : await register(username.trim(), password, inviteCode.trim())
       setUser(user)
       toast.success(mode === "login" ? "登录成功" : "注册成功")
       navigate("/app")
@@ -56,37 +62,35 @@ export function LoginPage() {
           <TabsContent value={mode}>
             <form onSubmit={submit} className="space-y-4 rounded-lg border border-border p-5">
               {mode === "register" && (
-                <>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="invite-code">邀请码</Label>
-                    <Input
-                      id="invite-code"
-                      required
-                      value={inviteCode}
-                      onChange={(e) => setInviteCode(e.target.value)}
-                      placeholder="注册需要邀请码"
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="nickname">昵称</Label>
-                    <Input
-                      id="nickname"
-                      value={nickname}
-                      onChange={(e) => setNickname(e.target.value)}
-                      placeholder="你的名字"
-                    />
-                  </div>
-                </>
+                <div className="space-y-1.5">
+                  <Label htmlFor="invite-code">邀请码</Label>
+                  <Input
+                    id="invite-code"
+                    required
+                    value={inviteCode}
+                    onChange={(e) => setInviteCode(e.target.value)}
+                    placeholder="注册需要邀请码"
+                  />
+                </div>
               )}
               <div className="space-y-1.5">
-                <Label htmlFor="email">邮箱</Label>
+                <Label htmlFor="username">用户名</Label>
                 <Input
-                  id="email"
-                  type="email"
+                  id="username"
                   required
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@example.com"
+                  autoComplete="username"
+                  autoCapitalize="none"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  {...(mode === "register"
+                    ? {
+                        minLength: 3,
+                        maxLength: 20,
+                        pattern: "[A-Za-z0-9_]+",
+                        title: "3-20 位字母、数字或下划线",
+                        placeholder: "3-20 位字母、数字或下划线",
+                      }
+                    : { placeholder: "用户名" })}
                 />
               </div>
               <div className="space-y-1.5">
@@ -96,11 +100,28 @@ export function LoginPage() {
                   type="password"
                   required
                   minLength={6}
+                  autoComplete={mode === "login" ? "current-password" : "new-password"}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="至少 6 位"
                 />
               </div>
+              {mode === "register" && (
+                <div className="space-y-1.5">
+                  <Label htmlFor="confirm-password">确认密码</Label>
+                  <Input
+                    id="confirm-password"
+                    type="password"
+                    required
+                    autoComplete="new-password"
+                    value={confirm}
+                    onChange={(e) => setConfirm(e.target.value)}
+                    placeholder="再输入一次密码"
+                    aria-invalid={mismatch}
+                  />
+                  {mismatch && <p className="text-xs text-destructive">两次输入的密码不一致</p>}
+                </div>
+              )}
               <Button type="submit" className="w-full" disabled={busy}>
                 {busy ? "处理中…" : mode === "login" ? "登录" : "注册并登录"}
               </Button>

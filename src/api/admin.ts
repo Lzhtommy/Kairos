@@ -22,7 +22,8 @@ export async function deleteInvite(id: number): Promise<void> {
 
 export type AdminUser = {
   id: number
-  email: string
+  username: string
+  email: string | null
   nickname: string
   tier: string
   isAdmin: boolean

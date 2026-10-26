@@ -113,7 +113,7 @@ npm run dev          # http://localhost:5173（/api 自动代理到 :8000）
 ```bash
 cd server
 python -m scripts.gen_invite_codes           # 生成 1 个邀请码
-python -m scripts.set_admin your@email.com   # （注册后）设为管理员，可在后台管理邀请码
+python -m scripts.set_admin yourname         # （注册后）按用户名设为管理员，可在后台管理邀请码
 ```
 
 打开 http://localhost:5173 → 用邀请码注册即可体验全部功能。启动时后端会自动建表并 bootstrap 股票池、基本面与历史 K 线，无需手动初始化。

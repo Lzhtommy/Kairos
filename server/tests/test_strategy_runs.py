@@ -28,7 +28,7 @@ def env(db, monkeypatch):
     days = trading_days("2026-01-05", 10)
     add_stock(db, "600519", days, [10.0] * 10, pe=10)
     add_stock(db, "600000", days, [20.0] * 10, pe=30)
-    user = User(email="t@t.co", password_hash="x", nickname="t")
+    user = User(username="t", password_hash="x", nickname="t")
     db.add(user)
     db.commit()
     db.add(UserSetting(user_id=user.id, notify_channel="webhook", notify_target="http://x"))

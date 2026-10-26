@@ -36,11 +36,11 @@ def list_codes() -> None:
             print("（还没有邀请码）")
             return
         for c in rows:
-            if c.used_by is None:
+            if c.used_at is None:
                 print(f"{c.code}  未使用")
             else:
-                email = db.get(User, c.used_by)
-                who = email.email if email else f"user#{c.used_by}"
+                user = db.get(User, c.used_by) if c.used_by is not None else None
+                who = user.username if user else "已删除用户"
                 used_at = c.used_at.strftime("%Y-%m-%d %H:%M") if c.used_at else "?"
                 print(f"{c.code}  已用于 {who} @ {used_at}")
 

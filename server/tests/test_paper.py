@@ -29,7 +29,7 @@ def _bar(db, code, d, o, h, lo, c):
 def _setup(db, days, params) -> PaperAccount:
     """用户 + 策略 + 账户 + 日历参照股；last_settled 拨到 days[0] 之前以触发补结算。"""
     add_stock(db, "600519", days, [10.0] * len(days))  # 日历参照
-    user = User(email="p@p.co", password_hash="x", nickname="p")
+    user = User(username="p", password_hash="x", nickname="p")
     db.add(user)
     db.commit()
     s = Strategy(user_id=user.id, name="纸上谈兵", dsl={"filters": [], "technical": []})
