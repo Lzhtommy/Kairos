@@ -13,7 +13,7 @@ from app.core.security import (
     verify_password,
 )
 from app.models.user import InviteCode, User
-from app.schemas import LoginIn, RegisterIn, TokenOut, UserOut
+from app.schemas import ChangePasswordIn, LoginIn, RegisterIn, TokenOut, UserOut
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -63,7 +63,7 @@ def register(body: RegisterIn, db: Session = Depends(get_db)):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "邀请码已被使用")
     db.commit()
     db.refresh(user)
-    return {"token": create_access_token(str(user.id)), "user": _user_public(user)}
+    return {"token": create_access_token(user), "user": _user_public(user)}
 
 
 @router.post("/login", response_model=TokenOut)
@@ -72,10 +72,24 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
     user = db.execute(select(User).where(User.username == name)).scalar_one_or_none()
     if not user or not verify_password(body.password, user.password_hash):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "用户名或密码错误")
-    return {"token": create_access_token(str(user.id)), "user": _user_public(user)}
+    return {"token": create_access_token(user), "user": _user_public(user)}
 
 
 @router.get("/me", response_model=UserOut)
 def me(user: User = Depends(get_current_user)):
     return _user_public(user)
 
+
+@router.post("/password", response_model=TokenOut)
+def change_password(
+    body: ChangePasswordIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)
+):
+    if not verify_password(body.old_password, user.password_hash):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "当前密码不正确")
+    if body.new_password == body.old_password:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "新密码不能与当前密码相同")
+    user.password_hash = hash_password(body.new_password)
+    user.token_version += 1  # 其他设备上的登录随之失效
+    db.commit()
+    # 当前会话换发新 token，不用重新登录
+    return {"token": create_access_token(user), "user": _user_public(user)}

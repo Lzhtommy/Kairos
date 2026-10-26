@@ -24,9 +24,9 @@ def verify_password(password: str, hashed: str) -> bool:
         return False
 
 
-def create_access_token(subject: str) -> str:
+def create_access_token(user: User) -> str:
     expire = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_expire_minutes)
-    payload = {"sub": subject, "exp": expire}
+    payload = {"sub": str(user.id), "ver": user.token_version, "exp": expire}
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
@@ -47,7 +47,8 @@ def get_current_user(
     except JWTError:
         raise credentials_exc
     user = db.get(User, int(user_id)) if user_id else None
-    if user is None:
+    # 没有 ver 的旧 token 视为 0，上线前已登录的会话不受影响
+    if user is None or payload.get("ver", 0) != user.token_version:
         raise credentials_exc
     return user
 

@@ -68,6 +68,7 @@ def reset_password(
     user = _get_other_user(db, user_id, me)
     password = secrets.token_urlsafe(9)
     user.password_hash = hash_password(password)
+    user.token_version += 1  # 让该用户已登录的会话全部失效
     db.commit()
     return {"password": password}
 

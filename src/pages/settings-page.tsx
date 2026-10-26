@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { toast } from "sonner"
-import { BellRinging, PaperPlaneTilt, SignOut, UserCircle } from "@phosphor-icons/react"
+import { BellRinging, Key, PaperPlaneTilt, SignOut, UserCircle } from "@phosphor-icons/react"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { useAuth } from "@/lib/auth"
 import { Button } from "@/components/ui/button"
@@ -19,6 +19,7 @@ import {
   testNotification,
   type UserSettings,
 } from "@/api/settings"
+import { changePassword } from "@/api/auth"
 
 const CHANNEL_LABELS: Record<string, string> = {
   none: "关闭",
@@ -33,6 +34,9 @@ const TARGET_PLACEHOLDER: Record<string, string> = {
 
 export function SettingsPage() {
   const { user, logout } = useAuth()
+  const [pw, setPw] = useState({ old: "", next: "", confirm: "" })
+  const [changingPw, setChangingPw] = useState(false)
+  const pwMismatch = pw.confirm !== "" && pw.confirm !== pw.next
   const [settings, setSettings] = useState<UserSettings | null>(null)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -51,6 +55,24 @@ export function SettingsPage() {
       toast.error("保存失败，请重试")
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function submitPassword(e: React.FormEvent) {
+    e.preventDefault()
+    if (pw.next !== pw.confirm) {
+      toast.error("两次输入的新密码不一致")
+      return
+    }
+    setChangingPw(true)
+    try {
+      await changePassword(pw.old, pw.next)
+      setPw({ old: "", next: "", confirm: "" })
+      toast.success("密码已修改，其他设备上的登录已退出")
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "修改失败，请重试")
+    } finally {
+      setChangingPw(false)
     }
   }
 
@@ -106,6 +128,57 @@ export function SettingsPage() {
             退出登录
           </Button>
         </div>
+      </section>
+
+      <section className="space-y-4 rounded-lg border border-border p-5">
+        <div className="flex items-center gap-2">
+          <Key className="size-4 text-primary" />
+          <h2 className="text-sm font-medium text-foreground">修改密码</h2>
+        </div>
+        <form onSubmit={submitPassword} className="space-y-3">
+          {/* 让浏览器密码管理器知道改的是哪个账号 */}
+          <input type="text" autoComplete="username" value={user?.username ?? ""} readOnly hidden />
+          <div className="space-y-2">
+            <Label htmlFor="old-password" className="text-xs text-muted-foreground">当前密码</Label>
+            <Input
+              id="old-password"
+              type="password"
+              required
+              autoComplete="current-password"
+              value={pw.old}
+              onChange={(e) => setPw({ ...pw, old: e.target.value })}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="new-password" className="text-xs text-muted-foreground">新密码</Label>
+            <Input
+              id="new-password"
+              type="password"
+              required
+              minLength={6}
+              autoComplete="new-password"
+              value={pw.next}
+              onChange={(e) => setPw({ ...pw, next: e.target.value })}
+              placeholder="至少 6 位"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="confirm-new-password" className="text-xs text-muted-foreground">确认新密码</Label>
+            <Input
+              id="confirm-new-password"
+              type="password"
+              required
+              autoComplete="new-password"
+              value={pw.confirm}
+              onChange={(e) => setPw({ ...pw, confirm: e.target.value })}
+              aria-invalid={pwMismatch}
+            />
+            {pwMismatch && <p className="text-xs text-destructive">两次输入的新密码不一致</p>}
+          </div>
+          <Button type="submit" size="sm" disabled={changingPw}>
+            {changingPw ? "修改中…" : "修改密码"}
+          </Button>
+        </form>
       </section>
 
       <section className="space-y-5 rounded-lg border border-border p-5">

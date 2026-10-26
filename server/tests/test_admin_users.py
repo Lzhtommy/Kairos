@@ -89,6 +89,7 @@ def test_reset_password(admin_client, db):
     password = admin_client.post(f"/admin/users/{bob.id}/reset-password").json()["password"]
     db.refresh(bob)
     assert verify_password(password, bob.password_hash)
+    assert bob.token_version == 1  # 已登录的会话随之失效
 
 
 def test_delete_cascades(admin_client, db):

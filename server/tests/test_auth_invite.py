@@ -137,3 +137,50 @@ def test_legacy_user_cannot_login_with_email(client, db):
     assert resp.status_code == 200
     assert "email" not in resp.json()["user"]
 
+
+
+def test_change_password(client, db):
+    _invite(db)
+    old_token = _register(client).json()["token"]
+    old_headers = {"Authorization": f"Bearer {old_token}"}
+
+    def change(old, new, headers=old_headers):
+        return client.post(
+            "/auth/password", json={"old_password": old, "new_password": new}, headers=headers
+        )
+
+    wrong = change("not-it", "newpass456")
+    assert wrong.status_code == 400
+    assert "当前密码不正确" in wrong.json()["detail"]
+    assert change("secret123", "secret123").status_code == 400
+    assert change("secret123", "short").status_code == 422
+    assert client.post("/auth/password", json={"old_password": "secret123", "new_password": "newpass456"}).status_code == 401
+
+    resp = change("secret123", "newpass456")
+    assert resp.status_code == 200
+    new_token = resp.json()["token"]
+
+    # 旧 token 立即失效，新 token 可用
+    assert client.get("/auth/me", headers=old_headers).status_code == 401
+    assert client.get("/auth/me", headers={"Authorization": f"Bearer {new_token}"}).status_code == 200
+
+    assert _login(client, "alice", "secret123").status_code == 401
+    assert _login(client, "alice", "newpass456").status_code == 200
+
+
+def test_token_without_ver_claim_still_valid(client, db):
+    """上线前签发的 token 没有 ver，视为 0，不应把已登录用户踢下线。"""
+    from datetime import datetime, timedelta, timezone
+
+    from jose import jwt
+
+    from app.core.config import settings
+
+    _invite(db)
+    user_id = _register(client).json()["user"]["id"]
+    legacy = jwt.encode(
+        {"sub": str(user_id), "exp": datetime.now(timezone.utc) + timedelta(hours=1)},
+        settings.jwt_secret,
+        algorithm=settings.jwt_algorithm,
+    )
+    assert client.get("/auth/me", headers={"Authorization": f"Bearer {legacy}"}).status_code == 200

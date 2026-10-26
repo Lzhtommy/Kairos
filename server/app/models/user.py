@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -21,6 +21,8 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255))
     tier: Mapped[str] = mapped_column(String(32), default="免费版")
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 写进 JWT 的 ver；改密 / 重置密码时 +1，之前签发的 token 全部失效
+    token_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 

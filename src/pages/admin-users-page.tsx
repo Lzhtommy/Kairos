@@ -192,7 +192,7 @@ export function AdminUsersPage() {
                 <DialogDescription>
                   {pending.password
                     ? "新密码只显示这一次，请复制后发给用户。"
-                    : `将为 ${pending.user.username} 生成一个随机新密码，原密码立即失效。`}
+                    : `将为 ${pending.user.username} 生成一个随机新密码，原密码立即失效，已登录的设备也会退出。`}
                 </DialogDescription>
               </DialogHeader>
               {pending.password && (
