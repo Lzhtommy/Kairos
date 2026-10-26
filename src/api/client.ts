@@ -36,7 +36,9 @@ export async function api<T = unknown>(path: string, opts: Opts = {}): Promise<T
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
   })
 
-  if (res.status === 401) {
+  // 登录 / 注册接口的 401 是凭证错误，交给下面按 detail 报错，不当作登录过期
+  const isCredentialCall = path === "/auth/login" || path === "/auth/register"
+  if (res.status === 401 && !isCredentialCall) {
     setToken(null)
     if (!location.pathname.startsWith("/login")) {
       location.href = "/login"
