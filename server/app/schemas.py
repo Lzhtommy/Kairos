@@ -10,7 +10,7 @@ class RegisterIn(BaseModel):
 
 
 class LoginIn(BaseModel):
-    username: str = Field(min_length=1, max_length=255)  # 用户名，老用户也可填邮箱
+    username: str = Field(min_length=1, max_length=64)
     password: str
 
 
@@ -26,7 +26,6 @@ class TokenOut(BaseModel):
 class UserOut(BaseModel):
     id: int
     username: str
-    email: str | None = None
     nickname: str
     tier: str
     is_admin: bool = False

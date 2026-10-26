@@ -2,7 +2,7 @@ import re
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select, update
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
@@ -24,7 +24,6 @@ def _user_public(u: User) -> dict:
     return {
         "id": u.id,
         "username": u.username,
-        "email": u.email,
         "nickname": u.nickname,
         "tier": u.tier,
         "is_admin": u.is_admin,
@@ -73,11 +72,6 @@ def register(body: RegisterIn, db: Session = Depends(get_db)):
 def login(body: LoginIn, db: Session = Depends(get_db)):
     name = body.username.strip().lower()
     user = db.execute(select(User).where(User.username == name)).scalar_one_or_none()
-    if user is None and "@" in name:
-        # 早期按邮箱注册的用户仍可用邮箱登录
-        user = db.execute(
-            select(User).where(func.lower(User.email) == name)
-        ).scalar_one_or_none()
     if not user or not verify_password(body.password, user.password_hash):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "用户名或密码错误")
     return {"token": create_access_token(str(user.id)), "user": _user_public(user)}

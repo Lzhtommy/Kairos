@@ -16,7 +16,7 @@ class User(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     # 登录名：小写 [a-z0-9_]，3-20 位
     username: Mapped[str] = mapped_column(String(32), unique=True, index=True)
-    # 早期按邮箱注册的遗留字段，新用户为空；登录时仍可用它代替用户名
+    # 早期按邮箱注册的遗留字段，新用户为空；不再用于登录，也不对外返回
     email: Mapped[str | None] = mapped_column(String(255), unique=True, index=True, default=None)
     password_hash: Mapped[str] = mapped_column(String(255))
     nickname: Mapped[str] = mapped_column(String(64))

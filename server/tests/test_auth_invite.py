@@ -1,4 +1,4 @@
-"""注册 / 登录：邀请码核销、用户名规则、用户名或旧邮箱登录、改昵称。"""
+"""注册 / 登录：邀请码核销、用户名规则、只能用用户名登录、改昵称。"""
 
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ def test_register_consumes_code(client, db):
     user = resp.json()["user"]
     assert user["username"] == "alice"
     assert user["nickname"] == "alice"  # 昵称默认等于用户名
-    assert user["email"] is None
+    assert "email" not in user
 
     invite = db.query(InviteCode).filter_by(code="CODE1").one()
     assert invite.used_by == user["id"]
@@ -122,7 +122,7 @@ def test_login_by_username(client, db):
     assert _login(client, "nobody").status_code == 401
 
 
-def test_legacy_user_can_login_with_email(client, db):
+def test_legacy_user_cannot_login_with_email(client, db):
     db.add(
         User(
             username="old",
@@ -133,8 +133,10 @@ def test_legacy_user_can_login_with_email(client, db):
     )
     db.commit()
 
-    assert _login(client, "old@example.com").status_code == 200
-    assert _login(client, "old").status_code == 200
+    assert _login(client, "old@example.com").status_code == 401
+    resp = _login(client, "old")
+    assert resp.status_code == 200
+    assert "email" not in resp.json()["user"]
 
 
 def test_update_nickname(client, db):

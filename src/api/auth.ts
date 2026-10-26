@@ -3,7 +3,6 @@ import { api, setToken } from "@/api/client"
 export type User = {
   id: number
   username: string
-  email: string | null
   nickname: string
   tier: string
   is_admin: boolean
