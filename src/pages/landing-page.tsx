@@ -16,8 +16,8 @@ export function LandingPage() {
         <Hero />
         <DataCoverage />
         <FeatureBento />
-        <HowItWorks />
         <StrategyShowcase />
+        <HowItWorks />
         <StatsStrip />
         <FinalCta />
       </main>

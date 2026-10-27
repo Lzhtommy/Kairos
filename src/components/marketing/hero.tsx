@@ -1,8 +1,7 @@
-import { Link } from "react-router-dom"
 import { motion, useReducedMotion } from "motion/react"
-import { ArrowRight } from "@phosphor-icons/react"
 import { buttonVariants } from "@/components/ui/button"
 import { HeroPreview } from "@/components/marketing/hero-preview"
+import { PrimaryCta } from "@/components/marketing/primary-cta"
 import { cn } from "@/lib/utils"
 
 export function Hero() {
@@ -22,13 +21,10 @@ export function Hero() {
             剩下的交给 Kairos
           </h1>
           <p className="mt-5 max-w-md text-base leading-relaxed text-muted-foreground">
-            对接全市场 A 股实时行情，用对话生成可回测的策略代码，也支持传统指标筛选。
+            从选股、个股体检到回测和模拟盘，用一句话把想法变成能验证的策略。
           </p>
           <div className="mt-8 flex flex-wrap items-center gap-3">
-            <Link to="/app" className={cn(buttonVariants({ size: "lg" }), "gap-2 px-5")}>
-              开始使用
-              <ArrowRight className="size-4" />
-            </Link>
+            <PrimaryCta />
             <a href="#features" className={cn(buttonVariants({ variant: "outline", size: "lg" }), "px-5")}>
               查看功能
             </a>

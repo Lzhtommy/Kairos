@@ -1,7 +1,4 @@
-import { Link } from "react-router-dom"
-import { ArrowRight } from "@phosphor-icons/react"
-import { buttonVariants } from "@/components/ui/button"
-import { cn } from "@/lib/utils"
+import { PrimaryCta } from "@/components/marketing/primary-cta"
 
 export function FinalCta() {
   return (
@@ -10,13 +7,10 @@ export function FinalCta() {
         下一次操作前，先把逻辑想清楚
       </h2>
       <p className="mx-auto mt-4 max-w-md text-base text-muted-foreground">
-        现在开始使用 Kairos，用对话生成属于你自己的选股策略。
+        Kairos 目前采用邀请制，凭邀请码注册即可使用全部功能。
       </p>
-      <div className="mt-8">
-        <Link to="/app" className={cn(buttonVariants({ size: "lg" }), "gap-2 px-6")}>
-          开始使用
-          <ArrowRight className="size-4" />
-        </Link>
+      <div className="mt-8 flex justify-center">
+        <PrimaryCta />
       </div>
     </section>
   )

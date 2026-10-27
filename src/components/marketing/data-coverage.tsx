@@ -1,11 +1,11 @@
-import { Bank, ChartBar, TrendUp, Money, ClockCountdown } from "@phosphor-icons/react"
+import { Bank, ChartPieSlice, FileText, ChartLine, ClockCountdown } from "@phosphor-icons/react"
 
 const ITEMS = [
-  { icon: Bank, label: "上交所 · 深交所 · 北交所全市场" },
-  { icon: ChartBar, label: "60+ 财务与量价指标" },
-  { icon: TrendUp, label: "陆股通资金流向" },
-  { icon: Money, label: "融资融券数据" },
-  { icon: ClockCountdown, label: "行情 2 秒级刷新" },
+  { icon: Bank, label: "沪深北三所全市场" },
+  { icon: ChartPieSlice, label: "申万一级行业估值分位" },
+  { icon: FileText, label: "年报、半年报、季报深读" },
+  { icon: ChartLine, label: "历史日 K 线回测" },
+  { icon: ClockCountdown, label: "盘中行情分钟级更新" },
 ]
 
 export function DataCoverage() {

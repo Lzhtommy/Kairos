@@ -1,8 +1,9 @@
+// 数字均来自线上实际数据与调度配置，改动功能后记得同步
 const STATS = [
-  { value: "5000+", label: "只 A 股实时覆盖" },
-  { value: "60+", label: "量价与财务指标" },
-  { value: "2秒", label: "行情刷新间隔" },
-  { value: "3", label: "大交易所统一接入" },
+  { value: "5500+", label: "只 A 股全覆盖" },
+  { value: "31", label: "个申万一级行业" },
+  { value: "7", label: "个基本面体检维度" },
+  { value: "15:25", label: "每个交易日盘后自动运行" },
 ]
 
 export function StatsStrip() {

@@ -6,11 +6,12 @@ import { buttonVariants } from "@/components/ui/button"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { useAuth } from "@/lib/auth"
 import { cn } from "@/lib/utils"
+import { PrimaryCta } from "@/components/marketing/primary-cta"
 
 const LINKS = [
   { href: "#features", label: "功能" },
   { href: "#strategy", label: "策略工坊" },
-  { href: "#coverage", label: "数据覆盖" },
+  { href: "#workflow", label: "工作流" },
 ]
 
 export function MarketingNav() {
@@ -48,9 +49,7 @@ export function MarketingNav() {
               登录
             </Link>
           )}
-          <Link to="/app" className={cn(buttonVariants({ size: "sm" }))}>
-            {user ? "进入应用" : "开始使用"}
-          </Link>
+          {!user && <PrimaryCta size="sm" />}
         </div>
         <button
           className="ml-auto md:hidden"
@@ -68,9 +67,12 @@ export function MarketingNav() {
                 {l.label}
               </a>
             ))}
-            <Link to="/app" className={cn(buttonVariants({ size: "sm" }), "mt-1 w-full")}>
-              {user ? `进入应用（${user.username}）` : "开始使用"}
-            </Link>
+            {!user && (
+              <Link to="/login" className="text-sm text-muted-foreground" onClick={() => setOpen(false)}>
+                登录
+              </Link>
+            )}
+            <PrimaryCta size="sm" className="mt-1 w-full" />
           </nav>
         </div>
       )}

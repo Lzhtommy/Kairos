@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { useNavigate, Link, Navigate } from "react-router-dom"
+import { useNavigate, Link, Navigate, useSearchParams } from "react-router-dom"
 import { toast } from "sonner"
 import { Logo } from "@/components/layout/logo"
 import { Button } from "@/components/ui/button"
@@ -12,7 +12,11 @@ import { useAuth } from "@/lib/auth"
 export function LoginPage() {
   const navigate = useNavigate()
   const { user, setUser } = useAuth()
-  const [mode, setMode] = useState<"login" | "register">("login")
+  const [params] = useSearchParams()
+  // 首页「邀请码注册」带 ?mode=register 直达注册页签
+  const [mode, setMode] = useState<"login" | "register">(
+    params.get("mode") === "register" ? "register" : "login",
+  )
   const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
   const [confirm, setConfirm] = useState("")

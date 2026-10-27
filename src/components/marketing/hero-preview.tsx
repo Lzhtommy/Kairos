@@ -1,6 +1,7 @@
 import { useShowcaseQuotes, changePct } from "@/lib/use-live-quotes"
 import { ChangeBadge, PriceCell, Sparkline } from "@/components/market/price-change"
-import { Sparkle } from "@phosphor-icons/react"
+import { Fire } from "@phosphor-icons/react"
+import { cn } from "@/lib/utils"
 
 export function HeroPreview() {
   const { stocks, indices } = useShowcaseQuotes(5)
@@ -22,7 +23,12 @@ export function HeroPreview() {
         <div className="mb-3 flex items-center justify-between">
           <div>
             <p className="text-xs text-muted-foreground">{idx.name}</p>
-            <p className="font-mono text-xl font-semibold tabular-nums text-up">
+            <p
+              className={cn(
+                "font-mono text-xl font-semibold tabular-nums",
+                idx.change > 0 ? "text-up" : idx.change < 0 ? "text-down" : "text-foreground",
+              )}
+            >
               {idx.price.toFixed(2)}
               <span className="ml-2 text-sm">
                 {idx.change > 0 ? "+" : ""}
@@ -31,8 +37,8 @@ export function HeroPreview() {
             </p>
           </div>
           <div className="flex items-center gap-1.5 rounded-full bg-accent px-2.5 py-1 text-xs font-medium text-accent-foreground">
-            <Sparkle weight="fill" className="size-3" />
-            策略选股中
+            <Fire weight="fill" className="size-3" />
+            成交活跃榜
           </div>
         </div>
         <div className="divide-y divide-border/60">

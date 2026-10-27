@@ -1,14 +1,19 @@
-import { Sparkle } from "@phosphor-icons/react"
+import { Check, Sparkle } from "@phosphor-icons/react"
 import { CodeBlock } from "@/components/strategy/code-block"
 
+// 真实生成格式（strategy_ai._render_code），示例来自策略工坊的一次对话
 const CODE = `def screen(stock):
-    """连续放量突破年线"""
-    above_ma250 = stock.price > stock.ma(250)
-    volume_up = stock.volume > stock.volume_ma(20) * 1.8
-    low_turnover = stock.turnover_rate < 0.08
+    """由自然语言描述生成的选股策略"""
+    return (
+        stock.pe < 30.0  # 市盈率
+        and stock.market_cap > 100.0  # 总市值(亿)
+        and daily_change(stock, days=3, min=0.0, max=100.0)
+        and vol_surge(stock, window=20, ratio=2.0)
+        and macd_cross(stock, fast=12, slow=26, signal=9)
+    )
 
-    return above_ma250 and volume_up and low_turnover
-`
+# 调仓频率: monthly_first_trading_day
+# 费率: 双边 0.050%`
 
 export function StrategyShowcase() {
   return (
@@ -21,7 +26,7 @@ export function StrategyShowcase() {
                 <Sparkle weight="fill" className="size-3.5 text-primary" />
               </div>
               <div className="rounded-xl bg-muted px-3.5 py-2.5 text-sm leading-relaxed text-foreground">
-                股价站上年线，成交量放大到20日均量的1.8倍以上，同时换手率控制在8%以内，避免追高。
+                连续 3 日放量上涨，PE 低于 30，市值大于 100 亿，MACD 金叉。
               </div>
             </div>
             <div className="mt-4 rounded-xl border border-border/60 bg-muted/20 p-3.5">
@@ -34,16 +39,16 @@ export function StrategyShowcase() {
             AI 听得懂中国股民的话
           </h2>
           <p className="mt-4 text-base leading-relaxed text-muted-foreground">
-            年线、换手率、放量突破、北向资金，这些说法不需要翻译成技术术语，Kairos 直接理解并生成对应的策略代码。
+            年线、放量、金叉、行业内估值排名，这些日常说法不用翻译成术语，Kairos 直接理解并生成策略。
           </p>
           <ul className="mt-6 space-y-3 text-sm text-foreground">
             {[
-              "支持均线、量价、财务、资金流等多维度指标组合",
-              "生成的代码可直接查看、修改与复用",
-              "每条策略都能一键回测，看清历史表现再使用",
+              "估值、财务、量价与均线、MACD、RSI 等技术形态自由组合",
+              "支持全市场或行业内排名，以及多因子综合打分",
+              "保存后一键回测，也能交给模拟盘持续跟踪",
             ].map((item) => (
               <li key={item} className="flex gap-2.5">
-                <span className="mt-2 size-1 shrink-0 rounded-full bg-primary" />
+                <Check className="mt-0.5 size-4 shrink-0 text-primary" />
                 {item}
               </li>
             ))}

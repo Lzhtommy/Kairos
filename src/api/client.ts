@@ -40,7 +40,8 @@ export async function api<T = unknown>(path: string, opts: Opts = {}): Promise<T
   const isCredentialCall = path === "/auth/login" || path === "/auth/register"
   if (res.status === 401 && !isCredentialCall) {
     setToken(null)
-    if (!location.pathname.startsWith("/login")) {
+    // 只在应用内跳登录；首页等公开页面登录过期时只清 token，不打断浏览
+    if (location.pathname.startsWith("/app")) {
       location.href = "/login"
     }
     throw new ApiError(401, "未登录或登录已过期")
