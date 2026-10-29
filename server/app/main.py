@@ -109,12 +109,14 @@ async def lifespan(_app: FastAPI):
             max_instances=1,
             coalesce=True,
         )
-        # 盘后 15:40 CST（07:40 UTC）行业板块日更（K 线 + 拥挤度 + 月度倾斜）；
+        # 行业板块日更（K 线 + 拥挤度 + 月度倾斜）：盘后 15:40 CST（07:40 UTC）
+        # + 次日盘前 08:40 CST（00:40 UTC）。申万当日 K 线常到深夜甚至次日才发布，
+        # 只跑盘后那一轮会让页面一直落后一个交易日，盘前这轮负责补齐。
         # 启动时补跑一次（幂等 + 盘中自动跳过，首轮会全量 bootstrap 板块历史）。
         _scheduler.add_job(
             update_sectors,
             "cron",
-            hour=7,
+            hour="0,7",
             minute=40,
             id="sector_update",
             max_instances=1,
