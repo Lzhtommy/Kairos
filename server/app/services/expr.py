@@ -35,6 +35,8 @@ FUNCS: dict[str, tuple[tuple[str, ...], bool, str]] = {
     "min": (("num",), True, "num"),
     "std": (("num",), True, "num"),
     "abs": (("num",), False, "num"),
+    "max2": (("num", "num"), False, "num"),
+    "min2": (("num", "num"), False, "num"),
     "pct": (("num", "num"), False, "num"),
     "count": (("bool",), True, "num"),
     "all": (("bool",), True, "bool"),
@@ -168,7 +170,7 @@ def _need(node: ast.expr) -> int:
             return _need(node.args[0]) + node.args[1].value - 1  # type: ignore[attr-defined]
         if name in ("cross_up", "cross_down"):
             return max(_need(node.args[0]), _need(node.args[1])) + 1
-        return max(_need(a) for a in node.args)  # abs / pct
+        return max(_need(a) for a in node.args)  # abs / pct / max2 / min2
     raise ExprError(f"不支持的语法: {type(node).__name__}")
 
 
@@ -268,6 +270,14 @@ def _call(node: ast.Call, s: dict[str, list[float] | None], n: int) -> _Series:
     if name == "abs":
         x = _eval(node.args[0], s, n)
         return [abs(v) if v is not None else None for v in x]
+    if name in ("max2", "min2"):
+        # 逐日取两序列较大/较小值（区别于滚动窗口的 max/min）
+        a, b = _eval(node.args[0], s, n), _eval(node.args[1], s, n)
+        pick = max if name == "max2" else min
+        return [
+            pick(a[i], b[i]) if a[i] is not None and b[i] is not None else None
+            for i in range(n)
+        ]
     if name == "pct":
         a, b = _eval(node.args[0], s, n), _eval(node.args[1], s, n)
         return [

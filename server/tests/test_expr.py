@@ -23,6 +23,7 @@ class TestValidate:
         parse("pct(open, shift(close, 1)) <= -2 and close > open")
         parse("not (close > ma(close, 5)) or volume / ma(volume, 5) > 2")
         parse("-2 <= pct(close, open) <= 5")  # 链式比较
+        parse("ma(max2(high, shift(close, 1)) - min2(low, shift(close, 1)), 14) > 1")
 
     @pytest.mark.parametrize(
         "formula",
@@ -47,6 +48,8 @@ class TestValidate:
             "ma(close > 1, 5) > 1",  # ma 的参数必须是数值
             "all(close, 5)",  # all 的参数必须是布尔
             "close > 1 and volume",  # and 两侧必须是布尔
+            "max2(close, 5, 3) > 1",  # max2 只收两个参数
+            "max2(close > 1, open) > 1",  # max2 的参数必须是数值
         ],
     )
     def test_rejected(self, formula):
@@ -69,6 +72,8 @@ class TestBarsNeeded:
         assert bars_needed("cross_up(ma(close, 5), ma(close, 20))") == 21
         assert bars_needed("all(volume < shift(volume, 1), 3)") == 4
         assert bars_needed("pct(close, max(high, 60)) <= -20") == 60
+        assert bars_needed("max2(high, shift(close, 1)) > 1") == 2
+        assert bars_needed("ma(max2(high, shift(close, 1)), 14) > 1") == 15
 
 
 class TestEvaluate:
@@ -116,6 +121,15 @@ class TestEvaluate:
         sig = evaluate("std(close, 3) > 1", _s(closes))
         assert sig == [False, False, True, True]  # std([10,12,14]) ≈ 1.63
         assert evaluate("ema(close, 3) > 12", _s(closes))[-1] is True
+
+    def test_max2_min2_elementwise(self):
+        # 逐日比较，不看窗口：第 1 日高开跳空时真实波幅 = 最高 - 前收
+        s = _s([10.0, 12.0], high=[10.5, 12.5], low=[9.5, 11.5])
+        tr = "max2(high, shift(close, 1)) - min2(low, shift(close, 1))"
+        assert evaluate(f"{tr} == 2.5", s) == [False, True]  # 12.5 - min(11.5, 10)
+        assert evaluate("max2(high, low) == high and min2(high, low) == low", s) == [True, True]
+        # 任一侧缺值 → None → False
+        assert evaluate("max2(close, shift(close, 1)) > 0", s) == [False, True]
 
     def test_point_in_time_consistency(self):
         # signal_series 语义：第 i 日结果只依赖 ≤i 的数据
