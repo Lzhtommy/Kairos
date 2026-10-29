@@ -380,7 +380,7 @@ export function StrategyBuilderPage() {
                 className={cn(
                   "max-w-[85%] space-y-3 rounded-xl px-3.5 py-2.5 text-sm leading-relaxed",
                   m.role === "user"
-                    ? "bg-primary text-primary-foreground"
+                    ? "border border-primary/25 bg-primary/10 text-foreground"
                     : "bg-muted text-foreground",
                 )}
               >
