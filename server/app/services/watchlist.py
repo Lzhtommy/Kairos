@@ -118,6 +118,30 @@ def open_changes(db: Session, codes: list[str], trade_date: str) -> dict[str, fl
     return out
 
 
+# 交易日历参照股（与 paper._CAL_REF / backtest 兜底一致）
+_CAL_REF = "600519"
+
+
+def prev_trading_day(db: Session, trade_date: str) -> str:
+    """交易日的前一个交易日：周一 → 上周五，节后首日 → 节前最后一天。
+
+    日历取参照股的日 K（采集器会回补缺失 bar，生产上连续）；库里没有 K 线时
+    退回到前一个工作日。
+    """
+    day = datetime.fromisoformat(trade_date)
+    ts = db.execute(
+        select(func.max(Kline.ts)).where(
+            Kline.period == "1d", Kline.code == _CAL_REF, Kline.ts < day
+        )
+    ).scalar()
+    if ts is not None:
+        return ts.date().isoformat()
+    d = day - timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d.date().isoformat()
+
+
 def watchlist_rows(
     db: Session,
     buys: dict[str, int],

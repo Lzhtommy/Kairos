@@ -1,7 +1,5 @@
 """自选股（专有功能，仅管理员）：导入下单文件里的买入股票，列表看开盘涨跌幅与东财人气排名。"""
 
-from datetime import date, timedelta
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
@@ -12,7 +10,12 @@ from app.core.security import require_admin
 from app.models.user import User
 from app.models.watchlist import WatchlistImport, WatchlistImportItem
 from app.services import hot_rank
-from app.services.watchlist import OrderFileError, parse_order_csv, watchlist_rows
+from app.services.watchlist import (
+    OrderFileError,
+    parse_order_csv,
+    prev_trading_day,
+    watchlist_rows,
+)
 
 router = APIRouter(prefix="/watchlist", tags=["watchlist"])
 
@@ -107,8 +110,8 @@ def import_items(
     buys = {it.stock_code: it.quantity for it in items}
     codes = list(buys)
     day = imp.trade_date
-    # 昨日 = 交易日前一个自然日（东财每日排名周末也有）
-    prev_day = (date.fromisoformat(day) - timedelta(days=1)).isoformat()
+    # 昨日 = 前一个交易日（周一看上周五），东财周末也有日排名但不是想对比的口径
+    prev_day = prev_trading_day(db, day)
     hot_rank.ensure_daily(db, codes, {prev_day, day})
     # 当日：交易日就是今天（或还没到）→ 实时查；已过去的交易日用落库的日排名
     if day >= hot_rank.today_cst():

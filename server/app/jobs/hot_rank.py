@@ -1,6 +1,6 @@
 """每日落库自选股的东财人气排名。
 
-凌晨跑：前一自然日已结束，getHisList 里那天的值定稿。覆盖所有导入过的自选股；
+凌晨跑：前一日（工作日）已结束，getHisList 里那天的值定稿。覆盖所有导入过的自选股；
 已落库的跳过，所以启动补跑 / 重复触发都是幂等的。
 """
 
@@ -21,7 +21,11 @@ logger = logging.getLogger("kairos.hot_rank")
 def record_daily_hot_ranks() -> None:
     db = SessionLocal()
     try:
-        yesterday = (date.fromisoformat(hot_rank.today_cst()) - timedelta(days=1)).isoformat()
+        prev = date.fromisoformat(hot_rank.today_cst()) - timedelta(days=1)
+        # 列表只对比交易日的排名，周末的不用专门拉（getHisList 顺带落库也无妨）
+        if prev.weekday() >= 5:
+            return
+        yesterday = prev.isoformat()
         codes = list(db.execute(select(WatchlistImportItem.stock_code).distinct()).scalars())
         if not codes:
             return

@@ -86,6 +86,21 @@ def test_open_change_prefers_exchange_prev_close_when_local_bars_have_gaps(db):
     assert open_changes(db, ["000002"], "2026-10-27") == {}
 
 
+def test_prev_trading_day_skips_weekends_and_holidays(db):
+    from datetime import datetime
+
+    from app.services.watchlist import prev_trading_day
+
+    # 没有日历 K 线：退回前一个工作日
+    assert prev_trading_day(db, "2026-11-02") == "2026-10-30"
+    assert prev_trading_day(db, "2026-10-30") == "2026-10-29"
+    # 参照股日历：国庆休市，节后首日的前一交易日是 9-30
+    add_stock(db, "600519", [datetime(2026, 9, 29), datetime(2026, 9, 30), datetime(2026, 10, 9)],
+              closes=[1, 1, 1])
+    assert prev_trading_day(db, "2026-10-09") == "2026-09-30"
+    assert prev_trading_day(db, "2026-10-12") == "2026-10-09"
+
+
 def _make_user(db, name: str, is_admin: bool) -> User:
     user = User(username=name, password_hash="x", is_admin=is_admin)
     db.add(user)
@@ -143,13 +158,14 @@ def test_ensure_daily_stores_finished_days_once(db, fake_eastmoney):
 def test_today_import_uses_realtime_rank_and_yesterday_from_db(admin_client, db):
     from app.models.market import HotRankDaily
 
-    db.add(HotRankDaily(code="000002", date="2026-11-01", rank=777))
+    db.add(HotRankDaily(code="000002", date="2026-10-30", rank=777))
     db.commit()
     imp = admin_client.post(
         "/watchlist/imports", json={"content": HEADER + _row("000002", "100", "买入", "20261102")}
     ).json()
     detail = admin_client.get(f"/watchlist/imports/{imp['id']}/items").json()
-    assert detail["prevDate"] == "2026-11-01"
+    # 11-02 是周一，昨日取上周五
+    assert detail["prevDate"] == "2026-10-30"
     item = detail["items"][0]
     assert (item["hotRank"], item["hotRankPrev"]) == (42, 777)
 
