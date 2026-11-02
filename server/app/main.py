@@ -46,6 +46,7 @@ async def lifespan(_app: FastAPI):
         run_bootstrap_and_first_collect,
         snapshot_factors,
     )
+    from app.jobs.hot_rank import record_daily_hot_ranks
     from app.jobs.narrative import update_narrative
     from app.jobs.research import process_research_queue, requeue_interrupted
     from app.jobs.sector import update_sectors
@@ -143,6 +144,18 @@ async def lifespan(_app: FastAPI):
             id="research_queue",
             max_instances=1,
             coalesce=True,
+        )
+        # 自选股人气排名日更：00:30 CST（16:30 UTC），前一日排名此时已定稿；
+        # 启动时补跑一次（已落库的跳过，幂等）。
+        _scheduler.add_job(
+            record_daily_hot_ranks,
+            "cron",
+            hour=16,
+            minute=30,
+            id="hot_rank_daily",
+            max_instances=1,
+            coalesce=True,
+            next_run_time=datetime.now(timezone.utc),
         )
         # 凌晨 03:00 CST（19:00 UTC）SQLite 备份，避开盘中采集与盘后任务
         _scheduler.add_job(

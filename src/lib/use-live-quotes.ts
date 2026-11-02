@@ -27,5 +27,7 @@ export function useShowcaseQuotes(count = 6) {
 }
 
 export function changePct(stock: Stock) {
+  // 没有快照的股票（新股 / 停牌未采到）prevClose 为 0
+  if (!stock.prevClose) return 0
   return ((stock.price - stock.prevClose) / stock.prevClose) * 100
 }

@@ -115,3 +115,14 @@ class Fundamental(Base):
     roe: Mapped[float] = mapped_column(Float)
     market_cap: Mapped[float] = mapped_column(Float)
     dividend_yield: Mapped[float] = mapped_column(Float, default=0.0)
+
+
+class HotRankDaily(Base):
+    """东财人气榜每日排名（getHisList 的日粒度数据）。只存已结束的自然日，
+    当天的排名还在变，走实时接口。"""
+
+    __tablename__ = "hot_rank_daily"
+
+    code: Mapped[str] = mapped_column(String(16), primary_key=True)
+    date: Mapped[str] = mapped_column(String(10), primary_key=True)  # YYYY-MM-DD
+    rank: Mapped[int] = mapped_column(Integer)

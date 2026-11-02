@@ -37,19 +37,24 @@ function stockDetailUrl(s: Stock) {
   return `https://xueqiu.com/S/${s.market}${s.code}`
 }
 
-export function QuoteTable({
+/** extraColumns 插在涨跌幅之后；调用方需传稳定引用（模块常量或 useMemo）。 */
+export function QuoteTable<T extends Stock = Stock>({
   data,
   dense = true,
   pageSize = 50,
+  extraColumns,
+  defaultSorting = [{ id: "marketCap", desc: true }],
 }: {
-  data: Stock[]
+  data: T[]
   dense?: boolean
   pageSize?: number
+  extraColumns?: ColumnDef<T>[]
+  defaultSorting?: SortingState
 }) {
-  const [sorting, setSorting] = useState<SortingState>([{ id: "marketCap", desc: true }])
+  const [sorting, setSorting] = useState<SortingState>(defaultSorting)
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize })
 
-  const columns = useMemo<ColumnDef<Stock>[]>(
+  const columns = useMemo<ColumnDef<T>[]>(
     () => [
       {
         id: "name",
@@ -79,6 +84,7 @@ export function QuoteTable({
         accessorFn: (r) => changePct(r),
         cell: ({ row }) => <ChangeBadge pct={changePct(row.original)} />,
       },
+      ...(extraColumns ?? []),
       {
         id: "turnover",
         header: "成交额(亿)",
@@ -128,7 +134,7 @@ export function QuoteTable({
         ),
       },
     ],
-    [],
+    [extraColumns],
   )
 
   const table = useReactTable({

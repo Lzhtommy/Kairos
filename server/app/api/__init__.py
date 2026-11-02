@@ -13,6 +13,7 @@ from app.api import (
     sector,
     settings,
     strategies,
+    watchlist,
 )
 
 api_router = APIRouter(prefix="/api")
@@ -29,3 +30,4 @@ api_router.include_router(backtests.router)
 api_router.include_router(paper.router)
 api_router.include_router(research.router)
 api_router.include_router(research.admin_router)
+api_router.include_router(watchlist.router)

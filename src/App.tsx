@@ -3,6 +3,7 @@ import type { ReactNode } from "react"
 import { AppShell } from "@/components/layout/app-shell"
 import { LandingPage } from "@/pages/landing-page"
 import { ScreenerPage } from "@/pages/screener-page"
+import { WatchlistPage } from "@/pages/watchlist-page"
 import { SectorPage } from "@/pages/sector-page"
 import { ResearchPage } from "@/pages/research-page"
 import { ResearchDetailPage } from "@/pages/research-detail-page"
@@ -41,6 +42,10 @@ function App() {
       <Route path="/login" element={<LoginPage />} />
       <Route path="/app" element={<Navigate to="/app/screener" replace />} />
       <Route path="/app/screener" element={<RequireAuth><ScreenerPage /></RequireAuth>} />
+      <Route
+        path="/app/watchlist"
+        element={<RequireAuth><RequireAdmin><WatchlistPage /></RequireAdmin></RequireAuth>}
+      />
       <Route path="/app/sector" element={<RequireAuth><SectorPage /></RequireAuth>} />
       <Route path="/app/research" element={<RequireAuth><ResearchPage /></RequireAuth>} />
       <Route path="/app/research/:id" element={<RequireAuth><ResearchDetailPage /></RequireAuth>} />
