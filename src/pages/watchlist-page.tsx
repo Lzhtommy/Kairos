@@ -183,13 +183,9 @@ export function WatchlistPage() {
     setDateDraft(activeDate)
   }
 
-  // 日期切换后把左侧对应记录滚进可视区
-  const listRef = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    listRef.current
-      ?.querySelector(`[data-import-id="${activeId}"]`)
-      ?.scrollIntoView({ block: "nearest" })
-  }, [activeId])
+  // 删除是不可逆的：第一次点击进入确认态，换日期即取消
+  const [confirmDel, setConfirmDel] = useState(false)
+  useEffect(() => setConfirmDel(false), [activeId])
 
   const itemsQ = useQuery({
     queryKey: ["watchlistItems", activeId],
@@ -279,48 +275,7 @@ export function WatchlistPage() {
         </Button>
       </div>
 
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-[220px_1fr]">
-        <aside className="space-y-2 lg:sticky lg:top-6 lg:self-start">
-          <p className="px-1 text-sm font-medium text-foreground">导入记录</p>
-          {importsQ.isLoading && <p className="px-1 text-xs text-muted-foreground">加载中…</p>}
-          {!importsQ.isLoading && imports.length === 0 && (
-            <p className="px-1 text-xs text-muted-foreground">
-              还没有导入。支持 kf_order_*.csv 下单文件，可一次选多个
-            </p>
-          )}
-          <div ref={listRef} className="max-h-[60vh] space-y-1.5 overflow-y-auto scrollbar-thin">
-            {imports.map((imp) => (
-              <div
-                key={imp.id}
-                data-import-id={imp.id}
-                className={cn(
-                  "group flex items-center gap-2 rounded-lg border px-3 py-2 transition-colors",
-                  activeId === imp.id
-                    ? "border-primary/40 bg-accent"
-                    : "border-border hover:bg-muted/50",
-                )}
-              >
-                <button
-                  onClick={() => setSelected(imp.id)}
-                  className="min-w-0 flex-1 text-left"
-                  title={imp.filename}
-                >
-                  <p className="font-mono text-sm text-foreground">{imp.tradeDate}</p>
-                  <p className="text-[11px] text-muted-foreground">买入 {imp.count} 只</p>
-                </button>
-                <button
-                  onClick={() => deleteM.mutate(imp.id)}
-                  disabled={deleteM.isPending}
-                  aria-label={`删除 ${imp.tradeDate} 的导入`}
-                  className="flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100"
-                >
-                  <Trash className="size-3.5" />
-                </button>
-              </div>
-            ))}
-          </div>
-        </aside>
-
+      <div className="grid grid-cols-1 gap-5">
         <div className="min-w-0 space-y-3">
           <div className="flex flex-wrap items-end gap-4 rounded-lg border border-border p-3">
             <div className="space-y-1.5">
@@ -351,6 +306,28 @@ export function WatchlistPage() {
                 >
                   <CaretRight className="size-3.5" />
                 </DayStep>
+                {activeId != null && (
+                  <button
+                    onClick={() => {
+                      if (!confirmDel) return setConfirmDel(true)
+                      deleteM.mutate(activeId)
+                      setConfirmDel(false)
+                    }}
+                    onBlur={() => setConfirmDel(false)}
+                    disabled={deleteM.isPending}
+                    aria-label={`删除 ${activeDate} 的导入`}
+                    title={`删除 ${activeDate} 的导入`}
+                    className={cn(
+                      "ml-1 flex h-8 items-center gap-1 rounded-md border px-2 text-xs transition-colors disabled:pointer-events-none disabled:opacity-40",
+                      confirmDel
+                        ? "border-destructive/40 text-destructive"
+                        : "border-border text-muted-foreground hover:text-destructive",
+                    )}
+                  >
+                    <Trash className="size-3.5" />
+                    {confirmDel && "确认删除"}
+                  </button>
+                )}
               </div>
             </div>
             <div className="space-y-1.5">
@@ -452,7 +429,11 @@ export function WatchlistPage() {
           {rows.length === 0 && !loading && (
             <div className="rounded-lg border border-dashed border-border py-14 text-center">
               <p className="text-sm text-muted-foreground">
-                {activeId == null ? "导入一个下单文件开始跟踪" : "没有符合条件的股票，试着放宽筛选"}
+                {importsQ.isLoading
+                  ? "加载中…"
+                  : activeId == null
+                    ? "还没有导入。点右上角导入 kf_order_*.csv 下单文件，可一次选多个"
+                    : "没有符合条件的股票，试着放宽筛选"}
               </p>
             </div>
           )}
