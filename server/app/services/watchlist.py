@@ -87,6 +87,7 @@ def open_changes(db: Session, codes: list[str], trade_date: str) -> dict[str, fl
     """交易日开盘价相对前一根日 K 收盘的涨跌幅（%）。
 
     当日 bar 由采集器用实时行情逐分钟覆盖，所以盘中也能取到当天开盘；
+    数据源不带交易所时间戳（akshare）时采集器不写当日 bar，退回快照的今开 / 前收。
     交易日还没开盘（或停牌无 bar）的股票不出现在结果里。
     """
     if not codes:
@@ -103,8 +104,8 @@ def open_changes(db: Session, codes: list[str], trade_date: str) -> dict[str, fl
         bars.setdefault(code, []).append((ts, o, c))
     # 交易日就是快照所在日时，前收用交易所给的 prev_close：本地日 K 缺几天
     # （服务停机）时上一根 bar 不是真正的前一交易日
-    live_prev = {
-        q.code: q.prev_close
+    live = {
+        q.code: q
         for q in db.execute(select(Quote).where(Quote.code.in_(codes))).scalars()
         if q.prev_close and (q.ts + timedelta(hours=8)).date() == day.date()
     }
@@ -112,9 +113,12 @@ def open_changes(db: Session, codes: list[str], trade_date: str) -> dict[str, fl
     for code, rows in bars.items():
         if rows[0][0].date() != day.date() or not rows[0][1]:
             continue
-        prev = live_prev.get(code) or (rows[1][2] if len(rows) > 1 else None)
+        prev = (live[code].prev_close if code in live else None) or (rows[1][2] if len(rows) > 1 else None)
         if prev:
             out[code] = change_pct(rows[0][1], prev)
+    for code, q in live.items():
+        if code not in out and q.open:
+            out[code] = change_pct(q.open, q.prev_close)
     return out
 
 

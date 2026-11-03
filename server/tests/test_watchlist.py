@@ -86,6 +86,25 @@ def test_open_change_prefers_exchange_prev_close_when_local_bars_have_gaps(db):
     assert open_changes(db, ["000002"], "2026-10-27") == {}
 
 
+def test_open_change_falls_back_to_quote_when_today_bar_missing(db):
+    from datetime import datetime
+
+    from app.models.market import Quote
+
+    # akshare 源不带交易所时间戳，采集器不写当日 bar：库里只到 10-29
+    add_stock(db, "000002", trading_days("2026-10-28", 2), closes=[10, 10])
+    q = db.get(Quote, "000002")
+    q.ts, q.open, q.prev_close = datetime(2026, 10, 30, 1, 30), 10.3, 10.0
+    db.commit()
+    assert open_changes(db, ["000002"], "2026-10-30") == {"000002": 3.0}
+    # 快照不是交易日当天（盘前 / 看历史）→ 不拿来凑
+    assert open_changes(db, ["000002"], "2026-10-31") == {}
+    # 快照今开为 0（集合竞价前 / 停牌）→ 缺值
+    q.open = 0
+    db.commit()
+    assert open_changes(db, ["000002"], "2026-10-30") == {}
+
+
 def test_prev_trading_day_skips_weekends_and_holidays(db):
     from datetime import datetime
 
