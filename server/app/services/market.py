@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import func, select
@@ -10,11 +11,34 @@ from sqlalchemy.orm import Session
 from app.models.market import Fundamental, IndexQuote, Kline, Quote, StockInfo
 
 
+# 交易日历参照股（与 paper._CAL_REF / watchlist / backtest 兜底一致）
+_CAL_REF = "600519"
+
+
+def recent_cutoff(db: Session, bars: int) -> datetime | None:
+    """"每只股票最近 `bars` 根日 K"窗口查询的日期下界，用来剪枝扫描范围。
+
+    row_number 窗口要把每只股票的全部历史（1997 年起、上千根）排序后才截前 N 根，
+    全市场一次要 3~5s；先按参照股日历把扫描限定在最近 1.5N+20 个交易日，走 ts
+    索引的范围扫描，窗口只排剩下的行。余量留给停牌股：区间内停牌超过余量的股票
+    会少拿几根（那段数据本身已经陈旧）。参照股历史不够长时返回 None，不剪枝。
+    """
+    return db.execute(
+        select(Kline.ts)
+        .where(Kline.code == _CAL_REF, Kline.period == "1d")
+        .order_by(Kline.ts.desc())
+        .offset(bars + bars // 2 + 19)
+        .limit(1)
+    ).scalar()
+
+
 def _sparks(db: Session, codes: list[str] | None = None, points: int = 20) -> dict[str, list[float]]:
     """Last `points` closes per code in ONE window-function query — a per-code
     query here turns the full /quotes response into 5000+ round trips."""
     rn = func.row_number().over(partition_by=Kline.code, order_by=Kline.ts.desc()).label("rn")
     sub = select(Kline.code, Kline.close, Kline.ts, rn).where(Kline.period == "1d")
+    if (cutoff := recent_cutoff(db, points)) is not None:
+        sub = sub.where(Kline.ts >= cutoff)
     if codes:
         sub = sub.where(Kline.code.in_(codes))
     sub = sub.subquery()

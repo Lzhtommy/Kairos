@@ -24,6 +24,7 @@ from app.models.market import (
     StockInfo,
 )
 from app.providers.factory import get_provider
+from app.services.market import recent_cutoff
 
 logger = logging.getLogger("kairos.collector")
 
@@ -70,11 +71,12 @@ def _apply_adjustments(db, quotes, day_start: datetime) -> int:
         return 0
     # 每股最新一根 ts < today 的收盘（库里口径的"昨收"）
     rn = func.row_number().over(partition_by=Kline.code, order_by=Kline.ts.desc()).label("rn")
-    sub = (
-        select(Kline.code, Kline.close, rn)
-        .where(Kline.period == "1d", Kline.ts < day_start, Kline.code.in_(sorted(todays)))
-        .subquery()
+    sub = select(Kline.code, Kline.close, rn).where(
+        Kline.period == "1d", Kline.ts < day_start, Kline.code.in_(sorted(todays))
     )
+    if (cutoff := recent_cutoff(db, 1)) is not None:
+        sub = sub.where(Kline.ts >= cutoff)
+    sub = sub.subquery()
     prev_stored = {
         code: close for code, close in db.execute(
             select(sub.c.code, sub.c.close).where(sub.c.rn == 1)

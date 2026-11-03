@@ -26,7 +26,7 @@ from app.core.config import settings
 from app.models.market import FactorSnapshot, Kline, StockInfo
 from app.services import technical
 from app.services.dsl import CROSS_OPS, apply_universe, execute, match_filter, validate_dsl
-from app.services.market import factor_rows
+from app.services.market import factor_rows, recent_cutoff
 
 TRADING_DAYS = 252
 _MAX_BARS = 1300  # ~5 年：日 K 深度回补（scripts/backfill_kline.py）后的窗口上限
@@ -78,8 +78,10 @@ def _bars_by_code(
             Kline.volume, rn,
         )
         .where(Kline.period == "1d", Kline.code.in_(codes))
-        .subquery()
     )
+    if (cutoff := recent_cutoff(db, bars)) is not None:
+        sub = sub.where(Kline.ts >= cutoff)
+    sub = sub.subquery()
     stmt = (
         select(
             sub.c.code, sub.c.ts, sub.c.open, sub.c.close, sub.c.high, sub.c.low, sub.c.volume

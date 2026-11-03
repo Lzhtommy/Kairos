@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from app.models.market import Kline
 from app.services import expr as expr_mod
+from app.services.market import recent_cutoff
 
 
 @dataclass
@@ -391,8 +392,10 @@ def series_by_code(db: Session, codes: list[str], bars: int) -> dict[str, Bars]:
             Kline.ts, rn,
         )
         .where(Kline.period == "1d", Kline.code.in_(codes))
-        .subquery()
     )
+    if (cutoff := recent_cutoff(db, bars)) is not None:
+        sub = sub.where(Kline.ts >= cutoff)
+    sub = sub.subquery()
     stmt = (
         select(sub.c.code, sub.c.close, sub.c.volume, sub.c.open, sub.c.high, sub.c.low)
         .where(sub.c.rn <= bars)
