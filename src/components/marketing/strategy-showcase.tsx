@@ -45,7 +45,7 @@ export function StrategyShowcase() {
             {[
               "估值、财务、量价与均线、MACD、RSI 等技术形态自由组合",
               "支持全市场或行业内排名，以及多因子综合打分",
-              "保存后一键回测，也能交给模拟盘持续跟踪",
+              "保存后一键回测，盘后自动运行并推送命中变化",
             ].map((item) => (
               <li key={item} className="flex gap-2.5">
                 <Check className="mt-0.5 size-4 shrink-0 text-primary" />

@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     # Collector: only run inside A-share trading sessions
     collect_interval_seconds: int = 60
     enable_collector: bool = True
+    # 模拟盘盘后结算，暂停中（前端入口已隐藏）。恢复时设 ENABLE_PAPER=true，
+    # settle_all 会按交易日历自动补结算暂停期间的日子
+    enable_paper: bool = False
 
     # 行业轮动模块的板块数据源："auto" | "sw" | "eastmoney" | "off"
     # （auto 先试申万研究口径，再回落东财行业板块；首次落库后按库内口径锁定）

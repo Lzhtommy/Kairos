@@ -21,7 +21,7 @@ export function Hero() {
             剩下的交给 Kairos
           </h1>
           <p className="mt-5 max-w-md text-base leading-relaxed text-muted-foreground">
-            从选股、个股体检到回测和模拟盘，用一句话把想法变成能验证的策略。
+            从选股、个股体检到回测和盘后推送，用一句话把想法变成能验证的策略。
           </p>
           <div className="mt-8 flex flex-wrap items-center gap-3">
             <PrimaryCta />

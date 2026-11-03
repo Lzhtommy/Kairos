@@ -13,6 +13,7 @@ from statistics import mean
 
 from sqlalchemy import func, select
 
+from app.core.config import settings
 from app.core.db import SessionLocal
 from app.models.market import Kline, Quote
 from app.models.strategy import Strategy, StrategyRun
@@ -101,9 +102,11 @@ def run_all_strategies(force: bool = False) -> int:
         if new_runs:
             _notify_users(db, new_runs, run_date)
         filled = _backfill_forward(db, run_date)
-        from app.services.paper import settle_all
+        settled = 0
+        if settings.enable_paper:
+            from app.services.paper import settle_all
 
-        settled = settle_all(db)  # 模拟盘逐日结算（含停机补结算），依赖当日 run 的信号
+            settled = settle_all(db)  # 模拟盘逐日结算（含停机补结算），依赖当日 run 的信号
         logger.info(
             "strategy runs: %d new for %s, forward filled %d, paper settled %d",
             len(new_runs), run_date.date(), filled, settled,

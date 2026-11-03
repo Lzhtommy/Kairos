@@ -1,5 +1,5 @@
 import { motion, useReducedMotion } from "motion/react"
-import { ChatText, Code, ChartLineUp, Robot } from "@phosphor-icons/react"
+import { BellRinging, ChatText, Code, ChartLineUp } from "@phosphor-icons/react"
 
 const STEPS = [
   {
@@ -18,9 +18,9 @@ const STEPS = [
     body: "涨跌停买不进、换手按实际计费、只用当时可得的数据，回测完 AI 给出诊断和改进建议。",
   },
   {
-    icon: Robot,
-    title: "模拟盘跟单检验",
-    body: "盘后信号次日开盘买入，和回测同一套成交规则，看策略在样本外的真实表现。",
+    icon: BellRinging,
+    title: "盘后自动跟踪",
+    body: "每个交易日收盘后自动跑一遍策略，命中有新进或调出时推送到企业微信、飞书或邮箱。",
   },
 ]
 
