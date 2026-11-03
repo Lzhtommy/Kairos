@@ -45,3 +45,13 @@ def test_backfill_empty_history_keeps_existing(db):
     assert wrote == 0
     n = db.execute(select(Kline).where(Kline.code == "600000")).scalars().all()
     assert len(n) == 3  # 拉不到数据不动旧数据
+
+
+def test_backfill_short_history_keeps_existing(db):
+    # 腾讯 fqkline 对北交所只回当天一根 → 不能拿它整段覆盖 40 根历史
+    days = trading_days("2026-01-05", 40)
+    add_stock(db, "920003", days, [10.0] * 40)
+    one = [Candle(ts=days[-1], open=10.0, high=10.5, low=9.9, close=10.2, volume=100)]
+    assert backfill_code(db, FakeProvider(one), "920003", bars=1250) == 0
+    rows = db.execute(select(Kline).where(Kline.code == "920003")).scalars().all()
+    assert len(rows) == 40

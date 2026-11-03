@@ -37,6 +37,14 @@ def backfill_code(db, provider, code: str, bars: int) -> int:
     candles = provider.get_kline_history(code, bars)
     if not candles:
         return 0
+    # 新数据明显比库里短就不覆盖：腾讯 fqkline 对北交所只回当天一根，
+    # 整段重写会把历史清空（11-03 一次清掉 242 只北交所）
+    have = db.execute(
+        select(func.count()).select_from(Kline).where(Kline.code == code, Kline.period == "1d")
+    ).scalar() or 0
+    if len(candles) < min(have, bars) * 0.9:
+        logger.warning("%s 只拿到 %d 根（库里 %d 根），跳过不覆盖", code, len(candles), have)
+        return 0
     db.execute(delete(Kline).where(Kline.code == code, Kline.period == "1d"))
     db.add_all(
         Kline(
