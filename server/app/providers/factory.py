@@ -70,7 +70,9 @@ def get_provider() -> DataProvider:
     elif choice == "eastmoney":
         _provider = _try_eastmoney() or SeedProvider()
     else:  # auto
-        _provider = _try_akshare() or _try_tencent() or _try_eastmoney() or SeedProvider()
+        # 腾讯优先：带交易所时间戳（盘中才会写当日日 K），全市场一轮也快得多；
+        # akshare 走东财，能否连通看机房 IP 当天是否被风控，只作后备
+        _provider = _try_tencent() or _try_akshare() or _try_eastmoney() or SeedProvider()
 
     logger.info("Data provider resolved to: %s", _provider.name)
     return _provider

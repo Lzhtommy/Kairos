@@ -129,7 +129,7 @@ python -m scripts.set_admin yourname         # （注册后）按用户名设为
 |---|---|---|
 | `DATABASE_URL` | `sqlite:///./data/kairos.db` | 改为 `mysql+pymysql://...` 即迁移 MySQL |
 | `JWT_SECRET` | `change-me-in-production` | 生产环境必须修改 |
-| `PROVIDER` | `auto` | `auto` / `seed` / `akshare` / `tencent`；auto 依次探测并自动回退 |
+| `PROVIDER` | `auto` | `auto` / `seed` / `akshare` / `tencent` / `eastmoney`；auto 按 腾讯 → akshare → 东财延时 依次探测并自动回退 |
 | `AI_PROVIDER` | `auto` | `auto` / `rule` / `deepseek`；有 Key 用 DeepSeek，否则规则解析器 |
 | `DEEPSEEK_API_KEY` | 空 | 配置后启用 AI 策略生成与叙事因子 |
 | `ENABLE_COLLECTOR` | `true` | 是否启动行情采集 |
