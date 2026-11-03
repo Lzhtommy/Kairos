@@ -10,3 +10,4 @@ bcrypt==4.2.1
 python-multipart==0.0.20
 apscheduler==3.11.0
 httpx==0.28.1
+numpy==2.2.6  # expr 技术公式向量化求值

@@ -15,7 +15,10 @@ from __future__ import annotations
 
 import ast
 import math
+from functools import lru_cache
 from typing import Any
+
+import numpy as np
 
 MAX_FORMULA_LEN = 300
 MAX_NODES = 100
@@ -175,8 +178,18 @@ def _need(node: ast.expr) -> int:
 
 
 # ---- 求值 --------------------------------------------------------------------
+#
+# 向量化实现：每个节点算出整条 float64 序列，NaN 表示缺值；布尔序列同样用
+# float64 承载（1.0 真 / 0.0 假 / NaN 缺值），这样缺值传播和数值完全同一套机制。
+# 滚动和 / 均值 / 标准差沿用前缀和差分（np.cumsum 逐项累加，与逐日循环同精度）。
 
-_Series = list  # 元素 float | bool | None，长度 = 日 K 根数
+_Series = np.ndarray  # float64，长度 = 日 K 根数
+
+
+@lru_cache(maxsize=256)
+def _parse_cached(formula: str) -> ast.expr:
+    # 同一公式会对上千只股票逐只求值，解析 + 校验只做一次（AST 只读不改）
+    return parse(formula)
 
 
 def evaluate(formula: str | ast.expr, series: dict[str, list[float] | None]) -> list[bool]:
@@ -184,136 +197,127 @@ def evaluate(formula: str | ast.expr, series: dict[str, list[float] | None]) -> 
 
     series: 变量名 -> 升序序列，缺整列传 None（引用它的公式全 False）。
     """
-    root = parse(formula) if isinstance(formula, str) else formula
+    root = _parse_cached(formula) if isinstance(formula, str) else formula
     n = len(series.get("close") or [])
     if n == 0:
         return []
-    out = _eval(root, series, n)
-    return [v is True for v in out]
+    with np.errstate(all="ignore"):
+        out = _eval(root, series, n)
+    return (out == 1.0).tolist()
+
+
+def _nan(n: int) -> _Series:
+    return np.full(n, np.nan)
+
+
+def _bool(cond: np.ndarray, *operands: _Series) -> _Series:
+    """布尔结果转三值序列：任一操作数缺值的位置为 NaN。"""
+    out = cond.astype(float)
+    for o in operands:
+        out[np.isnan(o)] = np.nan
+    return out
 
 
 def _eval(node: ast.expr, s: dict[str, list[float] | None], n: int) -> _Series:
     if isinstance(node, ast.Constant):
-        return [float(node.value)] * n
+        return np.full(n, float(node.value))
     if isinstance(node, ast.Name):
         raw = s.get(node.id)
         if raw is None or len(raw) != n:
-            return [None] * n
+            return _nan(n)
+        arr = np.array(raw, dtype=float)  # None → NaN
         if node.id in PRICE_VARS:  # 价格 ≤0 视为缺值（采集缺口存的 0）
-            return [v if v is not None and v > 0 else None for v in raw]
-        return [float(v) if v is not None else None for v in raw]
+            arr[~(arr > 0)] = np.nan
+        return arr
     if isinstance(node, ast.UnaryOp):
         vals = _eval(node.operand, s, n)
         if isinstance(node.op, ast.USub):
-            return [-v if v is not None else None for v in vals]
+            return -vals
         if isinstance(node.op, ast.UAdd):
             return vals
-        return [(not v) if v is not None else None for v in vals]  # Not
+        return 1.0 - vals  # Not：1↔0，NaN 保持
     if isinstance(node, ast.BinOp):
-        lhs, rhs = _eval(node.left, s, n), _eval(node.right, s, n)
+        a, b = _eval(node.left, s, n), _eval(node.right, s, n)
         op = node.op
-        out: _Series = [None] * n
-        for i in range(n):
-            a, b = lhs[i], rhs[i]
-            if a is None or b is None:
-                continue
-            if isinstance(op, ast.Add):
-                out[i] = a + b
-            elif isinstance(op, ast.Sub):
-                out[i] = a - b
-            elif isinstance(op, ast.Mult):
-                out[i] = a * b
-            elif b != 0:  # Div；除零 → None
-                out[i] = a / b
+        if isinstance(op, ast.Add):
+            return a + b
+        if isinstance(op, ast.Sub):
+            return a - b
+        if isinstance(op, ast.Mult):
+            return a * b
+        out = a / b  # Div；除零 → 缺值
+        out[b == 0] = np.nan
         return out
     if isinstance(node, ast.Compare):
         operands = [_eval(sub, s, n) for sub in (node.left, *node.comparators)]
-        out = [None] * n
-        for i in range(n):
-            vals = [o[i] for o in operands]
-            if any(v is None for v in vals):
-                continue
-            out[i] = all(
-                _cmp(op, vals[j], vals[j + 1]) for j, op in enumerate(node.ops)
-            )
-        return out
+        cond = np.ones(n, dtype=bool)
+        for j, op in enumerate(node.ops):
+            cond &= _CMP[type(op)](operands[j], operands[j + 1])
+        return _bool(cond, *operands)
     if isinstance(node, ast.BoolOp):
         parts = [_eval(sub, s, n) for sub in node.values]
-        is_and = isinstance(node.op, ast.And)
-        out = [None] * n
-        for i in range(n):
-            vals = [p[i] for p in parts]
-            if any(v is None for v in vals):
-                continue
-            out[i] = all(vals) if is_and else any(vals)
-        return out
+        truth = [p == 1.0 for p in parts]
+        cond = np.logical_and.reduce(truth) if isinstance(node.op, ast.And) else np.logical_or.reduce(truth)
+        return _bool(cond, *parts)
     # parse 已保证剩下只有白名单函数调用
     return _call(node, s, n)  # type: ignore[arg-type]
 
 
-def _cmp(op: ast.cmpop, a: float, b: float) -> bool:
-    if isinstance(op, ast.Lt):
-        return a < b
-    if isinstance(op, ast.LtE):
-        return a <= b
-    if isinstance(op, ast.Gt):
-        return a > b
-    if isinstance(op, ast.GtE):
-        return a >= b
-    if isinstance(op, ast.Eq):
-        return a == b
-    return a != b
+_CMP = {
+    ast.Lt: np.less,
+    ast.LtE: np.less_equal,
+    ast.Gt: np.greater,
+    ast.GtE: np.greater_equal,
+    ast.Eq: np.equal,
+    ast.NotEq: np.not_equal,
+}
 
 
 def _call(node: ast.Call, s: dict[str, list[float] | None], n: int) -> _Series:
     name = node.func.id  # type: ignore[union-attr]
     if name == "abs":
-        x = _eval(node.args[0], s, n)
-        return [abs(v) if v is not None else None for v in x]
+        return np.abs(_eval(node.args[0], s, n))
     if name in ("max2", "min2"):
-        # 逐日取两序列较大/较小值（区别于滚动窗口的 max/min）
+        # 逐日取两序列较大/较小值（区别于滚动窗口的 max/min）；NaN 自动传播
         a, b = _eval(node.args[0], s, n), _eval(node.args[1], s, n)
-        pick = max if name == "max2" else min
-        return [
-            pick(a[i], b[i]) if a[i] is not None and b[i] is not None else None
-            for i in range(n)
-        ]
+        return np.maximum(a, b) if name == "max2" else np.minimum(a, b)
     if name == "pct":
         a, b = _eval(node.args[0], s, n), _eval(node.args[1], s, n)
-        return [
-            (a[i] / b[i] - 1) * 100 if a[i] is not None and b[i] not in (None, 0) else None
-            for i in range(n)
-        ]
+        out = (a / b - 1) * 100
+        out[b == 0] = np.nan
+        return out
     if name in ("cross_up", "cross_down"):
         a, b = _eval(node.args[0], s, n), _eval(node.args[1], s, n)
-        up = name == "cross_up"
-        out: _Series = [None] * n
-        for i in range(1, n):
-            if None in (a[i], b[i], a[i - 1], b[i - 1]):
-                continue
-            if up:
-                out[i] = a[i - 1] <= b[i - 1] and a[i] > b[i]
-            else:
-                out[i] = a[i - 1] >= b[i - 1] and a[i] < b[i]
+        out = _nan(n)
+        if n < 2:
+            return out
+        a0, b0, a1, b1 = a[:-1], b[:-1], a[1:], b[1:]
+        if name == "cross_up":
+            cond = (a0 <= b0) & (a1 > b1)
+        else:
+            cond = (a0 >= b0) & (a1 < b1)
+        out[1:] = _bool(cond, a0, b0, a1, b1)
         return out
 
     x = _eval(node.args[0], s, n)
     w: int = node.args[1].value  # type: ignore[attr-defined]  # parse 已保证整数字面量
     if name == "shift":
-        return [None] * min(w, n) + x[: n - w]
+        out = _nan(n)
+        if w < n:
+            out[w:] = x[: n - w]
+        return out
     if name == "ema":
         return _ema(x, w, n)
     return _rolling(name, x, w, n)
 
 
 def _ema(x: _Series, w: int, n: int) -> _Series:
-    """首个非缺值处播种；中途遇缺值断开、之后重新播种。"""
-    out: _Series = [None] * n
+    """首个非缺值处播种；中途遇缺值断开、之后重新播种。递推无法向量化，逐日算。"""
+    out = _nan(n)
     alpha = 2 / (w + 1)
     ema: float | None = None
-    for i in range(n):
-        v = x[i]
-        if v is None:
+    for i, v in enumerate(x.tolist()):
+        if math.isnan(v):
             ema = None
             continue
         ema = v if ema is None else alpha * v + (1 - alpha) * ema
@@ -322,59 +326,38 @@ def _ema(x: _Series, w: int, n: int) -> _Series:
 
 
 def _rolling(name: str, x: _Series, w: int, n: int) -> _Series:
-    """O(n) 滚动算子。窗口含当日；窗口不足或窗口内有缺值 → None。"""
-    # 缺值前缀计数：窗口 [i-w+1, i] 有效 iff i >= w-1 且窗口内无 None
-    none_pref = [0] * (n + 1)
-    for i in range(n):
-        none_pref[i + 1] = none_pref[i] + (x[i] is None)
+    """滚动算子。窗口含当日；窗口不足或窗口内有缺值 → NaN。"""
+    out = _nan(n)
+    if w > n:
+        return out
+    missing = np.isnan(x)
+    # 缺值前缀计数：窗口 [i-w+1, i] 有效 iff i >= w-1 且窗口内无缺值
+    miss_pref = np.concatenate(([0], np.cumsum(missing)))
+    valid = np.zeros(n, dtype=bool)
+    valid[w - 1 :] = miss_pref[w:] == miss_pref[: n - w + 1]
 
-    def valid(i: int) -> bool:
-        return i >= w - 1 and none_pref[i + 1] == none_pref[i - w + 1]
-
-    out: _Series = [None] * n
     if name in ("sum", "ma", "std", "count"):
-        # count 的输入是布尔序列，True 记 1；sum/ma/std 是数值
-        pref = [0.0] * (n + 1)
-        pref_sq = [0.0] * (n + 1) if name == "std" else None
-        for i in range(n):
-            v = 0.0 if x[i] is None else float(x[i])
-            pref[i + 1] = pref[i] + v
-            if pref_sq is not None:
-                pref_sq[i + 1] = pref_sq[i] + v * v
-        for i in range(n):
-            if not valid(i):
-                continue
-            total = pref[i + 1] - pref[i - w + 1]
-            if name in ("sum", "count"):
-                out[i] = total
-            elif name == "ma":
-                out[i] = total / w
-            else:  # std（总体标准差）
-                sq = pref_sq[i + 1] - pref_sq[i - w + 1]  # type: ignore[index]
-                out[i] = math.sqrt(std_var) if (std_var := max(sq / w - (total / w) ** 2, 0.0)) >= 0 else None
-        return out
-    if name in ("max", "min"):
-        # 单调队列；缺值窗口由 valid() 屏蔽，队列里用哨兵替代 None
-        sentinel = float("-inf") if name == "max" else float("inf")
-        better = (lambda a, b: a >= b) if name == "max" else (lambda a, b: a <= b)
-        dq: list[int] = []  # 存下标，值单调
-        vals = [sentinel if v is None else float(v) for v in x]
-        for i in range(n):
-            while dq and better(vals[i], vals[dq[-1]]):
-                dq.pop()
-            dq.append(i)
-            if dq[0] <= i - w:
-                dq.pop(0)
-            if valid(i):
-                out[i] = vals[dq[0]]
-        return out
-    # all / any：布尔滚动，基于 True 计数
-    true_pref = [0] * (n + 1)
-    for i in range(n):
-        true_pref[i + 1] = true_pref[i] + (x[i] is True)
-    for i in range(n):
-        if not valid(i):
-            continue
-        cnt = true_pref[i + 1] - true_pref[i - w + 1]
-        out[i] = cnt == w if name == "all" else cnt > 0
+        # count 的输入是布尔序列，真记 1；sum/ma/std 是数值
+        v = np.where(missing, 0.0, x)
+        pref = np.concatenate(([0.0], np.cumsum(v)))
+        total = pref[w:] - pref[: n - w + 1]
+        if name in ("sum", "count"):
+            res = total
+        elif name == "ma":
+            res = total / w
+        else:  # std（总体标准差）
+            pref_sq = np.concatenate(([0.0], np.cumsum(v * v)))
+            sq = pref_sq[w:] - pref_sq[: n - w + 1]
+            res = np.sqrt(np.maximum(sq / w - (total / w) ** 2, 0.0))
+    elif name in ("max", "min"):
+        win = np.lib.stride_tricks.sliding_window_view(x, w)
+        # 缺值窗口最后由 valid 屏蔽，这里先用哨兵顶替 NaN 避免告警
+        fill = -np.inf if name == "max" else np.inf
+        win = np.where(np.isnan(win), fill, win)
+        res = win.max(axis=1) if name == "max" else win.min(axis=1)
+    else:  # all / any：布尔滚动，基于真值计数
+        true_pref = np.concatenate(([0], np.cumsum(x == 1.0)))
+        cnt = true_pref[w:] - true_pref[: n - w + 1]
+        res = (cnt == w if name == "all" else cnt > 0).astype(float)
+    out[w - 1 :] = np.where(valid[w - 1 :], res, np.nan)
     return out
