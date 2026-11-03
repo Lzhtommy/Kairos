@@ -24,6 +24,8 @@ _INDEX_MAP = {
 
 _QUOTE_BATCH = 80
 _UNIVERSE_PAGE = 100
+# 沪深京 A 股 5000+ 只；少于此数视为新浪分页中途被限流截断（短页会被当成末页）
+_UNIVERSE_MIN = 4000
 
 _KLINE_PERIOD = {"1d": "day", "1w": "week", "1M": "month"}
 _KLINE_PAGE = 640  # ifzq 单次日 K 上限（约 800，留余量）
@@ -121,6 +123,10 @@ class TencentProvider:
             if len(rows) < _UNIVERSE_PAGE:
                 break
             page += 1
+        if len(out) < _UNIVERSE_MIN:
+            # 截断的名单不缓存（否则采集器整个进程生命周期只采这几只），
+            # 有上次的完整名单就继续用，没有就先凑合本次、下次调用重拉
+            return self._universe_cache or out
         self._universe_cache = out
         return out
 
