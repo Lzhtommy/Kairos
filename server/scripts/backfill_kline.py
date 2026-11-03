@@ -3,6 +3,7 @@
 用法（在 server/ 下）：
     .venv/bin/python -m scripts.backfill_kline --bars 1250 --only-missing
     .venv/bin/python -m scripts.backfill_kline --bars 1250   # 全量重写（qfq 重刷）
+    .venv/bin/python -m scripts.backfill_kline --adjusted    # 只重刷记过除权事件的股票
 
 - 整段重写（删旧插新）：顺带修平"历史 qfq + 逐日实时 raw bar"混存造成的复权台阶
 - --only-missing 跳过根数已达标的股票（断点续跑；上市不满 N 年的新股会被重复
@@ -20,7 +21,7 @@ import time
 from sqlalchemy import delete, func, select
 
 from app.core.db import SessionLocal
-from app.models.market import Kline, StockInfo
+from app.models.market import AdjustmentEvent, Kline, StockInfo
 from app.providers.factory import get_provider
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
@@ -53,6 +54,8 @@ def main() -> int:
     ap.add_argument("--bars", type=int, default=1250, help="目标日 K 深度（约 5 年 = 1250）")
     ap.add_argument("--only-missing", action="store_true",
                     help="跳过根数已达标的股票（断点续跑）")
+    ap.add_argument("--adjusted", action="store_true",
+                    help="只重刷 AdjustmentEvent 里出现过的股票（修误判除权造成的历史缩放）")
     args = ap.parse_args()
 
     provider = get_provider()
@@ -62,9 +65,12 @@ def main() -> int:
 
     db = SessionLocal()
     try:
-        codes = [
-            r[0] for r in db.execute(select(StockInfo.code).order_by(StockInfo.code))
-        ]
+        if args.adjusted:
+            codes = list(db.execute(
+                select(AdjustmentEvent.code).distinct().order_by(AdjustmentEvent.code)
+            ).scalars())
+        else:
+            codes = list(db.execute(select(StockInfo.code).order_by(StockInfo.code)).scalars())
         counts = {
             code: n
             for code, n in db.execute(

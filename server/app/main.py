@@ -66,6 +66,20 @@ async def lifespan(_app: FastAPI):
             max_instances=1,
             coalesce=True,
         )
+        # 收盘后 15:10 CST（07:10 UTC）强制补采一轮：盘中最后一采可能早于收盘集合
+        # 竞价成交，当日 bar 存的不是正式收盘价，次日开盘会被除权检测误判、整段
+        # 历史被错误缩放。赶在 15:15 因子快照之前。
+        _scheduler.add_job(
+            collect_once,
+            "cron",
+            day_of_week="mon-fri",
+            hour=7,
+            minute=10,
+            kwargs={"force": True},
+            id="close_collect",
+            max_instances=1,
+            coalesce=True,
+        )
         # Slow-moving reference data (industry / roe / dividend). next_run_time=now
         # runs it right after startup in a worker thread so boot isn't blocked.
         _scheduler.add_job(
