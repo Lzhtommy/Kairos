@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react"
+import { Fragment, useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { CaretDown, CaretUp } from "@phosphor-icons/react"
+import { CaretDown, CaretRight, CaretUp } from "@phosphor-icons/react"
 import { Badge } from "@/components/ui/badge"
 import {
   Table,
@@ -11,9 +11,11 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { RRGChart } from "@/components/sector/rrg-chart"
+import { ValuationChart } from "@/components/sector/valuation-chart"
 import {
   fetchSectorNarrative,
   fetchSectorOverview,
+  fetchSectorValuation,
   type NarrativeItem,
   type SectorRow,
   type SectorValuationInfo,
@@ -86,8 +88,20 @@ function NarrativeCell({ item }: { item: NarrativeItem | null }) {
 
 type SortKey = "tilt" | "crowd" | "chg" | "val"
 
+function ValuationDetail({ code }: { code: string }) {
+  const q = useQuery({
+    queryKey: ["sector-valuation", code],
+    queryFn: () => fetchSectorValuation(code),
+    staleTime: 10 * 60 * 1000,
+  })
+  if (q.isLoading) return <p className="py-10 text-center text-sm text-muted-foreground">加载估值历史…</p>
+  if (!q.data) return <p className="py-10 text-center text-sm text-muted-foreground">该行业暂无估值历史。</p>
+  return <ValuationChart history={q.data} />
+}
+
 export function SectorPage() {
   const [sort, setSort] = useState<SortKey>("tilt")
+  const [expanded, setExpanded] = useState<string | null>(null)
   const overviewQ = useQuery({ queryKey: ["sector-overview"], queryFn: fetchSectorOverview })
   const narrativeQ = useQuery({
     queryKey: ["sector-narrative"],
@@ -188,7 +202,7 @@ export function SectorPage() {
               拥挤度是过热预警而非选股信号；叙事分只前向记录、不参与建议，
               读法与拥挤度配对——叙事升温且不拥挤是机会，叙事沸腾且高拥挤是出口。
               估值分位是行业对自身近 5 年的历史位置（周期、金融、地产看市净率，其余看市盈率），
-              只描述贵贱位置、不参与建议；长期处于低位可能是盈利中枢下移而非便宜。
+              只描述贵贱位置、不参与建议；长期处于低位可能是盈利中枢下移而非便宜。点击行业可展开估值趋势图。
             </p>
           </div>
         </div>
@@ -218,61 +232,86 @@ export function SectorPage() {
           <TableBody>
             {sectors.map((s) => {
               const tone = crowdTone(s.crowd?.crowd)
+              const open = expanded === s.code
               return (
-                <TableRow key={s.code}>
-                  <TableCell className="font-medium">{s.name}</TableCell>
-                  <TableCell className="font-mono tabular-nums">
-                    {s.chg_pct == null ? (
-                      "—"
-                    ) : (
-                      <span className={cn(s.chg_pct >= 0 ? "text-up" : "text-down")}>
-                        {s.chg_pct >= 0 ? "+" : ""}
-                        {s.chg_pct.toFixed(2)}%
+                <Fragment key={s.code}>
+                  <TableRow
+                    className={cn(s.valuation && "cursor-pointer", open && "bg-muted/50")}
+                    onClick={() => s.valuation && setExpanded(open ? null : s.code)}
+                  >
+                    <TableCell className="font-medium">
+                      <span className="flex items-center gap-1">
+                        {s.valuation ? (
+                          <CaretRight
+                            weight="bold"
+                            className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")}
+                          />
+                        ) : (
+                          <span className="size-3 shrink-0" />
+                        )}
+                        {s.name}
                       </span>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    <span
-                      className="flex items-center gap-2"
-                      title={
-                        s.crowd
-                          ? `成交额占比 ${s.crowd.share ?? "—"} · 换手热度 ${s.crowd.heat ?? "—"} · 乖离率 ${s.crowd.bias ?? "—"}`
-                          : undefined
-                      }
-                    >
-                      <span className={cn("size-2 rounded-full", tone.dot)} />
-                      <span className="font-mono text-xs tabular-nums">
-                        {s.crowd?.crowd != null ? s.crowd.crowd.toFixed(2) : "—"}
-                      </span>
-                      <span className="text-xs text-muted-foreground">{tone.label}</span>
-                    </span>
-                  </TableCell>
-                  <TableCell>
-                    {s.tilt ? (
-                      <span className="flex items-center gap-2">
-                        <TiltBadge suggestion={s.tilt.suggestion} />
-                        <span className="font-mono text-xs tabular-nums text-muted-foreground">
-                          #{s.tilt.rank}
+                    </TableCell>
+                    <TableCell className="font-mono tabular-nums">
+                      {s.chg_pct == null ? (
+                        "—"
+                      ) : (
+                        <span className={cn(s.chg_pct >= 0 ? "text-up" : "text-down")}>
+                          {s.chg_pct >= 0 ? "+" : ""}
+                          {s.chg_pct.toFixed(2)}%
                         </span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      <span
+                        className="flex items-center gap-2"
+                        title={
+                          s.crowd
+                            ? `成交额占比 ${s.crowd.share ?? "—"} · 换手热度 ${s.crowd.heat ?? "—"} · 乖离率 ${s.crowd.bias ?? "—"}`
+                            : undefined
+                        }
+                      >
+                        <span className={cn("size-2 rounded-full", tone.dot)} />
+                        <span className="font-mono text-xs tabular-nums">
+                          {s.crowd?.crowd != null ? s.crowd.crowd.toFixed(2) : "—"}
+                        </span>
+                        <span className="text-xs text-muted-foreground">{tone.label}</span>
                       </span>
-                    ) : (
-                      <span className="text-muted-foreground">—</span>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    <ValuationCell v={s.valuation} />
-                  </TableCell>
-                  <TableCell className="hidden font-mono text-xs tabular-nums text-muted-foreground md:table-cell">
-                    {s.tilt
-                      ? [s.tilt.rev1_z, s.tilt.season_z, s.tilt.resmom_z]
-                          .map((z) => (z == null ? "—" : (z >= 0 ? "+" : "") + z.toFixed(1)))
-                          .join(" / ")
-                      : "—"}
-                  </TableCell>
-                  <TableCell className="hidden max-w-72 lg:table-cell">
-                    <NarrativeCell item={s.narrative} />
-                  </TableCell>
-                </TableRow>
+                    </TableCell>
+                    <TableCell>
+                      {s.tilt ? (
+                        <span className="flex items-center gap-2">
+                          <TiltBadge suggestion={s.tilt.suggestion} />
+                          <span className="font-mono text-xs tabular-nums text-muted-foreground">
+                            #{s.tilt.rank}
+                          </span>
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      <ValuationCell v={s.valuation} />
+                    </TableCell>
+                    <TableCell className="hidden font-mono text-xs tabular-nums text-muted-foreground md:table-cell">
+                      {s.tilt
+                        ? [s.tilt.rev1_z, s.tilt.season_z, s.tilt.resmom_z]
+                            .map((z) => (z == null ? "—" : (z >= 0 ? "+" : "") + z.toFixed(1)))
+                            .join(" / ")
+                        : "—"}
+                    </TableCell>
+                    <TableCell className="hidden max-w-72 lg:table-cell">
+                      <NarrativeCell item={s.narrative} />
+                    </TableCell>
+                  </TableRow>
+                  {open && (
+                    <TableRow className="hover:bg-transparent">
+                      <TableCell colSpan={7} className="whitespace-normal p-4">
+                        <ValuationDetail code={s.code} />
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </Fragment>
               )
             })}
           </TableBody>

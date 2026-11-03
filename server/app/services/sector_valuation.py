@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right, insort
+
 from app.services.sector_metrics import _rank_pct
 
 WIN_DAYS = 1250   # 约 5 年
@@ -46,3 +48,36 @@ def label(pct: float | None) -> str | None:
     if pct > HIGH:
         return "高位"
     return "中位"
+
+
+def _quantile(sorted_vals: list[float], q: float) -> float:
+    """线性插值分位（同 numpy 默认口径）。"""
+    pos = q * (len(sorted_vals) - 1)
+    lo = int(pos)
+    hi = min(lo + 1, len(sorted_vals) - 1)
+    return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * (pos - lo)
+
+
+def rolling_bands(values: list[float | None]) -> list[dict[str, float | None]]:
+    """逐点的滚动分位带：窗口与 rolling_pct 一致（过去 WIN_DAYS 个位置的正值），
+    lo / hi 是窗口的 LOW / HIGH 分位对应的估值，pct 是当点分位。
+    区域边界随窗口滚动，与表格里的分位标签同一口径；有效值不足 MIN_DAYS 时全为 None。"""
+    window: list[float] = []  # 当前窗口内的正值，保持有序
+    out: list[dict[str, float | None]] = []
+    for i, v in enumerate(values):
+        if v is not None and v > 0:
+            insort(window, v)
+        if i >= WIN_DAYS:
+            old = values[i - WIN_DAYS]
+            if old is not None and old > 0:
+                del window[bisect_left(window, old)]
+        if len(window) < MIN_DAYS:
+            out.append({"lo": None, "hi": None, "pct": None})
+            continue
+        pct = None
+        if v is not None and v > 0:
+            less = bisect_left(window, v)
+            equal = bisect_right(window, v) - less
+            pct = (less + (equal + 1) / 2) / len(window)
+        out.append({"lo": _quantile(window, LOW), "hi": _quantile(window, HIGH), "pct": pct})
+    return out

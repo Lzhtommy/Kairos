@@ -364,3 +364,37 @@ def test_overview_shape(db):
     assert len(hist) == 1
     assert hist[0]["market"]["summary"] == "平静"
     assert hist[0]["items"][0]["code"] == "801080"
+
+
+def test_rolling_bands_matches_rolling_pct(monkeypatch):
+    import app.services.sector_valuation as sv
+
+    monkeypatch.setattr(sv, "WIN_DAYS", 10)
+    monkeypatch.setattr(sv, "MIN_DAYS", 5)
+    vals = [3.0, None, 1.0, -2.0, 5.0, 4.0, 2.0, 6.0, 8.0, 7.0, 9.0, 1.5, None, 10.0, 0.5]
+    bands = sv.rolling_bands(vals)
+    for i, b in enumerate(bands):
+        assert b["pct"] == sv.rolling_pct(vals, i)  # 与表格分位同一口径
+        window = sorted(v for v in vals[max(0, i - 9): i + 1] if v is not None and v > 0)
+        if len(window) < 5:
+            assert b["lo"] is None and b["hi"] is None
+        else:
+            assert window[0] <= b["lo"] <= b["hi"] <= window[-1]
+    assert bands[3]["lo"] is None           # 有效值不足 MIN_DAYS
+    assert bands[12]["pct"] is None and bands[12]["lo"] is not None  # 缺失点只断线不断带
+
+
+def test_valuation_history_api(db):
+    days = trading_days("2024-01-01", 30)
+    db.add(SectorInfo(code="801780", name="银行", source="sw"))
+    for k, d in enumerate(days):
+        db.add(SectorValuation(code="801780", ts=d, pe=-1.0 if k == 5 else 5.0 + k * 0.1,
+                               pb=0.5 + k * 0.01, dp=5.0))
+    db.commit()
+    client = _api_client(db)
+    body = client.get("/sector/valuation/801780").json()
+    assert body["name"] == "银行" and body["primary"] == "pb"
+    assert len(body["points"]) == 30 and body["window_days"] == 30
+    assert body["points"][5]["pe"] is None            # 整体亏损 → 断线
+    assert body["points"][-1]["pb_pct"] is None       # 远不足 MIN_DAYS，不出分位
+    assert client.get("/sector/valuation/999999").status_code == 404

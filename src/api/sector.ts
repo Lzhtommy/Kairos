@@ -78,3 +78,29 @@ export function fetchSectorOverview(): Promise<SectorOverview> {
 export function fetchSectorNarrative(days = 14): Promise<NarrativeDay[]> {
   return api<NarrativeDay[]>(`/sector/narrative?days=${days}`)
 }
+
+export type ValuationPoint = {
+  d: string
+  pe: number | null
+  pb: number | null
+  dp: number | null
+  pe_lo: number | null
+  pe_hi: number | null
+  pe_pct: number | null
+  pb_lo: number | null
+  pb_hi: number | null
+  pb_pct: number | null
+}
+
+export type ValuationHistory = {
+  code: string
+  name: string
+  primary: "pe" | "pb"
+  window_days: number
+  full_window_days: number
+  points: ValuationPoint[]
+}
+
+export function fetchSectorValuation(code: string): Promise<ValuationHistory> {
+  return api<ValuationHistory>(`/sector/valuation/${code}`)
+}

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -16,7 +16,7 @@ from app.core.db import get_db
 from app.jobs.sector import load_bar_panel
 from app.models.sector import SectorInfo, SectorMetric, SectorNarrative, SectorTilt, SectorValuation
 from app.services.sector_metrics import calc_rrg
-from app.services.sector_valuation import label, primary_metric
+from app.services.sector_valuation import WIN_DAYS, label, primary_metric, rolling_bands
 
 router = APIRouter(prefix="/sector", tags=["sector"])
 
@@ -159,3 +159,36 @@ def narrative_history(days: int = Query(default=14, le=90), db: Session = Depend
         else:
             day["items"].append(item)
     return list(by_date.values())
+
+
+@router.get("/valuation/{code}")
+def valuation_history(code: str, db: Session = Depends(get_db)):
+    """单行业估值全历史 + 滚动分位带（低位 / 中位 / 高位区域边界），供趋势图使用。"""
+    info = db.get(SectorInfo, code)
+    rows = db.execute(
+        select(SectorValuation).where(SectorValuation.code == code).order_by(SectorValuation.ts)
+    ).scalars().all()
+    if info is None or not rows:
+        raise HTTPException(status_code=404, detail="no valuation history")
+    pe_bands = rolling_bands([r.pe for r in rows])
+    pb_bands = rolling_bands([r.pb for r in rows])
+    points = []
+    for r, pe, pb in zip(rows, pe_bands, pb_bands):
+        points.append(
+            {
+                "d": r.ts.date().isoformat(),
+                "pe": _round(r.pe, 2) if r.pe and r.pe > 0 else None,  # 整体亏损记缺失，图上断线
+                "pb": _round(r.pb, 3) if r.pb and r.pb > 0 else None,
+                "dp": _round(r.dp, 2),
+                "pe_lo": _round(pe["lo"], 2), "pe_hi": _round(pe["hi"], 2), "pe_pct": _round(pe["pct"]),
+                "pb_lo": _round(pb["lo"], 3), "pb_hi": _round(pb["hi"], 3), "pb_pct": _round(pb["pct"]),
+            }
+        )
+    return {
+        "code": code,
+        "name": info.name,
+        "primary": primary_metric(code),
+        "window_days": min(len(rows), WIN_DAYS),  # 不足 WIN_DAYS 时分位窗口偏短
+        "full_window_days": WIN_DAYS,
+        "points": points,
+    }
