@@ -8,7 +8,8 @@ from app.core.db import Base
 import app.models  # noqa: F401  (register all models on Base.metadata)
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.database_url)
+# configparser 会把 % 当插值语法，URL 编码过的密码（如 @ → %40）要转义
+config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
