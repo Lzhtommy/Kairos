@@ -4,13 +4,10 @@ import type { ColumnDef } from "@tanstack/react-table"
 import { toast } from "sonner"
 import {
   ArrowCounterClockwise,
-  ArrowDown,
-  ArrowUp,
   ArrowsClockwise,
   CaretLeft,
   CaretRight,
   CircleNotch,
-  Flame,
   Trash,
   UploadSimple,
 } from "@phosphor-icons/react"
@@ -23,7 +20,7 @@ import {
   type WatchlistStock,
 } from "@/api/watchlist"
 import { QuoteTable } from "@/components/market/quote-table"
-import { ChangeBadge } from "@/components/market/price-change"
+import { openHotColumns } from "@/components/market/open-hot-columns"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -34,56 +31,7 @@ const BOARDS: Array<"all" | Board> = ["all", "主板", "创业板", "科创板"]
 
 // 模块常量：QuoteTable 以引用判断列是否变化
 const EXTRA_COLUMNS: ColumnDef<WatchlistStock>[] = [
-  {
-    id: "openPct",
-    header: "开盘涨跌",
-    // 未开盘的排到最后（降序时）
-    accessorFn: (r) => r.openPct ?? -Infinity,
-    cell: ({ row }) =>
-      row.original.openPct == null ? (
-        <span className="text-xs text-muted-foreground" title="交易日未开盘，或缺少当日日 K">
-          —
-        </span>
-      ) : (
-        <ChangeBadge pct={row.original.openPct} />
-      ),
-  },
-  {
-    id: "hotRankPrev",
-    header: "昨日人气",
-    accessorFn: (r) => r.hotRankPrev ?? Infinity,
-    cell: ({ row }) => <HotRank rank={row.original.hotRankPrev} />,
-  },
-  {
-    id: "hotRank",
-    header: "当日人气",
-    accessorFn: (r) => r.hotRank ?? Infinity,
-    cell: ({ row }) => {
-      const { hotRank, hotRankPrev } = row.original
-      // 名次数字变小 = 人气上升
-      const delta = hotRank != null && hotRankPrev != null ? hotRankPrev - hotRank : null
-      return (
-        <span className="inline-flex items-center gap-1.5">
-          <HotRank rank={hotRank} />
-          {delta != null && delta !== 0 && (
-            <span
-              className={cn(
-                "inline-flex items-center font-mono text-[11px] tabular-nums",
-                delta > 0 ? "text-up" : "text-down",
-              )}
-            >
-              {delta > 0 ? (
-                <ArrowUp weight="bold" className="size-2.5" />
-              ) : (
-                <ArrowDown weight="bold" className="size-2.5" />
-              )}
-              {Math.abs(delta)}
-            </span>
-          )}
-        </span>
-      )
-    },
-  },
+  ...openHotColumns<WatchlistStock>(),
   {
     id: "board",
     header: "板块",
@@ -106,21 +54,6 @@ const EXTRA_COLUMNS: ColumnDef<WatchlistStock>[] = [
     ),
   },
 ]
-
-function HotRank({ rank }: { rank: number | null }) {
-  if (rank == null) return <span className="text-xs text-muted-foreground">—</span>
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1 font-mono text-sm tabular-nums",
-        rank <= 100 ? "text-up" : "text-foreground",
-      )}
-    >
-      {rank <= 100 && <Flame weight="fill" className="size-3" />}
-      {rank}
-    </span>
-  )
-}
 
 function DayStep({
   label,

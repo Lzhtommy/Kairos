@@ -1,5 +1,5 @@
 import { api } from "@/api/client"
-import type { Stock } from "@/lib/mock-data"
+import type { OpenHotStock } from "@/components/market/open-hot-columns"
 
 export type Board = "主板" | "创业板" | "科创板" | "北交所"
 
@@ -11,16 +11,10 @@ export type WatchlistImport = {
   createdAt: string | null
 }
 
-export type WatchlistStock = Stock & {
+export type WatchlistStock = OpenHotStock & {
   board: Board
   /** 下单文件里的买入数量（股） */
   quantity: number
-  /** 交易日开盘价相对前收的涨跌幅%；未开盘为 null */
-  openPct: number | null
-  /** 交易日东财人气排名：交易日是今天时为实时排名，过去的交易日为当天的日排名 */
-  hotRank: number | null
-  /** 交易日前一自然日的人气排名（落库的日排名） */
-  hotRankPrev: number | null
 }
 
 export function fetchWatchlistImports(): Promise<WatchlistImport[]> {

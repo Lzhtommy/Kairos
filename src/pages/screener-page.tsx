@@ -12,6 +12,7 @@ import { INDUSTRIES } from "@/lib/mock-data"
 import { fetchIndustries, runScreener } from "@/api/market"
 import { fetchStrategies, fetchStrategyHits } from "@/api/strategies"
 import { QuoteTable } from "@/components/market/quote-table"
+import { openHotColumns } from "@/components/market/open-hot-columns"
 import { Link } from "react-router-dom"
 import { buttonVariants } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
@@ -53,6 +54,9 @@ function HitTrend({ values }: { values: number[] }) {
     </svg>
   )
 }
+
+// 模块常量：QuoteTable 以引用判断列是否变化
+const EXTRA_COLUMNS = openHotColumns()
 
 export function ScreenerPage() {
   const [mode, setMode] = useState<"classic" | "strategy">("strategy")
@@ -346,6 +350,7 @@ export function ScreenerPage() {
                     : `strategy-${effectiveStrategy}`
                 }
                 data={filtered}
+                extraColumns={EXTRA_COLUMNS}
               />
             </div>
           )}

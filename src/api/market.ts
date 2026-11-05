@@ -1,5 +1,6 @@
 import { api } from "@/api/client"
 import type { Stock, IndexQuote } from "@/lib/mock-data"
+import type { OpenHotStock } from "@/components/market/open-hot-columns"
 
 export function fetchQuotes(codes?: string[]): Promise<Stock[]> {
   const q = codes && codes.length ? `?codes=${codes.join(",")}` : ""
@@ -31,7 +32,7 @@ export type ScreenerResult = {
   total: number
   page: number
   pageSize: number
-  items: Stock[]
+  items: OpenHotStock[]
 }
 
 export function runScreener(params: ScreenerParams): Promise<ScreenerResult> {

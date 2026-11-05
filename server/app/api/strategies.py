@@ -17,6 +17,7 @@ from app.services import strategy_ai
 from app.services.dsl import validate_dsl
 from app.services.market import stock_dicts
 from app.services.strategy_exec import run_dsl
+from app.services.watchlist import with_open_and_hot
 
 router = APIRouter(prefix="/strategies", tags=["strategies"])
 logger = logging.getLogger("kairos.strategies")
@@ -179,7 +180,7 @@ def strategy_hits(sid: int, db: Session = Depends(get_db), user: User = Depends(
     if s.hit_count != len(codes):
         s.hit_count = len(codes)
         db.commit()
-    return {"total": len(codes), "items": stock_dicts(db, codes)}
+    return {"total": len(codes), "items": with_open_and_hot(db, stock_dicts(db, codes))}
 
 
 @router.get("/{sid}/chat")

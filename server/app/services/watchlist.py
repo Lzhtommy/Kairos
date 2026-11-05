@@ -18,6 +18,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.market import Kline, Quote
+from app.services import hot_rank
 from app.services.market import change_pct, stock_dicts
 
 _DATE_IN_NAME = re.compile(r"(\d{4}-\d{2}-\d{2})")
@@ -171,6 +172,33 @@ def watchlist_rows(
             }
         )
     return out
+
+
+# 人气只能逐只查东财（单次 ~100ms、8 并发），命中太多时只给开盘涨跌
+HOT_RANK_MAX = 500
+
+
+def with_open_and_hot(db: Session, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """给选股结果补上今天的开盘涨跌幅与东财人气（今日实时 / 上一交易日），口径同自选股。"""
+    codes = [s["code"] for s in items]
+    day = hot_rank.today_cst()
+    opens = open_changes(db, codes, day)
+    today_ranks: dict[str, int | None] = {}
+    prev_ranks: dict[str, int] = {}
+    if 0 < len(codes) <= HOT_RANK_MAX:
+        prev_day = prev_trading_day(db, day)
+        hot_rank.ensure_daily(db, codes, {prev_day})
+        today_ranks = hot_rank.hot_ranks(codes)
+        prev_ranks = hot_rank.daily_ranks(db, codes, prev_day)
+    return [
+        {
+            **s,
+            "openPct": opens.get(s["code"]),
+            "hotRank": today_ranks.get(s["code"]),
+            "hotRankPrev": prev_ranks.get(s["code"]),
+        }
+        for s in items
+    ]
 
 
 def _empty_quote(code: str) -> dict[str, Any]:

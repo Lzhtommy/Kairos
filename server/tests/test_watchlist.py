@@ -241,3 +241,23 @@ def test_cannot_read_other_users_import(admin_client, db):
     other = _client(db, _make_user(db, "admin2", is_admin=True))
     assert other.get(f"/watchlist/imports/{imp_id}/items").status_code == 404
     assert other.delete(f"/watchlist/imports/{imp_id}").status_code == 404
+
+
+def test_with_open_and_hot_for_screener_results(db, monkeypatch):
+    from datetime import datetime
+
+    from app.models.market import Quote
+    from app.services import watchlist
+    from app.services.watchlist import with_open_and_hot
+
+    add_stock(db, "000002", trading_days("2026-10-29", 2), closes=[10, 10])  # 10-29, 10-30
+    q = db.get(Quote, "000002")
+    q.ts, q.open, q.prev_close = datetime(2026, 11, 2, 1, 30), 10.3, 10.0
+    db.commit()
+    [row] = with_open_and_hot(db, [{"code": "000002"}])
+    # "今天" 11-02（周一）：开盘对前收 +3%，今日人气实时 42，昨日 = 上周五 10-30 的 250
+    assert (row["openPct"], row["hotRank"], row["hotRankPrev"]) == (3.0, 42, 250)
+    # 命中太多不逐只查人气，只给开盘涨跌
+    monkeypatch.setattr(watchlist, "HOT_RANK_MAX", 0)
+    [row] = with_open_and_hot(db, [{"code": "000002"}])
+    assert (row["openPct"], row["hotRank"], row["hotRankPrev"]) == (3.0, None, None)

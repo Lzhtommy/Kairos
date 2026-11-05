@@ -1,5 +1,5 @@
 import { api, API_BASE_URL, getToken } from "@/api/client"
-import type { Stock } from "@/lib/mock-data"
+import type { OpenHotStock } from "@/components/market/open-hot-columns"
 
 /** 单档前瞻收益：签数 / 等权平均收益% / 胜率%（信号次日开盘入场，D+N 收盘结算） */
 export type ForwardStat = { n: number; avg: number; win: number }
@@ -66,7 +66,7 @@ export function fetchStrategyRuns(id: string): Promise<StrategyRunSummary[]> {
   return api<StrategyRunSummary[]>(`/strategies/${id}/runs`)
 }
 
-export type StrategyHits = { total: number; items: Stock[] }
+export type StrategyHits = { total: number; items: OpenHotStock[] }
 
 export function fetchStrategyHits(id: string): Promise<StrategyHits> {
   return api<StrategyHits>(`/strategies/${id}/hits`)

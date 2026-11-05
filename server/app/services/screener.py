@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.services.market import factor_rows, stock_dicts
+from app.services.watchlist import with_open_and_hot
 
 
 def run_classic(
@@ -42,4 +43,5 @@ def run_classic(
     # preserve match order
     order = {c: i for i, c in enumerate(page_codes)}
     items.sort(key=lambda s: order.get(s["code"], 0))
+    items = with_open_and_hot(db, items)
     return {"total": total, "page": page, "pageSize": page_size, "items": items}
