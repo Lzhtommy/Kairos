@@ -22,15 +22,14 @@ async def lifespan(_app: FastAPI):
     # Create tables (Alembic manages migrations in prod; create_all is a safe no-op if current).
     Base.metadata.create_all(bind=engine)
     # K 线到 4M+ 行后，_sparks / 回测的按股取数没有复合索引会全表扫
-    from sqlalchemy import text
+    from sqlalchemy import inspect, text
 
     with engine.connect() as conn:
-        conn.execute(
-            text("CREATE INDEX IF NOT EXISTS ix_kline_code_period_ts ON kline (code, period, ts)")
-        )
+        # MySQL 不支持 CREATE INDEX IF NOT EXISTS，先查再建
+        kline_idx = {i["name"] for i in inspect(engine).get_indexes("kline")}
+        if "ix_kline_code_period_ts" not in kline_idx:
+            conn.execute(text("CREATE INDEX ix_kline_code_period_ts ON kline (code, period, ts)"))
         # create_all 不会给已存在的表补列：strategy_runs.forward（信号前瞻收益）
-        from sqlalchemy import inspect
-
         cols = {c["name"] for c in inspect(engine).get_columns("strategy_runs")}
         if "forward" not in cols:
             conn.execute(text("ALTER TABLE strategy_runs ADD COLUMN forward JSON"))

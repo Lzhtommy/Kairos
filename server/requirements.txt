@@ -10,4 +10,5 @@ bcrypt==4.2.1
 python-multipart==0.0.20
 apscheduler==3.11.0
 httpx==0.28.1
+pymysql==1.1.1  # DATABASE_URL=mysql+pymysql://...（生产 RDS）
 numpy==2.2.6  # expr 技术公式向量化求值

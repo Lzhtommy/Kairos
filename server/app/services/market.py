@@ -67,7 +67,7 @@ def stock_dicts(db: Session, codes: list[str] | None = None) -> list[dict[str, A
     if codes is not None and not codes:
         return []
     info = {s.code: s for s in db.execute(select(StockInfo)).scalars().all()}
-    stmt = select(Quote)
+    stmt = select(Quote).order_by(Quote.code)  # 定序：否则 SQLite 按插入序、MySQL 按主键序
     if codes:
         stmt = stmt.where(Quote.code.in_(codes))
     sparks = _sparks(db, codes)
@@ -104,7 +104,7 @@ def factor_rows(db: Session, codes: list[str] | None = None) -> list[dict[str, A
         return []
     info = {s.code: s for s in db.execute(select(StockInfo)).scalars().all()}
     funds = {f.code: f for f in db.execute(select(Fundamental)).scalars().all()}
-    stmt = select(Quote)
+    stmt = select(Quote).order_by(Quote.code)
     if codes:
         stmt = stmt.where(Quote.code.in_(codes))
     rows: list[dict[str, Any]] = []

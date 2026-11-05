@@ -94,7 +94,8 @@ def test_reset_password(admin_client, db):
 
 def test_delete_cascades(admin_client, db):
     # 生产库在连接时打开外键约束，内存库这里手动打开以验证级联
-    db.execute(text("PRAGMA foreign_keys=ON"))
+    if db.get_bind().dialect.name == "sqlite":
+        db.execute(text("PRAGMA foreign_keys=ON"))
     bob = _make_user(db, "bob@x.com")
     db.add_all([Strategy(user_id=bob.id, name="a"), InviteCode(code="USED", used_by=bob.id)])
     db.commit()

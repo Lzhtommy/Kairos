@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta
 
 import pytest
@@ -18,11 +19,17 @@ from app.models.market import Kline, Quote, StockInfo
 
 @pytest.fixture()
 def db() -> Session:
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
+    # TEST_DATABASE_URL 指向一个空的 MySQL 库时，同一套用例跑在 MySQL 上验证方言差异
+    url = os.environ.get("TEST_DATABASE_URL")
+    if url:
+        engine = create_engine(url)
+        Base.metadata.drop_all(engine)
+    else:
+        engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
     Base.metadata.create_all(engine)
     session = sessionmaker(bind=engine)()
     yield session

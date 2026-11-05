@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Float, Integer, String
+from sqlalchemy import BigInteger, DateTime, Float, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -33,7 +33,7 @@ class Quote(Base):
     open: Mapped[float] = mapped_column(Float)
     high: Mapped[float] = mapped_column(Float)
     low: Mapped[float] = mapped_column(Float)
-    volume: Mapped[int] = mapped_column(Integer)
+    volume: Mapped[int] = mapped_column(BigInteger)
     turnover: Mapped[float] = mapped_column(Float)          # 亿元
     turnover_rate: Mapped[float] = mapped_column(Float)     # %
     pe: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -53,7 +53,7 @@ class Kline(Base):
     high: Mapped[float] = mapped_column(Float)
     low: Mapped[float] = mapped_column(Float)
     close: Mapped[float] = mapped_column(Float)
-    volume: Mapped[int] = mapped_column(Integer)
+    volume: Mapped[int] = mapped_column(BigInteger)
 
 
 class AdjustmentEvent(Base):

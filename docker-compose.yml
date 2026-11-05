@@ -11,8 +11,10 @@ services:
     ports:
       - "127.0.0.1:8000:8000"
     environment:
-      # SQLite lives on the named volume so it survives redeploys.
-      DATABASE_URL: sqlite:///./data/kairos.db
+      # 生产在 /opt/kairos/.env 里设 DATABASE_URL 指向 RDS MySQL；未设时用卷上的 SQLite
+      DATABASE_URL: ${DATABASE_URL:-sqlite:///./data/kairos.db}
+      # 迁移目标库（scripts.migrate_sqlite_to_mysql 默认读它），切换完成后可删
+      RDS_DATABASE_URL: ${RDS_DATABASE_URL:-}
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       PROVIDER: ${PROVIDER:-auto}
       AI_PROVIDER: ${AI_PROVIDER:-auto}

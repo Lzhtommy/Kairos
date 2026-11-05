@@ -11,7 +11,7 @@
 
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Float, Integer, String, Text
+from sqlalchemy import BigInteger, DateTime, Float, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import JSON
 
@@ -43,7 +43,7 @@ class SectorBar(Base):
     high: Mapped[float] = mapped_column(Float)
     low: Mapped[float] = mapped_column(Float)
     close: Mapped[float] = mapped_column(Float)
-    volume: Mapped[int] = mapped_column(Integer, default=0)
+    volume: Mapped[int] = mapped_column(BigInteger, default=0)
     amount: Mapped[float] = mapped_column(Float, default=0.0)  # 成交额（亿元）
 
 
