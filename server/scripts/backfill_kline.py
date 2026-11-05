@@ -18,7 +18,7 @@ import argparse
 import logging
 import time
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, insert, select
 
 from app.core.db import SessionLocal
 from app.models.market import AdjustmentEvent, Kline, StockInfo
@@ -46,13 +46,12 @@ def backfill_code(db, provider, code: str, bars: int) -> int:
         logger.warning("%s 只拿到 %d 根（库里 %d 根），跳过不覆盖", code, len(candles), have)
         return 0
     db.execute(delete(Kline).where(Kline.code == code, Kline.period == "1d"))
-    db.add_all(
-        Kline(
-            code=code, period="1d", ts=c.ts,
-            open=c.open, high=c.high, low=c.low, close=c.close, volume=c.volume,
-        )
+    # Core 批量插入：ORM add 在 MySQL 上会逐行 INSERT 取自增主键
+    db.execute(insert(Kline), [
+        {"code": code, "period": "1d", "ts": c.ts, "open": c.open, "high": c.high,
+         "low": c.low, "close": c.close, "volume": c.volume}
         for c in candles
-    )
+    ])
     db.commit()
     return len(candles)
 

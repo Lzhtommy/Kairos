@@ -11,9 +11,9 @@ import logging
 from datetime import datetime, time, timedelta, timezone
 from time import sleep
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, insert, select, update
 
-from app.core.db import SessionLocal
+from app.core.db import SessionLocal, upsert_rows
 from app.models.market import (
     AdjustmentEvent,
     FactorSnapshot,
@@ -136,26 +136,27 @@ def _refresh_quotes(db) -> int:
         _adj_done_day = str(cst_today)
 
     fund_map = {f.code: f for f in db.execute(select(Fundamental)).scalars().all()}
-    for q in quotes:
-        roe = q.roe or (fund_map[q.code].roe if q.code in fund_map else 0.0)
-        db.merge(
-            Quote(
-                code=q.code,
-                ts=q.ts or datetime.now(timezone.utc),
-                price=q.price,
-                prev_close=q.prev_close,
-                open=q.open,
-                high=q.high,
-                low=q.low,
-                volume=q.volume,
-                turnover=q.turnover,
-                turnover_rate=q.turnover_rate,
-                pe=q.pe,
-                pb=q.pb,
-                market_cap=q.market_cap,
-                roe=roe,
-            )
-        )
+    # 同一代码在一批里出现两次时 upsert 取后者，与原 merge 语义一致
+    rows = {
+        q.code: {
+            "code": q.code,
+            "ts": q.ts or datetime.now(timezone.utc),
+            "price": q.price,
+            "prev_close": q.prev_close,
+            "open": q.open,
+            "high": q.high,
+            "low": q.low,
+            "volume": q.volume,
+            "turnover": q.turnover,
+            "turnover_rate": q.turnover_rate,
+            "pe": q.pe,
+            "pb": q.pb,
+            "market_cap": q.market_cap,
+            "roe": q.roe or (fund_map[q.code].roe if q.code in fund_map else 0.0),
+        }
+        for q in quotes
+    }
+    upsert_rows(db, Quote, list(rows.values()))
     for idx in provider.get_indices():
         db.merge(
             IndexQuote(
@@ -185,13 +186,23 @@ def _upsert_today_bars(db, quotes) -> None:
         return
     day_start = datetime(cst_today.year, cst_today.month, cst_today.day)
     db.execute(delete(Kline).where(Kline.period == "1d", Kline.ts == day_start))
-    for q in todays:
-        db.add(
-            Kline(
-                code=q.code, period="1d", ts=day_start,
-                open=q.open, high=q.high, low=q.low, close=q.price, volume=q.volume,
-            )
-        )
+    db.execute(insert(Kline), [
+        {"code": q.code, "period": "1d", "ts": day_start, "open": q.open,
+         "high": q.high, "low": q.low, "close": q.price, "volume": q.volume}
+        for q in todays
+    ])
+
+
+def _insert_bars(db, code: str, candles) -> None:
+    """日 K 批量插入。不走 db.add：kline 主键自增，MySQL 没有 RETURNING，
+    ORM 会逐行 INSERT 取回主键（RDS 上一根一次往返）。"""
+    if not candles:
+        return
+    db.execute(insert(Kline), [
+        {"code": code, "period": "1d", "ts": c.ts, "open": c.open, "high": c.high,
+         "low": c.low, "close": c.close, "volume": c.volume}
+        for c in candles
+    ])
 
 
 def bootstrap(db) -> None:
@@ -228,13 +239,7 @@ def bootstrap(db) -> None:
                 logger.warning("Kline fetch failed for %s: %s", code, exc)
                 failed += 1
                 continue
-            for c in candles:
-                db.add(
-                    Kline(
-                        code=code, period="1d", ts=c.ts,
-                        open=c.open, high=c.high, low=c.low, close=c.close, volume=c.volume,
-                    )
-                )
+            _insert_bars(db, code, candles)
             if i % 200 == 0:
                 db.commit()  # bound the transaction; keep partial progress on crash
                 logger.info("Seeded K-lines: %d/%d", i, len(codes))
@@ -254,6 +259,8 @@ def refresh_reference() -> None:
     try:
         metas = provider.get_universe(refresh=True)
         n_ind = 0
+        # 先整表载入身份映射，下面的 db.get 就不再逐只往返数据库
+        db.execute(select(StockInfo)).scalars().all()
         for meta in metas:
             info = db.get(StockInfo, meta.code)
             if info is None:
@@ -263,13 +270,13 @@ def refresh_reference() -> None:
                 info.industry = meta.industry
             if meta.industry != "—":
                 n_ind += 1
-        for f in provider.get_fundamentals():
-            db.merge(
-                Fundamental(
-                    code=f.code, pe=f.pe, pb=f.pb, roe=f.roe,
-                    market_cap=f.market_cap, dividend_yield=f.dividend_yield,
-                )
-            )
+        funds = {
+            f.code: {"code": f.code, "pe": f.pe, "pb": f.pb, "roe": f.roe,
+                     "market_cap": f.market_cap, "dividend_yield": f.dividend_yield}
+            for f in provider.get_fundamentals()
+        }
+        db.flush()  # 新增的 StockInfo 先落库，和下面的核心语句同一事务
+        upsert_rows(db, Fundamental, list(funds.values()))
         db.commit()
 
         # 给 bootstrap 之后新上市的股票回补日 K（没有 K 线的股票会让回测缺数据）。
@@ -285,13 +292,7 @@ def refresh_reference() -> None:
                 candles = provider.get_kline(code, "1d", KLINE_DEPTH)
             except Exception:  # noqa: BLE001 — one bad ticker must not kill the job
                 continue
-            for c in candles:
-                db.add(
-                    Kline(
-                        code=code, period="1d", ts=c.ts,
-                        open=c.open, high=c.high, low=c.low, close=c.close, volume=c.volume,
-                    )
-                )
+            _insert_bars(db, code, candles)
             backfilled += 1
         db.commit()
 
@@ -346,14 +347,7 @@ def _repair_kline_gaps(db, provider, window: int = 40, cap: int = 6000) -> int:
             candles = provider.get_kline(code, "1d", window + 20)
         except Exception:  # noqa: BLE001
             continue
-        for c in candles:
-            if c.ts in missing:
-                db.add(
-                    Kline(
-                        code=code, period="1d", ts=c.ts,
-                        open=c.open, high=c.high, low=c.low, close=c.close, volume=c.volume,
-                    )
-                )
+        _insert_bars(db, code, [c for c in candles if c.ts in missing])
         repaired += 1
         if repaired % 500 == 0:
             db.commit()
@@ -395,14 +389,7 @@ def _deepen_kline_history(db, provider, cap: int = 3000) -> int:
                 select(Kline.ts).where(Kline.code == code, Kline.period == "1d")
             )
         }
-        for c in candles:
-            if c.ts not in have:
-                db.add(
-                    Kline(
-                        code=code, period="1d", ts=c.ts,
-                        open=c.open, high=c.high, low=c.low, close=c.close, volume=c.volume,
-                    )
-                )
+        _insert_bars(db, code, [c for c in candles if c.ts not in have])
         deepened += 1
         if deepened % 500 == 0:
             db.commit()
