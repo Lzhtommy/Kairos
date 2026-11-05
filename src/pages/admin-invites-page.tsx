@@ -12,6 +12,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { TablePager, usePagedRows } from "@/components/ui/table-pager"
 import { fetchInvites, createInvites, deleteInvite, type Invite } from "@/api/admin"
 
 function fmtTime(iso: string | null): string {
@@ -62,6 +63,7 @@ export function AdminInvitesPage() {
   }
 
   const unused = invites?.filter((i) => !i.usedAt) ?? []
+  const { pageRows, pager } = usePagedRows(invites ?? [], "")
 
   if (!invites) {
     return <div className="p-6 text-sm text-muted-foreground">加载中…</div>
@@ -125,7 +127,7 @@ export function AdminInvitesPage() {
                 </TableCell>
               </TableRow>
             )}
-            {invites.map((i) => (
+            {pageRows.map((i) => (
               <TableRow key={i.id}>
                 <TableCell className="font-mono text-xs">{i.code}</TableCell>
                 <TableCell>
@@ -167,6 +169,7 @@ export function AdminInvitesPage() {
             ))}
           </TableBody>
         </Table>
+        <TablePager {...pager} />
       </section>
     </div>
   )
