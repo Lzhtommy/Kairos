@@ -43,6 +43,7 @@ import {
   type ResearchTask,
 } from "@/api/research"
 import { GradeBadge, MiniDims } from "@/components/research/research-ui"
+import { TablePager, usePagedRows } from "@/components/ui/table-pager"
 import { fmtDate, fmtDateTime, isStale } from "@/lib/research-format"
 import { useAuth } from "@/lib/auth"
 import { cn } from "@/lib/utils"
@@ -137,6 +138,7 @@ function Library({ isAdmin, onGenerate }: { isAdmin: boolean; onGenerate: () => 
       (!grade || i.grade === grade) &&
       (!flaggedOnly || i.red_flags > 0),
   )
+  const { pageRows, pager } = usePagedRows(rows, `${q}|${industry}|${grade}|${flaggedOnly}`)
 
   if (listQ.isLoading) return <div className="py-10 text-sm text-muted-foreground">加载中…</div>
 
@@ -223,7 +225,7 @@ function Library({ isAdmin, onGenerate }: { isAdmin: boolean; onGenerate: () => 
                 </TableCell>
               </TableRow>
             )}
-            {rows.map((r) => (
+            {pageRows.map((r) => (
               <TableRow key={r.id} className="cursor-pointer" onClick={() => navigate(`/app/research/${r.id}`)}>
                 <TableCell>
                   <Link to={`/app/research/${r.id}`} className="block" onClick={(e) => e.stopPropagation()}>
@@ -265,6 +267,7 @@ function Library({ isAdmin, onGenerate }: { isAdmin: boolean; onGenerate: () => 
             ))}
           </TableBody>
         </Table>
+        <TablePager {...pager} />
       </section>
     </div>
   )
@@ -295,6 +298,7 @@ function TaskQueue({ tasks, loading }: { tasks: ResearchTask[] | undefined; load
     onSuccess: () => (toast.success("已删除"), refresh()),
     onError: (e) => toast.error(e instanceof Error ? e.message : "删除失败"),
   })
+  const { pageRows, pager } = usePagedRows(tasks ?? [], "")
 
   if (loading) return <div className="py-10 text-sm text-muted-foreground">加载中…</div>
 
@@ -318,7 +322,7 @@ function TaskQueue({ tasks, loading }: { tasks: ResearchTask[] | undefined; load
               </TableCell>
             </TableRow>
           )}
-          {(tasks ?? []).map((t) => (
+          {pageRows.map((t) => (
             <TableRow key={t.id}>
               <TableCell>
                 <Badge className={cn("border-transparent", STATUS[t.status].cls)}>{STATUS[t.status].label}</Badge>
@@ -370,6 +374,7 @@ function TaskQueue({ tasks, loading }: { tasks: ResearchTask[] | undefined; load
           ))}
         </TableBody>
       </Table>
+      <TablePager {...pager} />
     </section>
   )
 }

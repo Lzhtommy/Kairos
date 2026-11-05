@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react"
+import { useEffect, useMemo, useState } from "react"
 import {
   type ColumnDef,
   type PaginationState,
@@ -13,24 +13,12 @@ import {
   CaretUpDown,
   CaretUp,
   CaretDown,
-  CaretLeft,
-  CaretRight,
-  CaretDoubleLeft,
-  CaretDoubleRight,
 } from "@phosphor-icons/react"
 import type { Stock } from "@/lib/mock-data"
 import { changePct } from "@/lib/use-live-quotes"
 import { ChangeBadge, PriceCell, Sparkline } from "@/components/market/price-change"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
+import { TablePager } from "@/components/ui/table-pager"
 import { cn } from "@/lib/utils"
-
-const PAGE_SIZE_OPTIONS = [20, 50, 100]
 
 /** 雪球个股页，格式 SH600519 / SZ000001 / BJ920000，北交所也支持。 */
 function stockDetailUrl(s: Stock) {
@@ -215,88 +203,14 @@ export function QuoteTable<T extends Stock = Stock>({
         </tbody>
       </table>
       </div>
-      {(pageCount > 1 || data.length > PAGE_SIZE_OPTIONS[0]) && (
-        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border px-3 py-2">
-          <span className="text-xs text-muted-foreground">
-            共 <span className="font-mono tabular-nums text-foreground">{data.length}</span> 条 · 第{" "}
-            <span className="font-mono tabular-nums text-foreground">
-              {pagination.pageIndex + 1}
-            </span>
-            {" / "}
-            <span className="font-mono tabular-nums text-foreground">{pageCount}</span> 页
-          </span>
-          <div className="flex items-center gap-2">
-            <Select
-              value={String(pagination.pageSize)}
-              onValueChange={(v) => table.setPageSize(Number(v))}
-            >
-              <SelectTrigger size="sm" className="text-xs">
-                <SelectValue>{(v: string) => `${v} 条/页`}</SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                {PAGE_SIZE_OPTIONS.map((n) => (
-                  <SelectItem key={n} value={String(n)}>
-                    {n} 条/页
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <div className="flex items-center gap-1">
-              <PagerButton
-                label="第一页"
-                disabled={!table.getCanPreviousPage()}
-                onClick={() => table.setPageIndex(0)}
-              >
-                <CaretDoubleLeft className="size-3.5" />
-              </PagerButton>
-              <PagerButton
-                label="上一页"
-                disabled={!table.getCanPreviousPage()}
-                onClick={() => table.previousPage()}
-              >
-                <CaretLeft className="size-3.5" />
-              </PagerButton>
-              <PagerButton
-                label="下一页"
-                disabled={!table.getCanNextPage()}
-                onClick={() => table.nextPage()}
-              >
-                <CaretRight className="size-3.5" />
-              </PagerButton>
-              <PagerButton
-                label="最后一页"
-                disabled={!table.getCanNextPage()}
-                onClick={() => table.setPageIndex(pageCount - 1)}
-              >
-                <CaretDoubleRight className="size-3.5" />
-              </PagerButton>
-            </div>
-          </div>
-        </div>
-      )}
+      <TablePager
+        total={data.length}
+        pageIndex={pagination.pageIndex}
+        pageSize={pagination.pageSize}
+        onPageIndex={(i) => table.setPageIndex(i)}
+        onPageSize={(n) => table.setPageSize(n)}
+      />
     </div>
   )
 }
 
-function PagerButton({
-  label,
-  disabled,
-  onClick,
-  children,
-}: {
-  label: string
-  disabled: boolean
-  onClick: () => void
-  children: ReactNode
-}) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      aria-label={label}
-      className="flex size-7 items-center justify-center rounded-md border border-border text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
-    >
-      {children}
-    </button>
-  )
-}
