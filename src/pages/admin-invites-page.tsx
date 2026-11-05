@@ -4,6 +4,7 @@ import { Copy, Plus, Ticket, Trash } from "@phosphor-icons/react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Table,
   TableBody,
@@ -27,6 +28,7 @@ export function AdminInvitesPage() {
   const [invites, setInvites] = useState<Invite[] | null>(null)
   const [count, setCount] = useState(5)
   const [busy, setBusy] = useState(false)
+  const [status, setStatus] = useState<"all" | "unused" | "used">("all")
 
   useEffect(() => {
     fetchInvites().then(setInvites).catch(() => toast.error("邀请码加载失败"))
@@ -63,7 +65,11 @@ export function AdminInvitesPage() {
   }
 
   const unused = invites?.filter((i) => !i.usedAt) ?? []
-  const { pageRows, pager } = usePagedRows(invites ?? [], "")
+  const shown =
+    status === "all"
+      ? invites ?? []
+      : (invites ?? []).filter((i) => (status === "used") === !!i.usedAt)
+  const { pageRows, pager } = usePagedRows(shown, status)
 
   if (!invites) {
     return <div className="p-6 text-sm text-muted-foreground">加载中…</div>
@@ -109,6 +115,15 @@ export function AdminInvitesPage() {
       </section>
 
       <section className="rounded-lg border border-border">
+        <div className="border-b border-border px-3 py-2">
+          <Tabs value={status} onValueChange={(v) => setStatus(v as typeof status)}>
+            <TabsList>
+              <TabsTrigger value="all">全部 {invites.length}</TabsTrigger>
+              <TabsTrigger value="unused">未使用 {unused.length}</TabsTrigger>
+              <TabsTrigger value="used">已使用 {invites.length - unused.length}</TabsTrigger>
+            </TabsList>
+          </Tabs>
+        </div>
         <Table>
           <TableHeader>
             <TableRow>
@@ -120,10 +135,14 @@ export function AdminInvitesPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {invites.length === 0 && (
+            {shown.length === 0 && (
               <TableRow>
                 <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
-                  还没有邀请码，点上方"生成"创建
+                  {invites.length === 0
+                    ? '还没有邀请码，点上方"生成"创建'
+                    : status === "used"
+                      ? "还没有被使用的邀请码"
+                      : "没有未使用的邀请码"}
                 </TableCell>
               </TableRow>
             )}
