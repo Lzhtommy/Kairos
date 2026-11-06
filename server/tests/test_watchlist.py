@@ -257,7 +257,22 @@ def test_with_open_and_hot_for_screener_results(db, monkeypatch):
     [row] = with_open_and_hot(db, [{"code": "000002"}])
     # "今天" 11-02（周一）：开盘对前收 +3%，今日人气实时 42，昨日 = 上周五 10-30 的 250
     assert (row["openPct"], row["hotRank"], row["hotRankPrev"]) == (3.0, 42, 250)
-    # 命中太多不逐只查实时人气，昨日人气照样读库
+    # 命中太多不逐只现查：实时人气读全市场快照，还没刷新过就空着；昨日人气照样读库
     monkeypatch.setattr(watchlist, "HOT_RANK_MAX", 0)
+    monkeypatch.setattr(hot_rank, "_market", ("", {}))
     [row] = with_open_and_hot(db, [{"code": "000002"}])
     assert (row["openPct"], row["hotRank"], row["hotRankPrev"]) == (3.0, None, 250)
+    monkeypatch.setattr(hot_rank, "_fetch_latest", lambda _client, _code: 7)
+    assert hot_rank.refresh_market(["000002"]) == 1
+    [row] = with_open_and_hot(db, [{"code": "000002"}])
+    assert row["hotRank"] == 7
+    # 快照是昨天的 → 不拿来用
+    monkeypatch.setattr(hot_rank, "today_cst", lambda: "2026-11-03")
+    assert hot_rank.market_ranks(["000002"]) == {}
+
+
+def test_market_refresh_keeps_previous_on_mass_failure(monkeypatch):
+    monkeypatch.setattr(hot_rank, "_market", ("2026-11-02", {"000002": 5}))
+    monkeypatch.setattr(hot_rank, "_fetch_latest", lambda _client, _code: None)
+    hot_rank.refresh_market(["000002", "000001"])
+    assert hot_rank.market_ranks(["000002"]) == {"000002": 5}

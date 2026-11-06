@@ -174,8 +174,8 @@ def watchlist_rows(
     return out
 
 
-# 实时人气只能逐只查东财（单次 ~100ms、8 并发），命中太多时不查；
-# 昨日人气由凌晨任务全市场落库，任意数量都直接读库
+# 实时人气只能逐只查东财（单次 ~100ms、8 并发）：命中不多时现查（5 分钟缓存），
+# 太多时读盘中每 10 分钟刷新的全市场快照；昨日人气由凌晨任务全市场落库，直接读库
 HOT_RANK_MAX = 500
 
 
@@ -189,6 +189,8 @@ def with_open_and_hot(db: Session, items: list[dict[str, Any]]) -> list[dict[str
     if 0 < len(codes) <= HOT_RANK_MAX:
         hot_rank.ensure_daily(db, codes, {prev_day})
         today_ranks = hot_rank.hot_ranks(codes)
+    elif codes:
+        today_ranks = dict(hot_rank.market_ranks(codes))
     prev_ranks = hot_rank.daily_ranks(db, codes, prev_day)
     return [
         {

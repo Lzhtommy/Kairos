@@ -45,7 +45,7 @@ async def lifespan(_app: FastAPI):
         run_bootstrap_and_first_collect,
         snapshot_factors,
     )
-    from app.jobs.hot_rank import record_daily_hot_ranks
+    from app.jobs.hot_rank import record_daily_hot_ranks, refresh_market_hot_ranks
     from app.jobs.narrative import update_narrative
     from app.jobs.research import process_research_queue, requeue_interrupted
     from app.jobs.sector import update_sectors
@@ -166,6 +166,16 @@ async def lifespan(_app: FastAPI):
             hour=16,
             minute=30,
             id="hot_rank_daily",
+            max_instances=1,
+            coalesce=True,
+            next_run_time=datetime.now(timezone.utc),
+        )
+        # 盘中每 10 分钟刷新全市场实时人气快照（选股命中上千只时用），启动即跑一次
+        _scheduler.add_job(
+            refresh_market_hot_ranks,
+            "interval",
+            minutes=10,
+            id="hot_rank_market",
             max_instances=1,
             coalesce=True,
             next_run_time=datetime.now(timezone.utc),

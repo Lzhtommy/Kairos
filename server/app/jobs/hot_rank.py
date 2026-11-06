@@ -41,3 +41,23 @@ def record_daily_hot_ranks() -> None:
         db.rollback()
     finally:
         db.close()
+
+
+def refresh_market_hot_ranks() -> None:
+    """盘中每 10 分钟刷新全市场实时排名快照，供命中上千只的选股结果用。"""
+    from app.jobs.collect import in_trading_session
+
+    if not in_trading_session():
+        return
+    db = SessionLocal()
+    try:
+        codes = list(db.execute(select(StockInfo.code).order_by(StockInfo.code)).scalars())
+    finally:
+        db.close()
+    if not codes:
+        return
+    try:
+        n = hot_rank.refresh_market(codes)
+        logger.info("hot rank market refresh: %d/%d", n, len(codes))
+    except Exception:  # noqa: BLE001 — 失败保留上一轮快照
+        logger.exception("hot rank market refresh failed")

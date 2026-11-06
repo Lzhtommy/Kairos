@@ -32,6 +32,8 @@ _TTL = 300
 _WORKERS = 8
 
 _cache: dict[str, tuple[float, int | None]] = {}
+# 全市场实时排名快照：(CST 日期, {code: rank})，盘中定时任务整体替换（单进程部署）
+_market: tuple[str, dict[str, int]] = ("", {})
 # getHisList 拉过但仍缺日子的股票（新股 / 东财没数据），冷却期内不重复拉
 _his_tried: dict[str, float] = {}
 _lock = threading.Lock()
@@ -96,6 +98,27 @@ def hot_ranks(codes: list[str]) -> dict[str, int | None]:
             if v is not None:
                 _cache[c] = (now, v)
     return {**fresh, **ranks}
+
+
+def refresh_market(codes: list[str]) -> int:
+    """逐只拉全市场实时排名，整体替换快照；返回拿到排名的股票数。"""
+    global _market
+    ranks = _fan_out(codes, _fetch_latest)
+    got = {c: r for c, r in ranks.items() if r is not None}
+    if len(got) < len(codes) // 2:
+        # 大面积失败（限流 / 断网）不覆盖，保留上一轮
+        logger.warning("hot rank market refresh: only %d/%d ok, keep previous", len(got), len(codes))
+        return len(got)
+    _market = (today_cst(), got)
+    return len(got)
+
+
+def market_ranks(codes: list[str]) -> dict[str, int]:
+    """从全市场快照取当天的实时排名；快照不是今天的（还没开盘刷新过）返回空。"""
+    day, ranks = _market
+    if day != today_cst():
+        return {}
+    return {c: ranks[c] for c in codes if c in ranks}
 
 
 def ensure_daily(db: Session, codes: Iterable[str], dates: Iterable[str]) -> int:
