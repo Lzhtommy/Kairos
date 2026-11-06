@@ -257,7 +257,7 @@ def test_with_open_and_hot_for_screener_results(db, monkeypatch):
     [row] = with_open_and_hot(db, [{"code": "000002"}])
     # "今天" 11-02（周一）：开盘对前收 +3%，今日人气实时 42，昨日 = 上周五 10-30 的 250
     assert (row["openPct"], row["hotRank"], row["hotRankPrev"]) == (3.0, 42, 250)
-    # 命中太多不逐只查人气，只给开盘涨跌
+    # 命中太多不逐只查实时人气，昨日人气照样读库
     monkeypatch.setattr(watchlist, "HOT_RANK_MAX", 0)
     [row] = with_open_and_hot(db, [{"code": "000002"}])
-    assert (row["openPct"], row["hotRank"], row["hotRankPrev"]) == (3.0, None, None)
+    assert (row["openPct"], row["hotRank"], row["hotRankPrev"]) == (3.0, None, 250)
