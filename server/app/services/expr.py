@@ -9,6 +9,8 @@
 - 缺值语义：窗口不足、除零、任一操作数缺值 → 该日结果 None；
   顶层为 None 的交易日判 False（数据不足不通过，不降级凑数）。
 - 价格变量（open/high/low/close）取值 ≤0 视为缺值；volume 的 0 是合法值。
+- amount（成交额，亿元）= volume(手) × 100 × close / 1e8：日 K 不存成交额，按收盘价
+  近似（实测与真实成交额偏差 <1%）。
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ MAX_DEPTH = 12
 MAX_WINDOW = 240
 
 PRICE_VARS = ("open", "high", "low", "close")
-VARS = (*PRICE_VARS, "volume")
+VARS = (*PRICE_VARS, "volume", "amount")
 
 # name -> (窗口外参数的类型列表, 是否带窗口参数, 返回类型)；类型: "num" | "bool"
 FUNCS: dict[str, tuple[tuple[str, ...], bool, str]] = {
@@ -222,6 +224,9 @@ def _eval(node: ast.expr, s: dict[str, list[float] | None], n: int) -> _Series:
     if isinstance(node, ast.Constant):
         return np.full(n, float(node.value))
     if isinstance(node, ast.Name):
+        if node.id == "amount":
+            vol, close = _eval(ast.Name("volume"), s, n), _eval(ast.Name("close"), s, n)
+            return vol * close * 100 / 1e8
         raw = s.get(node.id)
         if raw is None or len(raw) != n:
             return _nan(n)

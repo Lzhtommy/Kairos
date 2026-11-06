@@ -145,5 +145,5 @@ class HotRankDaily(Base):
     __tablename__ = "hot_rank_daily"
 
     code: Mapped[str] = mapped_column(String(16), primary_key=True)
-    date: Mapped[str] = mapped_column(String(10), primary_key=True)  # YYYY-MM-DD
+    date: Mapped[str] = mapped_column(String(10), primary_key=True, index=True)  # YYYY-MM-DD
     rank: Mapped[int] = mapped_column(Integer)

@@ -39,6 +39,7 @@ _FACTOR_KEYWORDS: list[tuple[str, str]] = [
     ("相对开盘", "intraday_change_pct"), ("实体涨幅", "intraday_change_pct"),
     ("涨跌幅", "change_pct"), ("涨幅", "change_pct"),
     ("股息率", "dividend_yield"), ("股息", "dividend_yield"), ("分红", "dividend_yield"),
+    ("昨日人气", "hot_rank_prev"), ("前一日人气", "hot_rank_prev"), ("上一交易日人气", "hot_rank_prev"),
     ("人气排名", "hot_rank"), ("人气榜", "hot_rank"), ("热度排名", "hot_rank"), ("人气", "hot_rank"),
     ("股价", "price"), ("价格", "price"), ("最新价", "price"),
 ]
@@ -123,7 +124,7 @@ def _parse_clause(clause: str) -> dict[str, Any] | None:
     if factor == "dividend_yield" and is_pct:
         num = num / 100.0  # dividend stored as fraction
 
-    if factor == "hot_rank":
+    if factor in ("hot_rank", "hot_rank_prev"):
         # 名次越小越热："前 100" / "100 名以内" 是 ≤，"500 名以外" 是 >
         if any(k in clause for k in ("以外", "之外", "开外", "靠后")):
             return {"factor": factor, "op": "gt", "value": num}
@@ -434,7 +435,8 @@ def _spec_doc(industries: list[str] | None = None) -> str:
         "\"近 10 日涨幅不超过 5%（没大涨过）\" → days=10,max=5\n"
         "白名单类型表达不了的 K 线条件，用公式类型 expr（仅在必要时使用）：\n"
         "{\"type\":\"expr\",\"formula\":\"<布尔公式>\",\"desc\":\"<中文一句话描述，必填>\"}\n"
-        "公式语法是 Python 表达式子集：变量只有 open/high/low/close/volume（日 K 序列，逐日求值），"
+        "公式语法是 Python 表达式子集：变量只有 open/high/low/close/volume/amount（日 K 序列，逐日求值；"
+        "amount 是当日成交额，单位亿），"
         "运算 + - * /、比较 > >= < <= == !=、and/or/not、数值字面量。可用函数：\n"
         "shift(x,n) n 日前的值；ma/ema/sum/max/min/std(x,n) n 日滚动均值/指数均值/和/最高/最低/标准差；"
         "abs(x)；max2/min2(a,b) 逐日取两者较大/较小值（不是滚动窗口）；pct(a,b)=(a/b-1)*100；count(cond,n) 近 n 日 cond 成立天数；"
@@ -447,6 +449,9 @@ def _spec_doc(industries: list[str] | None = None) -> str:
         "\"近 60 日高点回撤超 20%\" → pct(close, max(high, 60)) <= -20\n"
         "\"低开 2% 以上且收红（低开高走）\" → pct(open, shift(close, 1)) <= -2 and close > open\n"
         "\"量比大于 2\" → volume / ma(volume, 5) > 2\n"
+        "\"近 20 日成交额大于 8 亿\"（未说每天时按日均理解）→ ma(amount, 20) > 8；"
+        "\"近 20 日每天成交额都超 8 亿\" → all(amount > 8, 20)；"
+        "因子 turnover 只是今日成交额，带\"近 N 日\"的成交额条件必须用 amount 公式，不能退化成 turnover\n"
         "\"近 5 日振幅超 15%\" → (max(high, 5) - min(low, 5)) / shift(close, 5) * 100 >= 15\n"
         "\"连续 3 日缩量\" → all(volume < shift(volume, 1), 3)\n"
         "\"14 日平均真实波幅（ATR）超过收盘价 5%\" → "
@@ -460,7 +465,11 @@ def _spec_doc(industries: list[str] | None = None) -> str:
         "intraday_change_pct lt 0）。\n"
         "hot_rank 是东方财富人气榜名次（1 最热，数值越小越热门）：\"人气前 100\" → hot_rank lte 100，"
         "\"人气排名 500 名以外（冷门股）\" → hot_rank gt 500；不要用 rank_top/pct_top（那取数值大的一头，"
-        "即最冷门的）；打分时 direction 用 asc。没有排名的股票不通过人气条件。\n"
+        "即最冷门的）；打分时 direction 用 asc。没有排名的股票不通过人气条件。"
+        "hot_rank 是今日实时排名；\"昨日人气 / 前一日人气\"用 hot_rank_prev（上一交易日收盘定稿的名次），"
+        "不要混用。\n"
+        "表达不了的条件宁可省略并在 desc / 解释里说明，禁止输出 volume > 0 之类恒成立的占位公式"
+        "冒充已实现。\n"
         "注意单位：市值/成交额单位为亿，换手率/涨跌幅/ROE 为百分数数值，股息率为小数(3% → 0.03)。\n"
         "涉及板块范围时输出 \"board\": [...]，可选值 main(主板)/chinext(创业板)/star(科创板)/bj(北交所)；"
         "如\"排除创业板和科创板\" → [\"main\",\"bj\"]，\"只要主板\" → [\"main\"]；不限板块则省略该字段。\n"

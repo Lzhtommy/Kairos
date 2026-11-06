@@ -31,6 +31,7 @@ FACTORS: dict[str, tuple[str, str]] = {
     "price": ("最新价", "num"),
     "dividend_yield": ("股息率", "num"),
     "hot_rank": ("东财人气排名(名次,1 最热)", "num"),
+    "hot_rank_prev": ("上一交易日东财人气排名(名次,1 最热)", "num"),
     "industry": ("行业", "cat"),
 }
 

@@ -81,3 +81,8 @@ class TestComparators:
         assert rule_based("人气排名前100")["filters"] == [{"factor": "hot_rank", "op": "lte", "value": 100.0}]
         assert rule_based("人气100名以内")["filters"] == [{"factor": "hot_rank", "op": "lte", "value": 100.0}]
         assert rule_based("人气排名500名以外")["filters"] == [{"factor": "hot_rank", "op": "gt", "value": 500.0}]
+
+    def test_yesterday_hot_rank(self):
+        assert rule_based("昨日人气排名500名以外")["filters"] == [
+            {"factor": "hot_rank_prev", "op": "gt", "value": 500.0}
+        ]

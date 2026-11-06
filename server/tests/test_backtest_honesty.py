@@ -160,3 +160,22 @@ class TestHotRankPointInTime:
         # 每期只持有 600000：混进 600519 等权收益会被拉成负的
         assert [r["holdings"] for r in result["rebalanceRecords"]] == [1, 1]
         assert result["metrics"]["totalReturn"] > 0
+
+    def test_prev_rank_uses_day_before_rebalance(self, db, monkeypatch):
+        """hot_rank_prev 取调仓日前一交易日的落库排名。"""
+        from app.models.market import HotRankDaily
+        from app.services import hot_rank
+
+        days = trading_days("2026-01-05", 40)
+        add_stock(db, "600519", days, [100 * 0.99**i for i in range(40)])
+        add_stock(db, "600000", days, [50 * 1.01**i for i in range(40)])
+        monkeypatch.setattr(hot_rank, "market_snapshot", lambda: {})
+        # 600000 每天名次 3；600519 只有"当天"热，前一天冷 → hot_rank_prev 只选中 600000
+        db.add_all(HotRankDaily(code="600000", date=d.date().isoformat(), rank=3) for d in days)
+        db.commit()
+
+        dsl = {"filters": [{"factor": "hot_rank_prev", "op": "lte", "value": 100}], "technical": []}
+        result = backtest.run(db, dsl, {"rebalance": "monthly"})
+        # 无基准时首期选股日之前没有交易日 → 无前一日排名、空仓；之后只持 600000
+        assert [r["holdings"] for r in result["rebalanceRecords"]] == [0, 1]
+        assert result["metrics"]["totalReturn"] > 0

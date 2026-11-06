@@ -106,6 +106,9 @@ def factor_rows(db: Session, codes: list[str] | None = None) -> list[dict[str, A
     info = {s.code: s for s in db.execute(select(StockInfo)).scalars().all()}
     funds = {f.code: f for f in db.execute(select(Fundamental)).scalars().all()}
     hot = hot_rank.market_snapshot()
+    from app.services.watchlist import prev_trading_day  # watchlist 依赖本模块，延迟导入
+
+    hot_prev = hot_rank.ranks_on(db, prev_trading_day(db, hot_rank.today_cst()))
     stmt = select(Quote).order_by(Quote.code)
     if codes:
         stmt = stmt.where(Quote.code.in_(codes))
@@ -135,6 +138,7 @@ def factor_rows(db: Session, codes: list[str] | None = None) -> list[dict[str, A
                 "price": q.price,
                 "dividend_yield": fund.dividend_yield if fund else 0.0,
                 "hot_rank": hot.get(q.code),
+                "hot_rank_prev": hot_prev.get(q.code),
             }
         )
     return rows

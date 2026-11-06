@@ -619,7 +619,7 @@ def _snapshot_rows(
     ts: datetime,
     day_bars: dict[str, _Bar],
     prev_bars: dict[str, _Bar],
-    hot: dict[str, int],
+    hot: tuple[dict[str, int], dict[str, int]],
 ) -> list[dict[str, Any]]:
     """factor_history 某日快照 → DSL 因子行（name/market 用当前值，ST 状态近似）。
 
@@ -642,7 +642,7 @@ def _snapshot_rows(
                 "high_change_pct": hi, "low_change_pct": lo, "open_change_pct": opn,
                 "intraday_change_pct": intra,
                 "price": s.price, "dividend_yield": s.dividend_yield,
-                "hot_rank": hot.get(s.code),
+                "hot_rank": hot[0].get(s.code), "hot_rank_prev": hot[1].get(s.code),
             }
         )
     return rows
@@ -653,7 +653,7 @@ def _reconstructed_rows(
     ref_bars: dict[str, _Bar],
     day_bars: dict[str, _Bar],
     prev_bars: dict[str, _Bar],
-    hot: dict[str, int],
+    hot: tuple[dict[str, int], dict[str, int]],
 ) -> list[dict[str, Any]]:
     """无快照日期的近似因子行：价格相关因子按当日收盘缩放（股本/盈利视为不变），
     成交额按当日量价直算；ROE/股息率/行业取当前值（季度级慢变）；
@@ -678,7 +678,7 @@ def _reconstructed_rows(
                 "change_pct": round((day[0] / prev[0] - 1) * 100, 2) if prev and prev[0] else 0.0,
                 "high_change_pct": hi, "low_change_pct": lo, "open_change_pct": opn,
                 "intraday_change_pct": intra,
-                "hot_rank": hot.get(code),
+                "hot_rank": hot[0].get(code), "hot_rank_prev": hot[1].get(code),
                 "turnover": round(day[1] * 100 * day[0] / 1e8, 2),
                 "turnover_rate": (
                     round(r["turnover_rate"] * day[1] / ref[1], 2) if ref[1] else r["turnover_rate"]
@@ -693,8 +693,9 @@ def _run_portfolio(
 ) -> dict[str, Any]:
     scalar_dsl = {**dsl, "technical": []}
     has_scalar = bool(dsl["filters"] or dsl.get("score"))
-    uses_hot = any(f["factor"] == "hot_rank" for f in dsl["filters"]) or any(
-        f["factor"] == "hot_rank" for f in (dsl.get("score") or {}).get("factors", [])
+    hot_factors = {"hot_rank", "hot_rank_prev"}
+    uses_hot = any(f["factor"] in hot_factors for f in dsl["filters"]) or any(
+        f["factor"] in hot_factors for f in (dsl.get("score") or {}).get("factors", [])
     )
     hit_count = len(execute(scalar_dsl, rows_today)) if has_scalar else len(rows_today)
 
@@ -734,7 +735,13 @@ def _run_portfolio(
     period_names: list[dict[str, str]] = []
     pit_periods = 0
     for d in sel_dates:
-        hot = hot_rank.ranks_on(db, d.date().isoformat()) if uses_hot else {}
+        # 调仓日当天 / 前一交易日的落库人气（hot_rank / hot_rank_prev）
+        hot: tuple[dict[str, int], dict[str, int]] = ({}, {})
+        if uses_hot:
+            hot = (
+                hot_rank.ranks_on(db, d.date().isoformat()),
+                hot_rank.ranks_on(db, prev_of[d].date().isoformat()) if d in prev_of else {},
+            )
         if d in snap_days:
             rows_d = _snapshot_rows(
                 db, d, bar_lookup.get(d, {}), bar_lookup.get(prev_of.get(d), {}), hot

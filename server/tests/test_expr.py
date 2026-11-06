@@ -96,6 +96,13 @@ class TestEvaluate:
         assert sig[-1] is True
         assert sig[-2] is False
 
+    def test_amount_is_turnover_in_yi(self):
+        """amount = 手 × 100 × 收盘价 / 1e8：20 万手 × 50 元 = 10 亿。"""
+        vols = [200_000] * 19 + [100_000]  # 末日 5 亿，20 日均值 9.75 亿
+        sig = evaluate("ma(amount, 20) > 8", _s([50.0] * 20, volume=vols))
+        assert sig[-1] is True and sig[-2] is False  # 不足 20 根不通过
+        assert evaluate("all(amount > 8, 20)", _s([50.0] * 20, volume=vols))[-1] is False
+
     def test_cross_up_first_day_only(self):
         closes = [10.0, 9.0, 8.0, 7.0, 7.0, 9.0, 11.0, 12.0, 13.0, 14.0]
         sig = evaluate("cross_up(ma(close, 2), ma(close, 3))", _s(closes))

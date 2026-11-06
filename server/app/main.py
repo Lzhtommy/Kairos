@@ -29,6 +29,10 @@ async def lifespan(_app: FastAPI):
         kline_idx = {i["name"] for i in inspect(engine).get_indexes("kline")}
         if "ix_kline_code_period_ts" not in kline_idx:
             conn.execute(text("CREATE INDEX ix_kline_code_period_ts ON kline (code, period, ts)"))
+        # 选股 / 回测按日期取全市场人气（主键是 code,date，按 date 查用不上）
+        hot_idx = {i["name"] for i in inspect(engine).get_indexes("hot_rank_daily")}
+        if "ix_hot_rank_daily_date" not in hot_idx:
+            conn.execute(text("CREATE INDEX ix_hot_rank_daily_date ON hot_rank_daily (date)"))
         # create_all 不会给已存在的表补列：strategy_runs.forward（信号前瞻收益）
         cols = {c["name"] for c in inspect(engine).get_columns("strategy_runs")}
         if "forward" not in cols:
