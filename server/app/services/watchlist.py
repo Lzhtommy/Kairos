@@ -97,7 +97,9 @@ def open_changes(db: Session, codes: list[str], trade_date: str) -> dict[str, fl
     rn = func.row_number().over(partition_by=Kline.code, order_by=Kline.ts.desc()).label("rn")
     sub = (
         select(Kline.code, Kline.ts, Kline.open, Kline.close, rn)
-        .where(Kline.period == "1d", Kline.code.in_(codes), Kline.ts <= day)
+        # 只要最近两根：限定 30 天窗口（覆盖春节长假），否则全市场时窗口函数扫全部历史要 20+ 秒
+        .where(Kline.period == "1d", Kline.code.in_(codes), Kline.ts <= day,
+               Kline.ts >= day - timedelta(days=30))
         .subquery()
     )
     bars: dict[str, list] = {}
