@@ -28,7 +28,7 @@ def record_daily_hot_ranks() -> None:
         if prev.weekday() >= 5:
             return
         yesterday = prev.isoformat()
-        codes = list(db.execute(select(StockInfo.code).order_by(StockInfo.code)).scalars())
+        codes = list(db.execute(select(StockInfo.code).where(StockInfo.listed()).order_by(StockInfo.code)).scalars())
         if not codes:
             return
         # 分批：首次每只会落 120 天历史，一次全市场 ~66 万行 ORM 对象撑爆小内存机器
@@ -54,7 +54,7 @@ def refresh_market_hot_ranks() -> None:
         return
     db = SessionLocal()
     try:
-        codes = list(db.execute(select(StockInfo.code).order_by(StockInfo.code)).scalars())
+        codes = list(db.execute(select(StockInfo.code).where(StockInfo.listed()).order_by(StockInfo.code)).scalars())
     finally:
         db.close()
     if not codes:

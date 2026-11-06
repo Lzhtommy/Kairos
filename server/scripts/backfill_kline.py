@@ -77,7 +77,7 @@ def main() -> int:
                 select(AdjustmentEvent.code).distinct().order_by(AdjustmentEvent.code)
             ).scalars())
         else:
-            codes = list(db.execute(select(StockInfo.code).order_by(StockInfo.code)).scalars())
+            codes = list(db.execute(select(StockInfo.code).where(StockInfo.listed()).order_by(StockInfo.code)).scalars())
         counts = {
             code: n
             for code, n in db.execute(
