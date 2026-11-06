@@ -46,4 +46,21 @@ def health_data(db: Session = Depends(get_db)) -> dict:
         "quotesLagSeconds": lag_seconds,
         "latestKlineDay": kline_ts.strftime("%Y-%m-%d") if kline_ts else None,
         "factorSnapshotDays": snapshot_days or 0,
+        "warehouse": _warehouse_freshness(db),
+    }
+
+
+def _warehouse_freshness(db: Session) -> dict:
+    """数据仓库各表的最新日期，判断日更是否在跑。"""
+    from app.models.warehouse import Announcement, Dividend, FinReport, MacroSeries
+
+    def latest(col):  # noqa: ANN001, ANN202
+        v = db.execute(select(func.max(col))).scalar()
+        return v.isoformat()[:10] if v else None
+
+    return {
+        "finNotice": latest(FinReport.notice_date),
+        "dividendNotice": latest(Dividend.notice_date),
+        "macro": latest(MacroSeries.period),
+        "announcement": latest(Announcement.ann_date),
     }

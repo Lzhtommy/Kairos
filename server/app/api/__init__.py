@@ -5,6 +5,7 @@ from app.api import (
     admin_users,
     auth,
     backtests,
+    data,
     health,
     paper,
     quotes,
@@ -31,3 +32,4 @@ api_router.include_router(paper.router)
 api_router.include_router(research.router)
 api_router.include_router(research.admin_router)
 api_router.include_router(watchlist.router)
+api_router.include_router(data.router)

@@ -65,18 +65,20 @@ def upsert_rows(db: Session, model: type[Base], rows: list[dict], batch: int = 1
     for i in range(0, len(rows), batch):
         chunk = rows[i : i + batch]
         cols = [c for c in chunk[0] if c not in pk]
+        # 全部列都是主键（如指数成分）时没有可更新的列，冲突即跳过
         if dialect == "mysql":
             from sqlalchemy.dialects.mysql import insert as mysql_insert
 
             stmt = mysql_insert(table).values(chunk)
-            stmt = stmt.on_duplicate_key_update({c: stmt.inserted[c] for c in cols})
+            stmt = (stmt.on_duplicate_key_update({c: stmt.inserted[c] for c in cols}) if cols
+                    else stmt.prefix_with("IGNORE"))
         else:
             from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
             stmt = sqlite_insert(table).values(chunk)
-            stmt = stmt.on_conflict_do_update(
+            stmt = (stmt.on_conflict_do_update(
                 index_elements=sorted(pk), set_={c: stmt.excluded[c] for c in cols}
-            )
+            ) if cols else stmt.on_conflict_do_nothing(index_elements=sorted(pk)))
         db.execute(stmt)
 
 

@@ -52,6 +52,7 @@ async def lifespan(_app: FastAPI):
     from app.jobs.hot_rank import record_daily_hot_ranks, refresh_market_hot_ranks
     from app.jobs.narrative import update_narrative
     from app.jobs.listing import listing_missing, refresh_listing
+    from app.jobs.warehouse import backfill_missing, refresh_announcements, refresh_warehouse
     from app.jobs.research import process_research_queue, requeue_interrupted
     from app.jobs.sector import update_sectors
     from app.jobs.strategy_runs import check_data_freshness, run_all_strategies
@@ -197,6 +198,35 @@ async def lifespan(_app: FastAPI):
             max_instances=1,
             coalesce=True,
             **({"next_run_time": datetime.now(timezone.utc)} if listing_missing() else {}),
+        )
+        # 数据仓库日更（财报 / 分红 / 宏观 / 指数成分）：18:00 CST（10:00 UTC）
+        _scheduler.add_job(
+            refresh_warehouse,
+            "cron",
+            day_of_week="mon-fri",
+            hour=10,
+            minute=0,
+            id="warehouse",
+            max_instances=1,
+            coalesce=True,
+        )
+        # 空表（首次部署）启动后全量回补一次，财报 1988 年起约 5 分钟；有数据时是空操作
+        _scheduler.add_job(
+            backfill_missing,
+            "date",
+            run_date=datetime.now(timezone.utc),
+            id="warehouse_backfill",
+            max_instances=1,
+        )
+        # 公告每小时拉最新几页，启动即跑
+        _scheduler.add_job(
+            refresh_announcements,
+            "interval",
+            hours=1,
+            id="announcements",
+            max_instances=1,
+            coalesce=True,
+            next_run_time=datetime.now(timezone.utc),
         )
         # 凌晨 03:00 CST（19:00 UTC）SQLite 备份，避开盘中采集与盘后任务
         _scheduler.add_job(

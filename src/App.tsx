@@ -5,6 +5,7 @@ import { LandingPage } from "@/pages/landing-page"
 import { ScreenerPage } from "@/pages/screener-page"
 import { WatchlistPage } from "@/pages/watchlist-page"
 import { SectorPage } from "@/pages/sector-page"
+import { DataPage } from "@/pages/data-page"
 import { ResearchPage } from "@/pages/research-page"
 import { ResearchDetailPage } from "@/pages/research-detail-page"
 import { StrategyBuilderPage } from "@/pages/strategy-builder-page"
@@ -46,6 +47,8 @@ function App() {
         element={<RequireAuth><RequireAdmin><WatchlistPage /></RequireAdmin></RequireAuth>}
       />
       <Route path="/app/sector" element={<RequireAuth><SectorPage /></RequireAuth>} />
+      <Route path="/app/data" element={<RequireAuth><DataPage /></RequireAuth>} />
+      <Route path="/app/data/:code" element={<RequireAuth><DataPage /></RequireAuth>} />
       <Route path="/app/research" element={<RequireAuth><ResearchPage /></RequireAuth>} />
       <Route path="/app/research/:id" element={<RequireAuth><ResearchDetailPage /></RequireAuth>} />
       <Route path="/app/strategy" element={<RequireAuth><StrategyBuilderPage /></RequireAuth>} />
