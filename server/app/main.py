@@ -48,6 +48,7 @@ async def lifespan(_app: FastAPI):
     from app.jobs.hot_rank import record_daily_hot_ranks, refresh_market_hot_ranks
     from app.jobs.narrative import update_narrative
     from app.jobs.research import process_research_queue, requeue_interrupted
+    from app.jobs.security_master import refresh_security_master, security_master_empty
     from app.jobs.sector import update_sectors
     from app.jobs.strategy_runs import check_data_freshness, run_all_strategies
 
@@ -179,6 +180,19 @@ async def lifespan(_app: FastAPI):
             max_instances=1,
             coalesce=True,
             next_run_time=datetime.now(timezone.utc),
+        )
+        # 证券主表（含退市股）日更：17:30 CST（09:30 UTC），盘后任务都跑完之后；
+        # 表为空（首次部署）时启动即跑一次。BaoStock 全量约 40 秒。
+        _scheduler.add_job(
+            refresh_security_master,
+            "cron",
+            day_of_week="mon-fri",
+            hour=9,
+            minute=30,
+            id="security_master",
+            max_instances=1,
+            coalesce=True,
+            **({"next_run_time": datetime.now(timezone.utc)} if security_master_empty() else {}),
         )
         # 凌晨 03:00 CST（19:00 UTC）SQLite 备份，避开盘中采集与盘后任务
         _scheduler.add_job(

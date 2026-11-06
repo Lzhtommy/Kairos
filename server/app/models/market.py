@@ -1,6 +1,6 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-from sqlalchemy import BigInteger, DateTime, Float, Integer, String
+from sqlalchemy import BigInteger, Date, DateTime, Float, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -19,6 +19,27 @@ class StockInfo(Base):
     name: Mapped[str] = mapped_column(String(64))
     market: Mapped[str] = mapped_column(String(8))  # SH / SZ
     industry: Mapped[str] = mapped_column(String(64))
+
+
+class SecurityMaster(Base):
+    """证券主表：含已退市证券与上市 / 退市日期，回测按日期取当时在市的股票池（消除幸存者偏差）。
+
+    stock_info 只有当前在市的股票，这张表是全集。主键带交易所：指数 sh.000001
+    和平安银行 sz.000001 代码相同。SH / SZ 来自 BaoStock，北交所 BaoStock 没有，
+    由 stock_info 补齐（日期留空）。
+    """
+
+    __tablename__ = "security_master"
+
+    exchange: Mapped[str] = mapped_column(String(8), primary_key=True)  # SH / SZ / BJ
+    code: Mapped[str] = mapped_column(String(16), primary_key=True)
+    name: Mapped[str] = mapped_column(String(64))
+    sec_type: Mapped[str] = mapped_column(String(8), index=True)  # stock / index / etf / cbond / other
+    list_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    delist_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    status: Mapped[str] = mapped_column(String(8))  # listed / delisted
+    source: Mapped[str] = mapped_column(String(16))  # baostock / kairos
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
 class Quote(Base):
