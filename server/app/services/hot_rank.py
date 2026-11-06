@@ -121,6 +121,11 @@ def market_ranks(codes: list[str]) -> dict[str, int]:
     return {c: ranks[c] for c in codes if c in ranks}
 
 
+def market_snapshot() -> dict[str, int]:
+    """最近一轮全市场实时排名快照（不限当天）：盘后 / 次日开盘前选股用上个交易日收盘前的值。"""
+    return _market[1]
+
+
 def ensure_daily(db: Session, codes: Iterable[str], dates: Iterable[str]) -> int:
     """保证 codes 在 dates 这些（已结束的）日子都有落库排名，缺的用 getHisList 补。
 
@@ -170,6 +175,15 @@ def ensure_daily(db: Session, codes: Iterable[str], dates: Iterable[str]) -> int
     db.add_all(rows)
     db.commit()
     return len(rows)
+
+
+def ranks_on(db: Session, date: str) -> dict[str, int]:
+    """某日落库的全部排名（回测按历史日取值，不拿今天的冒充）。"""
+    return dict(
+        db.execute(
+            select(HotRankDaily.code, HotRankDaily.rank).where(HotRankDaily.date == date)
+        ).all()
+    )
 
 
 def daily_ranks(db: Session, codes: list[str], date: str) -> dict[str, int]:

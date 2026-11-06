@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.market import Fundamental, IndexQuote, Kline, Quote, StockInfo
+from app.services import hot_rank
 
 
 # 交易日历参照股（与 paper._CAL_REF / watchlist / backtest 兜底一致）
@@ -104,6 +105,7 @@ def factor_rows(db: Session, codes: list[str] | None = None) -> list[dict[str, A
         return []
     info = {s.code: s for s in db.execute(select(StockInfo)).scalars().all()}
     funds = {f.code: f for f in db.execute(select(Fundamental)).scalars().all()}
+    hot = hot_rank.market_snapshot()
     stmt = select(Quote).order_by(Quote.code)
     if codes:
         stmt = stmt.where(Quote.code.in_(codes))
@@ -132,6 +134,7 @@ def factor_rows(db: Session, codes: list[str] | None = None) -> list[dict[str, A
                 "intraday_change_pct": change_pct(q.price, q.open) if q.open else None,
                 "price": q.price,
                 "dividend_yield": fund.dividend_yield if fund else 0.0,
+                "hot_rank": hot.get(q.code),
             }
         )
     return rows

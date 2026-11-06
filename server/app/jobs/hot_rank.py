@@ -44,10 +44,13 @@ def record_daily_hot_ranks() -> None:
 
 
 def refresh_market_hot_ranks() -> None:
-    """盘中每 10 分钟刷新全市场实时排名快照，供命中上千只的选股结果用。"""
+    """盘中每 10 分钟刷新全市场实时排名快照，供命中上千只的选股结果和策略人气因子用。
+
+    快照只在内存里：重启后盘外也拉一轮，否则收盘后跑策略时人气条件全部缺值。
+    """
     from app.jobs.collect import in_trading_session
 
-    if not in_trading_session():
+    if not in_trading_session() and hot_rank.market_snapshot():
         return
     db = SessionLocal()
     try:

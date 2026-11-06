@@ -68,3 +68,16 @@ class TestBuildDslBoardRemap:
             "board": ["科创板", "chinext"],
         })
         assert dsl["universe"]["board"] == ["chinext", "star"]
+
+
+class TestComparators:
+    def test_negated_words_not_parsed_as_greater(self):
+        """"不超过"含"超过"、"不高于"含"高于"：须按最长比较词定方向。"""
+        assert rule_based("市盈率不超过20")["filters"] == [{"factor": "pe", "op": "lte", "value": 20.0}]
+        assert rule_based("市盈率不高于20")["filters"] == [{"factor": "pe", "op": "lte", "value": 20.0}]
+        assert rule_based("市盈率不低于20")["filters"] == [{"factor": "pe", "op": "gte", "value": 20.0}]
+
+    def test_hot_rank_phrasing(self):
+        assert rule_based("人气排名前100")["filters"] == [{"factor": "hot_rank", "op": "lte", "value": 100.0}]
+        assert rule_based("人气100名以内")["filters"] == [{"factor": "hot_rank", "op": "lte", "value": 100.0}]
+        assert rule_based("人气排名500名以外")["filters"] == [{"factor": "hot_rank", "op": "gt", "value": 500.0}]

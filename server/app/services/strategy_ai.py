@@ -39,6 +39,7 @@ _FACTOR_KEYWORDS: list[tuple[str, str]] = [
     ("相对开盘", "intraday_change_pct"), ("实体涨幅", "intraday_change_pct"),
     ("涨跌幅", "change_pct"), ("涨幅", "change_pct"),
     ("股息率", "dividend_yield"), ("股息", "dividend_yield"), ("分红", "dividend_yield"),
+    ("人气排名", "hot_rank"), ("人气榜", "hot_rank"), ("热度排名", "hot_rank"), ("人气", "hot_rank"),
     ("股价", "price"), ("价格", "price"), ("最新价", "price"),
 ]
 
@@ -122,12 +123,15 @@ def _parse_clause(clause: str) -> dict[str, Any] | None:
     if factor == "dividend_yield" and is_pct:
         num = num / 100.0  # dividend stored as fraction
 
-    if any(k in clause for k in _GTE):
-        op = "gte"
-    elif any(k in clause for k in _LTE):
-        op = "lte"
-    else:
-        op = "gte"
+    if factor == "hot_rank":
+        # 名次越小越热："前 100" / "100 名以内" 是 ≤，"500 名以外" 是 >
+        if any(k in clause for k in ("以外", "之外", "开外", "靠后")):
+            return {"factor": factor, "op": "gt", "value": num}
+        if "前" in clause or "以内" in clause or "之内" in clause:
+            return {"factor": factor, "op": "lte", "value": num}
+    # 取最长的比较词："不超过"里含"超过"、"不高于"里含"高于"，按出现与否判断会解析反
+    hits = [(len(k), "gte") for k in _GTE if k in clause] + [(len(k), "lte") for k in _LTE if k in clause]
+    op = max(hits)[1] if hits else "gte"
     return {"factor": factor, "op": op, "value": num}
 
 
@@ -454,6 +458,9 @@ def _spec_doc(industries: list[str] | None = None) -> str:
         "intraday_change_pct 是收盘（盘中为最新价）相对今日开盘的日内涨跌幅"
         "（\"开盘后又涨了 3%\" → intraday_change_pct gte 3，\"收盘收在开盘价下方\" → "
         "intraday_change_pct lt 0）。\n"
+        "hot_rank 是东方财富人气榜名次（1 最热，数值越小越热门）：\"人气前 100\" → hot_rank lte 100，"
+        "\"人气排名 500 名以外（冷门股）\" → hot_rank gt 500；不要用 rank_top/pct_top（那取数值大的一头，"
+        "即最冷门的）；打分时 direction 用 asc。没有排名的股票不通过人气条件。\n"
         "注意单位：市值/成交额单位为亿，换手率/涨跌幅/ROE 为百分数数值，股息率为小数(3% → 0.03)。\n"
         "涉及板块范围时输出 \"board\": [...]，可选值 main(主板)/chinext(创业板)/star(科创板)/bj(北交所)；"
         "如\"排除创业板和科创板\" → [\"main\",\"bj\"]，\"只要主板\" → [\"main\"]；不限板块则省略该字段。\n"

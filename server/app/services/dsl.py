@@ -30,6 +30,7 @@ FACTORS: dict[str, tuple[str, str]] = {
     "intraday_change_pct": ("日内涨跌幅(现价对今开,%)", "num"),
     "price": ("最新价", "num"),
     "dividend_yield": ("股息率", "num"),
+    "hot_rank": ("东财人气排名(名次,1 最热)", "num"),
     "industry": ("行业", "cat"),
 }
 

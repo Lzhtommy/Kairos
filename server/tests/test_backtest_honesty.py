@@ -138,3 +138,25 @@ class TestTurnoverCost:
         ) == pytest.approx(rate)
         # 首期建仓：只有买入侧
         assert backtest._rebalance_cost({}, {"A": 1.0}, rate) == pytest.approx(rate)
+
+
+class TestHotRankPointInTime:
+    def test_portfolio_uses_that_days_rank_not_today(self, db, monkeypatch):
+        """人气日级剧变：调仓日按当日落库排名选股，今天的热门股不能穿越回去。"""
+        from app.models.market import HotRankDaily
+        from app.services import hot_rank
+
+        days = trading_days("2026-01-05", 40)
+        add_stock(db, "600519", days, [100 * 0.99**i for i in range(40)])
+        add_stock(db, "600000", days, [50 * 1.01**i for i in range(40)])
+        # 今天 600519（一路跌）最热；历史上每天只有 600000 进前 100
+        monkeypatch.setattr(hot_rank, "market_snapshot", lambda: {"600519": 1})
+        db.add_all(HotRankDaily(code="600000", date=d.date().isoformat(), rank=3) for d in days)
+        db.commit()
+
+        dsl = {"filters": [{"factor": "hot_rank", "op": "lte", "value": 100}], "technical": []}
+        result = backtest.run(db, dsl, {"rebalance": "monthly"})
+
+        # 每期只持有 600000：混进 600519 等权收益会被拉成负的
+        assert [r["holdings"] for r in result["rebalanceRecords"]] == [1, 1]
+        assert result["metrics"]["totalReturn"] > 0

@@ -195,3 +195,16 @@ class TestDailyChange:
         rows = [_row("A"), _row("B", name="ST股票B"), _row("C", market="BJ")]
         got = execute(_dsl([{"factor": "pe", "op": "gt", "value": 0}]), rows)
         assert [r["code"] for r in got] == ["A"]
+
+
+class TestHotRank:
+    def test_lower_rank_is_hotter(self):
+        rows = [_row("600001", hot_rank=5), _row("600002", hot_rank=800), _row("600003", hot_rank=None)]
+        out = execute(_dsl([{"factor": "hot_rank", "op": "lte", "value": 100}]), rows)
+        assert [r["code"] for r in out] == ["600001"]
+
+    def test_missing_rank_fails_cold_filter(self):
+        """没有排名（快照没拉到）不能当成冷门股混进"500 名以外"。"""
+        rows = [_row("600002", hot_rank=800), _row("600003", hot_rank=None)]
+        out = execute(_dsl([{"factor": "hot_rank", "op": "gt", "value": 500}]), rows)
+        assert [r["code"] for r in out] == ["600002"]

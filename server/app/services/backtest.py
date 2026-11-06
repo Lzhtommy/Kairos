@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.market import FactorSnapshot, Kline, StockInfo
-from app.services import technical
+from app.services import hot_rank, technical
 from app.services.dsl import CROSS_OPS, apply_universe, execute, match_filter, validate_dsl
 from app.services.market import factor_rows, recent_cutoff
 
@@ -619,10 +619,11 @@ def _snapshot_rows(
     ts: datetime,
     day_bars: dict[str, _Bar],
     prev_bars: dict[str, _Bar],
+    hot: dict[str, int],
 ) -> list[dict[str, Any]]:
     """factor_history 某日快照 → DSL 因子行（name/market 用当前值，ST 状态近似）。
 
-    快照表不存 high/low/open，相应涨跌幅从当日/前日 K 线补算。
+    快照表不存 high/low/open，相应涨跌幅从当日/前日 K 线补算；人气排名取当日落库值。
     """
     info = {s.code: s for s in db.execute(select(StockInfo)).scalars().all()}
     rows = []
@@ -641,6 +642,7 @@ def _snapshot_rows(
                 "high_change_pct": hi, "low_change_pct": lo, "open_change_pct": opn,
                 "intraday_change_pct": intra,
                 "price": s.price, "dividend_yield": s.dividend_yield,
+                "hot_rank": hot.get(s.code),
             }
         )
     return rows
@@ -651,9 +653,11 @@ def _reconstructed_rows(
     ref_bars: dict[str, _Bar],
     day_bars: dict[str, _Bar],
     prev_bars: dict[str, _Bar],
+    hot: dict[str, int],
 ) -> list[dict[str, Any]]:
     """无快照日期的近似因子行：价格相关因子按当日收盘缩放（股本/盈利视为不变），
-    成交额按当日量价直算；ROE/股息率/行业取当前值（季度级慢变）。"""
+    成交额按当日量价直算；ROE/股息率/行业取当前值（季度级慢变）；
+    人气排名日级剧变，只用当日落库值，没有就缺值（不拿今天的排名冒充历史）。"""
     out = []
     for r in rows_today:
         code = r["code"]
@@ -674,6 +678,7 @@ def _reconstructed_rows(
                 "change_pct": round((day[0] / prev[0] - 1) * 100, 2) if prev and prev[0] else 0.0,
                 "high_change_pct": hi, "low_change_pct": lo, "open_change_pct": opn,
                 "intraday_change_pct": intra,
+                "hot_rank": hot.get(code),
                 "turnover": round(day[1] * 100 * day[0] / 1e8, 2),
                 "turnover_rate": (
                     round(r["turnover_rate"] * day[1] / ref[1], 2) if ref[1] else r["turnover_rate"]
@@ -688,6 +693,9 @@ def _run_portfolio(
 ) -> dict[str, Any]:
     scalar_dsl = {**dsl, "technical": []}
     has_scalar = bool(dsl["filters"] or dsl.get("score"))
+    uses_hot = any(f["factor"] == "hot_rank" for f in dsl["filters"]) or any(
+        f["factor"] == "hot_rank" for f in (dsl.get("score") or {}).get("factors", [])
+    )
     hit_count = len(execute(scalar_dsl, rows_today)) if has_scalar else len(rows_today)
 
     bench = _benchmark_closes(p["benchmark"])
@@ -726,14 +734,15 @@ def _run_portfolio(
     period_names: list[dict[str, str]] = []
     pit_periods = 0
     for d in sel_dates:
+        hot = hot_rank.ranks_on(db, d.date().isoformat()) if uses_hot else {}
         if d in snap_days:
             rows_d = _snapshot_rows(
-                db, d, bar_lookup.get(d, {}), bar_lookup.get(prev_of.get(d), {})
+                db, d, bar_lookup.get(d, {}), bar_lookup.get(prev_of.get(d), {}), hot
             )
             pit_periods += 1
         else:
             rows_d = _reconstructed_rows(
-                rows_today, ref_bars, bar_lookup.get(d, {}), bar_lookup.get(prev_of.get(d), {})
+                rows_today, ref_bars, bar_lookup.get(d, {}), bar_lookup.get(prev_of.get(d), {}), hot
             )
         picked = execute(scalar_dsl, rows_d) if has_scalar else apply_universe(dsl, rows_d)
         if p["max_pos"]:
