@@ -51,8 +51,16 @@ def main() -> int:
         replaced = skipped = failed = 0
         with baostock_source.session() as bs:
             for i, (code, market) in enumerate(codes, 1):
+                symbol = f"{market.lower()}.{code}"
                 try:
-                    rows = bars(baostock_source.fetch_daily_qfq(bs, f"{market.lower()}.{code}"))
+                    try:
+                        rows = bars(baostock_source.fetch_daily_qfq(bs, symbol))
+                    except RuntimeError as exc:
+                        # BaoStock 匿名会话服务端共享：别的进程 logout 后这里也会掉线，重登一次
+                        if "未登录" not in str(exc):
+                            raise
+                        bs.login()
+                        rows = bars(baostock_source.fetch_daily_qfq(bs, symbol))
                 except Exception as exc:  # noqa: BLE001
                     failed += 1
                     logger.warning("%s 拉取失败：%s", code, exc)
