@@ -689,10 +689,26 @@ function AnnouncementSection({ code }: { code: string }) {
               <li key={a.artCode} className="py-2">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="text-sm">{a.title}</p>
+                    <a
+                      href={`https://data.eastmoney.com/notices/detail/${code}/${a.artCode}.html`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-sm hover:underline"
+                    >
+                      {a.title}
+                    </a>
                     <p className="mt-0.5 text-xs text-muted-foreground">
                       <span className="font-mono tabular-nums">{a.date}</span>
                       {a.category && ` · ${a.category}`}
+                      {" · "}
+                      <a
+                        href={`https://pdf.dfcfw.com/pdf/H2_${a.artCode}_1.pdf`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="hover:text-foreground hover:underline"
+                      >
+                        PDF
+                      </a>
                     </p>
                   </div>
                   <Button
@@ -702,7 +718,7 @@ function AnnouncementSection({ code }: { code: string }) {
                     disabled={busy}
                     onClick={() => (a.summary ? setOpen(open === a.artCode ? null : a.artCode) : summarize.mutate(a.artCode))}
                   >
-                    {busy ? "生成中…" : a.summary ? (open === a.artCode ? "收起" : "AI 摘要") : "生成 AI 摘要"}
+                    {busy ? "生成中…" : a.summary ? (open === a.artCode ? "收起摘要" : "查看 AI 摘要") : "生成 AI 摘要"}
                   </Button>
                 </div>
                 {failed && (
