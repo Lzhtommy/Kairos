@@ -44,7 +44,15 @@ pip install pymysql
 alembic upgrade head
 ```
 
-代码全程用 SQLAlchemy ORM，无方言特定 SQL；JSON 字段用通用 `JSON` 类型，SQLite/MySQL 均兼容。
+已有 SQLite 数据整库搬到空的 MySQL 库（逐表流式复制并核对行数；目标表非空时拒绝写入，加 `--truncate` 覆盖）：
+
+```bash
+python -m scripts.migrate_sqlite_to_mysql --source data/kairos.db \
+    --target "mysql+pymysql://user:pass@host:3306/kairos?charset=utf8mb4"
+# 或把连接串放在环境变量 RDS_DATABASE_URL 里，省略 --target
+```
+
+方言差异已在代码里处理：MySQL 下 `Float` 编译为 `DOUBLE`、`DateTime` 为 `DATETIME(6)`；批量写入统一走 `kairos_data.store.upsert_rows`（SQLite `ON CONFLICT` / MySQL `ON DUPLICATE KEY`）。RDS 每次往返约 5ms，**新代码不要写逐行 `db.merge` 或自增主键表的 ORM `add` 循环**，用批量 upsert / Core `insert`。连接串里的密码含特殊字符时按 URL 编码（Alembic 已转义 `%`）。
 
 ## Docker
 
@@ -63,10 +71,16 @@ docker run -p 8000:8000 -v kairos-data:/app/data kairos-api
 ```
 app/
   core/        配置、数据库、鉴权
-  models/      SQLAlchemy 模型（用户/行情/策略/自选）
-  providers/   DataProvider 抽象 + seed / akshare / tencent 实现 + 工厂
-  services/    dsl(校验+执行) / strategy_ai(NL→DSL) / screener / backtest / market
-  api/         路由：auth / quotes / screener / strategies / watchlist / backtests
-  jobs/        采集脚本
+  models/      SQLAlchemy 模型（用户/行情/策略/自选；数据仓库表映射到 kairos_data.schema）
+  providers/   seed 合成数据 + provider 工厂（真实数据源在 kairos_data.sources）
+  services/    dsl(校验+执行) / strategy_ai(NL→DSL) / screener / backtest / market / research
+  api/         路由：auth / quotes / screener / strategies / watchlist / backtests / sector / research / data
+  jobs/        定时任务：行情采集 / 盘后策略 / 板块 / 股票池 / 数据仓库日更 / 公告 / 备份
+kairos_data/   独立采集包（可单独 pip 安装）：
+  sources/     腾讯 / 东财行情与数据中心 / BaoStock / AkShare / 申万 / 中证官网
+  schema.py    股票池、日 K、财报、股东、两融、指数、ETF / 可转债、宏观、公告等表结构
+  sync.py      各类数据的同步与全量回补（可断点续跑）
+  cli.py       命令行 kairos-data / python -m kairos_data
+scripts/       回补与运维脚本（backfill_kline / backfill_delisted / migrate_sqlite_to_mysql …）
 alembic/       数据库迁移
 ```

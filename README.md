@@ -27,6 +27,7 @@
 - **盘后自动运行与推送**：交易日收盘后自动运行全部策略，命中变化通过邮件 / Webhook（企业微信、飞书、Server 酱）推送
 - **行业轮动**：板块 RRG 相对轮动图、三因子倾斜（残差反转 / 季节性 / 残差动量）、拥挤度过热预警、LLM 叙事因子（只前向记录，永不回测）
 - **智能选股**：传统指标筛选（行业 / PE / ROE 等）+ 按已保存策略一键筛选
+- **数据中心**：类万得的个股资料页（含已退市股票）——行情走势、财报与三大报表、分红、股本与股东户数、十大股东、限售解禁、两融 / 龙虎榜 / 大宗交易、指数成分、公告（可跳原文，按需生成 AI 摘要）；另有 11 个主要指数、ETF / 可转债、30 余个宏观与利率序列。全部来自免费公开数据源，盘后自动日更
 - **大盘概览**：实时指数 + 行情表（涨幅榜 / 成交活跃 / 自选）
 - **账户体系**：邀请制注册、JWT 鉴权、数据按用户隔离，内置邀请码管理后台
 
@@ -38,6 +39,7 @@
 |---|---|---|
 | 行情数据 | AkShare（东财）/ Tencent（腾讯 + 新浪，零额外依赖） | `SeedProvider` 确定性合成数据 |
 | AI 生成策略 | DeepSeek API（JSON 输出，国内直连） | 规则解析器（中文关键词 → DSL） |
+| 数据中心（财报 / 股东 / 宏观等） | 东财数据中心 + BaoStock + 中证官网（[`kairos_data`](./server/kairos_data/README.md)） | 表为空，数据页显示暂无数据 |
 | 数据库 | MySQL（只改 `DATABASE_URL`） | SQLite |
 
 ## 📸 界面预览
@@ -56,9 +58,10 @@
 浏览器 ──▶ Nginx :443
              ├── /        → 前端静态文件（React SPA）
              └── /api/    → FastAPI（Docker 容器）
-                              ├── SQLite / MySQL
+                              ├── SQLite / MySQL（生产为阿里云 RDS MySQL）
                               ├── 行情采集（每 60s，交易时段）
-                              └── APScheduler（盘后策略运行 / 板块日更 / 通知）
+                              └── APScheduler（盘后策略运行 / 板块日更 / 数据仓库日更 / 公告 / 通知）
+                                     └── kairos_data：独立采集包（数据源 + 表结构 + 同步）
 ```
 
 MVP 刻意采用「单库 + 分钟级采集 + 前端轮询」的低频形态，Redis / MQ / 时序库 / WebSocket 按需后续引入。设计取舍与演进计划见 [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) 与 [`docs/ROADMAP.md`](./docs/ROADMAP.md)。
@@ -70,7 +73,7 @@ MVP 刻意采用「单库 + 分钟级采集 + 前端轮询」的低频形态，R
 | 前端 | React 19 · Vite · TypeScript · Tailwind CSS v4 · shadcn/base-ui · TanStack Query/Table · react-router |
 | 后端 | Python 3.11 · FastAPI · SQLAlchemy 2 · Alembic · APScheduler |
 | 数据库 | SQLite（默认）→ MySQL（改一行 `DATABASE_URL` 即迁移） |
-| 数据源 | AkShare / 腾讯·新浪行情 / 内置合成数据，可插拔 `DataProvider` |
+| 数据源 | 腾讯·新浪行情 / AkShare / 东财数据中心 / BaoStock / 中证官网 / 内置合成数据；采集层独立为 `kairos_data` 包 |
 | AI | DeepSeek API / 内置规则解析器（无 Key 也能用） |
 | 部署 | Docker Compose · Nginx · GitHub Actions 自动部署 |
 
@@ -118,6 +121,14 @@ python -m scripts.set_admin yourname         # （注册后）按用户名设为
 
 打开 http://localhost:5173 → 用邀请码注册即可体验全部功能。启动时后端会自动建表并 bootstrap 股票池、基本面与历史 K 线，无需手动初始化。
 
+数据中心的表为空时，启动后会自动在后台全量回补（财报、股东、两融、龙虎榜等，共几个小时，需要能访问东财和 BaoStock；中断后重启会从断点续上）。在市股票日 K 补到上市日、退市股日 K 需手动跑一次：
+
+```bash
+cd server
+python -m kairos_data kline --db "$DATABASE_URL"       # 在市股票日 K 补到上市日（数小时）
+python -m kairos_data delisted --db "$DATABASE_URL"    # 退市股全历史日 K
+```
+
 - API 文档：http://127.0.0.1:8000/docs
 - 健康检查：http://127.0.0.1:8000/api/health
 
@@ -141,7 +152,10 @@ python -m scripts.set_admin yourname         # （注册后）按用户名设为
 ```bash
 cd server
 pip install pytest
-python -m pytest tests/     # DSL / 回测诚实度 / 模拟盘 / 板块 / 鉴权等 16 组测试
+python -m pytest tests/     # DSL / 回测诚实度 / 模拟盘 / 板块 / 鉴权 / 数据仓库等 27 组测试
+
+# 同一套用例跑在 MySQL 上（指向一个空库）
+TEST_DATABASE_URL="mysql+pymysql://root:pass@127.0.0.1:3306/kairos_test?charset=utf8mb4" python -m pytest tests/
 ```
 
 ## 📦 生产部署
@@ -156,6 +170,7 @@ python -m pytest tests/     # DSL / 回测诚实度 / 模拟盘 / 板块 / 鉴�
 | [`docs/EXPR-DSL-DESIGN.md`](./docs/EXPR-DSL-DESIGN.md) | 策略 DSL 设计（截面 / 量能表达式） |
 | [`docs/ROADMAP.md`](./docs/ROADMAP.md) | Post-MVP 演进计划（P1–P5） |
 | [`server/README.md`](./server/README.md) | 后端细节：降级设计、MySQL 迁移、Docker、目录结构 |
+| [`server/kairos_data/README.md`](./server/kairos_data/README.md) | 独立采集包：覆盖的数据表、命令行用法、数据声明 |
 | [`deploy/README.md`](./deploy/README.md) | ECS + Nginx + GitHub Actions 部署 |
 
 ## 🤝 贡献
@@ -169,6 +184,8 @@ python -m pytest tests/     # DSL / 回测诚实度 / 模拟盘 / 板块 / 鉴�
 ## ⚠️ 免责声明
 
 本项目仅供学习与研究使用，**不构成任何投资建议**。策略回测与模拟盘结果基于历史数据，不代表未来收益；股市有风险，投资需谨慎。
+
+仓库不附带任何行情或财务数据，均在运行时从公开接口抓取；数据权利归交易所及各数据提供方所有，请遵守其服务条款，勿将抓取的原始数据用于再分发或商业用途。AI 公告摘要由模型生成，仅供参考，以公告原文为准。
 
 ## 📄 License
 
