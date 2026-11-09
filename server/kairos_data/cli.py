@@ -5,8 +5,9 @@
     kairos-data backfill [--parts ...]   # 全量：财报、分红、宏观、指数成分
     kairos-data daily                    # 增量：最近报告期、最新宏观、当日指数成分
     kairos-data announcements            # 最新公告
+    kairos-data kline                    # 在市股票日 K 补到上市日（全市场数小时，可断点续跑）
     kairos-data delisted                 # 退市股前复权日 K
-    kairos-data all                      # init + listing + backfill + delisted
+    kairos-data all                      # init + listing + backfill + kline + delisted
 
 数据库默认 ./kairos_data.db（SQLite），用 --db 或环境变量 KAIROS_DATA_DB 指定其他库，
 例如 mysql+pymysql://user:pass@host/db?charset=utf8mb4。
@@ -23,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from kairos_data import schema, sync
 
-COMMANDS = ("init", "listing", "backfill", "daily", "announcements", "delisted", "all")
+COMMANDS = ("init", "listing", "backfill", "daily", "announcements", "kline", "delisted", "all")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -50,10 +51,12 @@ def main(argv: list[str] | None = None) -> int:
             sync.daily(db)
         if args.command == "announcements":
             logging.info("announcements: %d rows", sync.refresh_announcements(db))
+        failed = 0
+        if args.command in ("kline", "all"):
+            failed += sync.backfill_history(db)[2]
         if args.command in ("delisted", "all"):
-            _replaced, _skipped, failed = sync.backfill_delisted(db)
-            return 1 if failed else 0
-    return 0
+            failed += sync.backfill_delisted(db)[2]
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

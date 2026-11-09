@@ -9,7 +9,7 @@
 | 表 | 内容 | 来源 |
 |---|---|---|
 | `stock_info` | 沪深 A 股股票池，含已退市股票与上市 / 退市日期 | BaoStock |
-| `kline` | 日 K（前复权）；`delisted` 命令补退市股全历史 | BaoStock |
+| `kline` | 日 K（前复权，成交量单位：手），在市股票补到上市日，退市股全历史 | 腾讯，限流时 BaoStock |
 | `fin_report` | 定期报告主要指标，按报告期，带公告日（1988 年起） | 东方财富数据中心 |
 | `dividend` | 分红送转：预案 / 登记 / 除权日，每 10 股派现、送股、转增 | 东方财富数据中心 |
 | `index_constituent` | 上证 50、沪深 300、中证 500 历次调整后的成分（2005 年起） | BaoStock |
@@ -23,7 +23,7 @@
 ```bash
 pip install "kairos-data[baostock]"
 
-kairos-data all          # 建表 + 股票池 + 财报 / 分红 / 宏观 / 指数成分全量 + 退市股日 K
+kairos-data all          # 建表 + 股票池 + 财报 / 分红 / 宏观 / 指数成分全量 + 全部日 K
 kairos-data daily        # 之后每个交易日跑一次增量
 kairos-data announcements
 ```
@@ -35,7 +35,7 @@ pip install "kairos-data[all]"
 kairos-data all --db "mysql+pymysql://user:pass@host:3306/stock?charset=utf8mb4"
 ```
 
-全量回补约 15~45 分钟，取决于网络。所有命令都是幂等的，中断后重跑即可。
+财报等全量回补约 15~45 分钟；全市场日 K 补到上市日要几个小时。所有命令都是幂等的，中断后重跑即可。
 
 在 Python 里使用：
 

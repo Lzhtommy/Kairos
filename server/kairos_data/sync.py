@@ -1,4 +1,4 @@
-"""采集与写库：股票池、财报、分红、宏观利率、指数成分、公告、退市股日 K。
+"""采集与写库：股票池、日 K（在市补到上市日 / 退市股全历史）、财报、分红、宏观利率、指数成分、公告。
 
 每个函数接收 SQLAlchemy 会话，拉取数据源后批量 upsert 并提交；重复执行幂等。
 不依赖 Kairos，命令行入口见 kairos_data.cli。
@@ -295,7 +295,7 @@ def refresh_listing(db, add_listed: bool = True) -> int:
 # ---------------------------------------------------------------- 退市股日 K
 
 def delisted_bars(raw: list[dict[str, str]]) -> list[dict]:
-    """BaoStock 行 → kline 行：只要交易日，成交量股 → 手（与腾讯口径一致）。"""
+    """BaoStock 日 K 行 → kline 行：只要交易日，成交量股 → 手（与腾讯口径一致）。"""
     out = []
     for r in raw:
         if r.get("tradestatus") != "1" or not r.get("close"):
@@ -306,6 +306,17 @@ def delisted_bars(raw: list[dict[str, str]]) -> list[dict]:
             "close": float(r["close"]), "volume": int(float(r["volume"] or 0)) // 100,
         })
     return out
+
+
+def _baostock_bars(bs, symbol: str) -> list[dict]:  # noqa: ANN001
+    try:
+        return delisted_bars(baostock.fetch_daily_qfq(bs, symbol))
+    except RuntimeError as exc:
+        # BaoStock 匿名会话服务端共享：别的进程 logout 后这里也会掉线，重登一次
+        if "未登录" not in str(exc):
+            raise
+        bs.login()
+        return delisted_bars(baostock.fetch_daily_qfq(bs, symbol))
 
 
 def backfill_delisted(db) -> tuple[int, int, int]:
@@ -327,14 +338,7 @@ def backfill_delisted(db) -> tuple[int, int, int]:
         for i, (code, market) in enumerate(codes, 1):
             symbol = f"{market.lower()}.{code}"
             try:
-                try:
-                    rows = delisted_bars(baostock.fetch_daily_qfq(bs, symbol))
-                except RuntimeError as exc:
-                    # BaoStock 匿名会话服务端共享：别的进程 logout 后这里也会掉线，重登一次
-                    if "未登录" not in str(exc):
-                        raise
-                    bs.login()
-                    rows = delisted_bars(baostock.fetch_daily_qfq(bs, symbol))
+                rows = _baostock_bars(bs, symbol)
             except Exception as exc:  # noqa: BLE001
                 failed += 1
                 logger.warning("%s 拉取失败：%s", code, exc)
@@ -352,6 +356,102 @@ def backfill_delisted(db) -> tuple[int, int, int]:
             time.sleep(0.05)
     logger.info("退市股日 K 完成：替换 %d，跳过 %d，失败 %d（共 %d 只）",
                 replaced, skipped, failed, len(codes))
+    return replaced, skipped, failed
+
+
+# ---------------------------------------------------------------- 在市股票日 K 补到上市日
+
+# 最早一根 K 线晚于上市日这么多天才算缺历史（上市初停牌、数据源缺头几天都不算）
+_LISTING_SLACK = timedelta(days=45)
+_HISTORY_BARS = 20000  # 腾讯分页取数的上限，足够覆盖 1990 年至今
+_TENCENT_COOLDOWN = 600  # 腾讯 ifzq 限流后改走 BaoStock 的秒数
+
+
+def candle_rows(candles) -> list[dict]:  # noqa: ANN001
+    return [{"period": "1d", "ts": c.ts, "open": c.open, "high": c.high, "low": c.low,
+             "close": c.close, "volume": c.volume} for c in candles]
+
+
+def replace_kline(db, code: str, rows: list[dict]) -> int:
+    """整段替换一只股票的日 K，返回写入根数（0 = 未替换）。
+
+    新数据明显比库里短（不到 90%）时不覆盖：腾讯对北交所只回一根，整段替换会清空历史。
+    库里比新数据最后一根更晚的 bar 保留（BaoStock 盘后还没有当日 bar，采集已写入）。
+    """
+    if not rows:
+        return 0
+    have = db.execute(select(kline).where(kline.c.code == code, kline.c.period == "1d")).mappings().all()
+    if len(rows) < len(have) * 0.9:
+        logger.warning("%s 只拿到 %d 根（库里 %d 根），跳过不覆盖", code, len(rows), len(have))
+        return 0
+    last = max(r["ts"] for r in rows)
+    newer = [{k: v for k, v in h.items() if k not in ("id", "code")} for h in have if h["ts"] > last]
+    db.execute(delete(kline).where(kline.c.code == code, kline.c.period == "1d"))
+    db.execute(insert(kline), [{"code": code, **r} for r in rows + newer])
+    db.commit()
+    return len(rows) + len(newer)
+
+
+def history_gaps(db) -> list[tuple[str, str]]:
+    """在市沪深股票里日 K 没补到上市日的 (code, market)。北交所没有上市日，跳过。"""
+    first = (select(kline.c.code, func.min(kline.c.ts).label("first"))
+             .where(kline.c.period == "1d").group_by(kline.c.code).subquery())
+    out = []
+    for code, market, listed, first_ts in db.execute(
+        select(stock_info.c.code, stock_info.c.market, stock_info.c.list_date, first.c.first)
+        .outerjoin(first, first.c.code == stock_info.c.code)
+        .where(stock_info.c.delist_date.is_(None), stock_info.c.list_date.is_not(None),
+               stock_info.c.market.in_(("SH", "SZ")))
+        .order_by(stock_info.c.code)
+    ).tuples():
+        if first_ts is None or first_ts.date() > listed + _LISTING_SLACK:
+            out.append((code, market))
+    return out
+
+
+def backfill_history(db, tencent=None, throttle: float = 0.15) -> tuple[int, int, int]:  # noqa: ANN001
+    """在市股票日 K 补到上市日：先走腾讯，限流后 10 分钟内改走 BaoStock。返回 (替换, 跳过, 失败)。
+
+    已补齐的股票不在候选里，中断后重跑即可续上。
+    """
+    from contextlib import ExitStack
+
+    from kairos_data.sources.tencent import TencentProvider
+
+    tencent = tencent or TencentProvider()
+    todo = history_gaps(db)
+    logger.info("日 K 待补到上市日：%d 只", len(todo))
+    replaced = skipped = failed = 0
+    tencent_down_until = 0.0
+    with ExitStack() as stack:
+        bs = None
+        for i, (code, market) in enumerate(todo, 1):
+            rows = None
+            if time.monotonic() >= tencent_down_until:
+                try:
+                    rows = candle_rows(tencent.get_kline_history(code, _HISTORY_BARS))
+                    time.sleep(throttle)
+                except Exception as exc:  # noqa: BLE001 — 限流 / 网络问题，切 BaoStock
+                    logger.warning("%s 腾讯取数失败（%s），%d 秒内改用 BaoStock", code, exc, _TENCENT_COOLDOWN)
+                    tencent_down_until = time.monotonic() + _TENCENT_COOLDOWN
+            if rows is None:
+                try:
+                    if bs is None:
+                        bs = stack.enter_context(baostock.session())
+                    rows = _baostock_bars(bs, f"{market.lower()}.{code}")
+                except Exception as exc:  # noqa: BLE001
+                    failed += 1
+                    logger.warning("%s BaoStock 取数失败：%s", code, exc)
+                    continue
+            if replace_kline(db, code, rows):
+                replaced += 1
+            else:
+                skipped += 1
+            if i % 100 == 0:
+                logger.info("日 K 补历史 %d/%d：替换 %d，跳过 %d，失败 %d",
+                            i, len(todo), replaced, skipped, failed)
+    logger.info("日 K 补历史完成：替换 %d，跳过 %d，失败 %d（共 %d 只）",
+                replaced, skipped, failed, len(todo))
     return replaced, skipped, failed
 
 
