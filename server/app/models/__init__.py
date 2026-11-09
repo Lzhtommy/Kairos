@@ -4,8 +4,9 @@ from app.models.sector import (SectorBar, SectorInfo, SectorMetric, SectorNarrat
                                SectorValuation)
 from app.models.strategy import Backtest, ChatMessage, Strategy
 from app.models.user import User
-from app.models.warehouse import (Announcement, Dividend, FinReport, FinStatement, HolderCount,
-                                  IndexConstituent, Lockup, MacroSeries, ShareCapital, TopHolder)
+from app.models.warehouse import (Announcement, Billboard, BlockTrade, Dividend, FinReport, FinStatement,
+                                  HolderCount, IndexConstituent, Lockup, MacroSeries, MarginTrading,
+                                  ShareCapital, TopHolder)
 from app.models.watchlist import Watchlist, WatchlistImport, WatchlistImportItem, WatchlistItem
 
 __all__ = [
@@ -19,6 +20,9 @@ __all__ = [
     "HolderCount",
     "TopHolder",
     "Lockup",
+    "MarginTrading",
+    "Billboard",
+    "BlockTrade",
     "User",
     "StockInfo",
     "Quote",

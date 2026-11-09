@@ -48,3 +48,15 @@ class TopHolder(Base):
 
 class Lockup(Base):
     __table__ = schema.lockup.to_metadata(Base.metadata)
+
+
+class MarginTrading(Base):
+    __table__ = schema.margin_trading.to_metadata(Base.metadata)
+
+
+class Billboard(Base):
+    __table__ = schema.billboard.to_metadata(Base.metadata)
+
+
+class BlockTrade(Base):
+    __table__ = schema.block_trade.to_metadata(Base.metadata)

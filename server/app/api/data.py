@@ -15,8 +15,9 @@ from app.core.security import get_current_user
 from kairos_data.schema import STATEMENT_ITEMS
 from kairos_data.sync import MACRO, announcement_rows
 from app.models.market import Fundamental, Kline, Quote, StockInfo
-from app.models.warehouse import (Announcement, Dividend, FinReport, FinStatement, HolderCount,
-                                  IndexConstituent, Lockup, MacroSeries, ShareCapital, TopHolder)
+from app.models.warehouse import (Announcement, Billboard, BlockTrade, Dividend, FinReport, FinStatement,
+                                  HolderCount, IndexConstituent, Lockup, MacroSeries, MarginTrading,
+                                  ShareCapital, TopHolder)
 from kairos_data.sources import eastmoney_dc as eastmoney_data
 from app.services.market import change_pct
 
@@ -116,7 +117,38 @@ def stock_profile(code: str, db: Session = Depends(get_db)):
             for d in divs
         ],
         "statements": _statements(db, code),
+        "trading": _trading(db, code),
         **_holders_section(db, code),
+    }
+
+
+def _trading(db: Session, code: str) -> dict:
+    """融资融券近一年逐日、最近 30 次龙虎榜、最近 30 笔大宗交易。"""
+    since = date.today() - timedelta(days=365)
+    margin = db.execute(
+        select(MarginTrading).where(MarginTrading.code == code, MarginTrading.trade_date >= since)
+        .order_by(MarginTrading.trade_date)
+    ).scalars().all()
+    boards = db.execute(
+        select(Billboard).where(Billboard.code == code).order_by(Billboard.trade_date.desc()).limit(30)
+    ).scalars().all()
+    blocks = db.execute(
+        select(BlockTrade).where(BlockTrade.code == code)
+        .order_by(BlockTrade.trade_date.desc(), BlockTrade.id).limit(30)
+    ).scalars().all()
+    return {
+        "margin": [{"date": _iso(m.trade_date), "rzye": m.rzye, "rqye": m.rqye, "rzmre": m.rzmre}
+                   for m in margin],
+        "billboard": [
+            {"date": _iso(b.trade_date), "reason": b.reason, "changePct": b.change_pct,
+             "netAmt": b.net_amt, "dealAmt": b.deal_amt, "dealRatio": b.deal_ratio, "comment": b.comment}
+            for b in boards
+        ],
+        "blocks": [
+            {"date": _iso(b.trade_date), "price": b.price, "premiumPct": b.premium_pct, "volume": b.volume,
+             "amount": b.amount, "buyer": b.buyer, "seller": b.seller}
+            for b in blocks
+        ],
     }
 
 

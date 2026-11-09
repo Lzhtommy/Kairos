@@ -155,3 +155,32 @@ def test_statement_rows_merge_three_reports():
     assert (r["total_assets"], r["parent_netprofit"], r["ocf"]) == (3.0e11, 8.2e10, 6.1e10)
     assert r["notice_date"] == date(2026, 4, 17)  # 以利润表公告日为准
     assert r["inventory"] is None
+
+
+def test_block_trade_replaces_range_and_filters(db, monkeypatch):
+    def raw(premium):
+        base = {"SECUCODE": "600519.SH", "SECURITY_CODE": "600519", "TRADE_DATE": "2026-11-06 00:00:00",
+                "DEAL_PRICE": 1450.0, "PREMIUM_RATIO": premium, "DEAL_VOLUME": 1000, "DEAL_AMT": 1.45e6,
+                "BUYER_NAME": "机构专用", "SELLER_NAME": "机构专用", "SECURITY_TYPE": "EQA"}
+        # 同买卖方拆两笔完全相同的成交都要保留；基金大宗去掉
+        return [base, dict(base), {**base, "SECURITY_TYPE": "FDO", "SECURITY_CODE": "510300"}]
+
+    monkeypatch.setattr(sync.eastmoney_dc, "fetch_report", lambda *a, **k: raw(-0.03))
+    month = [(date(2026, 11, 1), date(2026, 11, 30))]
+    assert sync.refresh_block_trade(db, month) == 2
+    monkeypatch.setattr(sync.eastmoney_dc, "fetch_report", lambda *a, **k: raw(-0.05))
+    sync.refresh_block_trade(db, month)  # 重跑整段替换，不累加
+    rows = db.execute(select(schema.block_trade.c.premium_pct)).scalars().all()
+    assert len(rows) == 2 and round(rows[0], 2) == -5.0
+
+
+def test_margin_and_billboard_rows():
+    m = sync.margin_rows([{"SCODE": "600519", "DATE": "2026-11-06 00:00:00", "RZYE": 1.2e10, "RQYE": 3e8}])
+    assert m[0]["rzye"] == 1.2e10 and m[0]["rzmre"] is None
+    b = sync.billboard_rows([
+        {"SECUCODE": "000525.SZ", "SECURITY_CODE": "000525", "TRADE_DATE": "2026-11-06 00:00:00",
+         "EXPLANATION": "日涨幅偏离值达到7%", "BILLBOARD_NET_AMT": 9.8e7, "EXPLAIN": "普通席位买入"},
+        {"SECUCODE": "000525.SZ", "SECURITY_CODE": "000525", "TRADE_DATE": "2026-11-06 00:00:00",
+         "EXPLANATION": "日涨幅偏离值达到7%", "BILLBOARD_NET_AMT": 9.9e7},
+    ])
+    assert len(b) == 1 and b[0]["net_amt"] == 9.9e7

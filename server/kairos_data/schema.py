@@ -1,4 +1,4 @@
-"""数据库表结构（SQLAlchemy Core）：股票池、日 K、财报与三大报表、分红、股本股东、指数成分、宏观、公告。
+"""数据库表结构（SQLAlchemy Core）：股票池、日 K、财报与三大报表、分红、股本股东、交易类数据、指数成分、宏观、公告。
 
 单独使用时 `metadata.create_all(engine)` 建表；嵌入 Kairos 时由 app.models 把这些表
 复制进业务库的 metadata 并映射 ORM 类，两边共用同一份定义。
@@ -215,4 +215,49 @@ lockup = Table(
     Column("market_cap", Float, nullable=True),  # 解禁市值（元，按公告时股价）
     Column("float_ratio", Float, nullable=True),  # 占解禁前流通股 %
     Column("total_ratio", Float, nullable=True),  # 占总股本 %
+)
+
+# 融资融券个股明细（2010 年起），金额单位元
+margin_trading = Table(
+    "margin_trading", metadata,
+    Column("code", String(16), primary_key=True),
+    Column("trade_date", Date, primary_key=True, index=True),
+    Column("rzye", Float, nullable=True),  # 融资余额
+    Column("rzmre", Float, nullable=True),  # 融资买入额
+    Column("rzche", Float, nullable=True),  # 融资偿还额
+    Column("rqye", Float, nullable=True),  # 融券余额
+    Column("rqyl", Float, nullable=True),  # 融券余量（股）
+    Column("rqmcl", Float, nullable=True),  # 融券卖出量（股）
+    Column("rzrqye", Float, nullable=True),  # 融资融券余额
+)
+
+# 龙虎榜：每股每日每个上榜原因一行，金额单位元
+billboard = Table(
+    "billboard", metadata,
+    Column("code", String(16), primary_key=True),
+    Column("trade_date", Date, primary_key=True, index=True),
+    Column("reason", String(128), primary_key=True),
+    Column("close", Float, nullable=True),
+    Column("change_pct", Float, nullable=True),
+    Column("turnover_rate", Float, nullable=True),
+    Column("buy_amt", Float, nullable=True),  # 龙虎榜买入额
+    Column("sell_amt", Float, nullable=True),
+    Column("net_amt", Float, nullable=True),
+    Column("deal_amt", Float, nullable=True),  # 龙虎榜成交额
+    Column("deal_ratio", Float, nullable=True),  # 占总成交 %
+    Column("comment", String(256), nullable=False, default=""),  # 解读，如"机构买入"
+)
+
+# 大宗交易：没有天然唯一键（同买卖方会拆成多笔完全相同的成交），按日期整段替换
+block_trade = Table(
+    "block_trade", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("code", String(16), nullable=False, index=True),
+    Column("trade_date", Date, nullable=False, index=True),
+    Column("price", Float, nullable=True),
+    Column("premium_pct", Float, nullable=True),  # 相对收盘价溢价 %
+    Column("volume", BigInteger, nullable=True),  # 股
+    Column("amount", Float, nullable=True),  # 元
+    Column("buyer", String(128), nullable=False, default=""),
+    Column("seller", String(128), nullable=False, default=""),
 )

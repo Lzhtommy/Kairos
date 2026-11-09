@@ -503,6 +503,109 @@ function HoldersSection({ p }: { p: StockProfile }) {
   )
 }
 
+function TradingSection({ p }: { p: StockProfile }) {
+  const { margin, billboard, blocks } = p.trading
+  const [view, setView] = useState<"margin" | "billboard" | "blocks">("margin")
+  const rz = useMemo(
+    () => margin.filter((m) => m.rzye != null).map((m) => [m.date, m.rzye! / 1e8] as [string, number]),
+    [margin],
+  )
+  if (!margin.length && !billboard.length && !blocks.length) return null
+  return (
+    <Section
+      title="交易数据"
+      extra={
+        <Segmented
+          value={view}
+          onChange={setView}
+          options={[
+            { key: "margin", label: "融资融券" },
+            { key: "billboard", label: `龙虎榜（${billboard.length}）` },
+            { key: "blocks", label: `大宗交易（${blocks.length}）` },
+          ]}
+        />
+      }
+    >
+      {view === "margin" &&
+        (rz.length >= 2 ? (
+          <>
+            <p className="mb-1 text-xs text-muted-foreground">
+              融资余额（亿元，近一年）· 最新 {rz[rz.length - 1][1].toFixed(2)} 亿
+              {margin[margin.length - 1].rqye != null && ` · 融券余额 ${wan(margin[margin.length - 1].rqye)}`}
+            </p>
+            <LineChart points={rz} height={180} format={(v) => `${v.toFixed(2)} 亿`} />
+          </>
+        ) : (
+          <p className="text-sm text-muted-foreground">非两融标的或暂无数据</p>
+        ))}
+      {view === "billboard" &&
+        (billboard.length ? (
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>日期</TableHead>
+                  <TableHead>上榜原因</TableHead>
+                  <TableHead className="text-right">涨跌幅</TableHead>
+                  <TableHead className="text-right">龙虎榜净买额</TableHead>
+                  <TableHead className="text-right">占总成交</TableHead>
+                  <TableHead>解读</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {billboard.map((b) => (
+                  <TableRow key={`${b.date}-${b.reason}`} className="text-xs">
+                    <TableCell className="font-mono tabular-nums">{b.date}</TableCell>
+                    <TableCell className="max-w-[260px] truncate" title={b.reason}>{b.reason}</TableCell>
+                    <TableCell className={cn("text-right font-mono tabular-nums", pctCls(b.changePct))}>{num(b.changePct)}%</TableCell>
+                    <TableCell className={cn("text-right font-mono tabular-nums", pctCls(b.netAmt))}>{wan(b.netAmt)}</TableCell>
+                    <TableCell className="text-right font-mono tabular-nums">{num(b.dealRatio)}%</TableCell>
+                    <TableCell className="text-muted-foreground">{b.comment || "—"}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">暂无龙虎榜记录</p>
+        ))}
+      {view === "blocks" &&
+        (blocks.length ? (
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>日期</TableHead>
+                  <TableHead className="text-right">成交价</TableHead>
+                  <TableHead className="text-right">溢价率</TableHead>
+                  <TableHead className="text-right">成交量</TableHead>
+                  <TableHead className="text-right">成交额</TableHead>
+                  <TableHead>买方营业部</TableHead>
+                  <TableHead>卖方营业部</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {blocks.map((b, i) => (
+                  <TableRow key={`${b.date}-${i}`} className="text-xs">
+                    <TableCell className="font-mono tabular-nums">{b.date}</TableCell>
+                    <TableCell className="text-right font-mono tabular-nums">{num(b.price)}</TableCell>
+                    <TableCell className={cn("text-right font-mono tabular-nums", pctCls(b.premiumPct))}>{num(b.premiumPct)}%</TableCell>
+                    <TableCell className="text-right font-mono tabular-nums">{wan(b.volume)}</TableCell>
+                    <TableCell className="text-right font-mono tabular-nums">{wan(b.amount)}</TableCell>
+                    <TableCell className="max-w-[200px] truncate" title={b.buyer}>{b.buyer || "—"}</TableCell>
+                    <TableCell className="max-w-[200px] truncate" title={b.seller}>{b.seller || "—"}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">暂无大宗交易</p>
+        ))}
+    </Section>
+  )
+}
+
 function LockupSection({ p }: { p: StockProfile }) {
   if (!p.lockups.length) return null
   return (
@@ -633,6 +736,7 @@ function StockView({ code }: { code: string }) {
       <CapitalSection p={data} />
       <HoldersSection p={data} />
       <LockupSection p={data} />
+      <TradingSection p={data} />
       <AnnouncementSection code={code} />
     </div>
   )
@@ -716,7 +820,7 @@ export function DataPage() {
         <div>
           <h1 className="text-lg font-semibold text-foreground">数据</h1>
           <p className="mt-0.5 text-sm text-muted-foreground">
-            个股资料（含已退市）、财报、分红、股本股东、解禁、指数成分、公告，以及宏观与利率序列
+            个股资料（含已退市）、财报与三大报表、分红、股本股东、解禁、两融龙虎榜大宗、指数成分、公告，以及宏观与利率序列
           </p>
         </div>
         <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)}>

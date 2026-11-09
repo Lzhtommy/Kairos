@@ -96,6 +96,27 @@ export type StockProfile = {
     noticeDates: (string | null)[]
     items: { key: string; label: string; statement: "bs" | "is" | "cf"; values: (number | null)[] }[]
   }
+  trading: {
+    margin: { date: string; rzye: number | null; rqye: number | null; rzmre: number | null }[]
+    billboard: {
+      date: string
+      reason: string
+      changePct: number | null
+      netAmt: number | null
+      dealAmt: number | null
+      dealRatio: number | null
+      comment: string
+    }[]
+    blocks: {
+      date: string
+      price: number | null
+      premiumPct: number | null
+      volume: number | null
+      amount: number | null
+      buyer: string
+      seller: string
+    }[]
+  }
   capital: CapitalRow[]
   holderCount: { date: string; num: number; avgShares: number | null }[]
   topHolders: { all: HolderTable; float: HolderTable }

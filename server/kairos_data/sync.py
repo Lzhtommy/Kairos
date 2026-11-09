@@ -12,9 +12,10 @@ from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import delete, func, insert, select
 
-from kairos_data.schema import (STATEMENT_ITEMS, announcement, dividend, fin_report, fin_statement,
-                                holder_count, index_constituent, kline, lockup, macro_series,
-                                share_capital, stock_info, top_holder)
+from kairos_data.schema import (STATEMENT_ITEMS, announcement, billboard, block_trade, dividend,
+                                fin_report, fin_statement, holder_count, index_constituent, kline,
+                                lockup, macro_series, margin_trading, share_capital, stock_info,
+                                top_holder)
 from kairos_data.sources import baostock, eastmoney_dc
 from kairos_data.store import upsert_rows
 
@@ -48,6 +49,8 @@ MACRO: dict[str, tuple[str, str, str, str, str, str, str]] = {
     "cgb_30y": ("中国国债 30 年", "%", "D", "RPTA_WEB_TREASURYYIELD", "SOLAR_DATE", "EMM00166469", ""),
     "ust_2y": ("美国国债 2 年", "%", "D", "RPTA_WEB_TREASURYYIELD", "SOLAR_DATE", "EMG00001306", ""),
     "ust_10y": ("美国国债 10 年", "%", "D", "RPTA_WEB_TREASURYYIELD", "SOLAR_DATE", "EMG00001310", ""),
+    "margin_rzye": ("两融·融资余额", "元", "D", "RPTA_RZRQ_LSHJ", "DIM_DATE", "RZYE", ""),
+    "margin_rqye": ("两融·融券余额", "元", "D", "RPTA_RZRQ_LSHJ", "DIM_DATE", "RQYE", ""),
 }
 
 
@@ -329,6 +332,96 @@ def refresh_lockup(db, since: date | None = None) -> int:
     upsert_rows(db, lockup, rows)
     db.commit()
     return len(rows)
+
+
+# ---------------------------------------------------------------- 交易类：两融、龙虎榜、大宗交易
+
+def margin_rows(raw: list[dict]) -> list[dict]:
+    rows = {}
+    for r in raw:
+        if not r.get("SCODE") or not r.get("DATE"):
+            continue
+        key = (r["SCODE"], _d(r["DATE"]))
+        rows[key] = {"code": key[0], "trade_date": key[1],
+                     **{c: _f(r.get(c.upper())) for c in
+                        ("rzye", "rzmre", "rzche", "rqye", "rqyl", "rqmcl", "rzrqye")}}
+    return list(rows.values())
+
+
+def billboard_rows(raw: list[dict]) -> list[dict]:
+    rows = {}
+    for r in raw:
+        if not _is_a(r) or not r.get("TRADE_DATE"):
+            continue
+        key = (r["SECURITY_CODE"], _d(r["TRADE_DATE"]), (r.get("EXPLANATION") or "")[:128])
+        rows[key] = {
+            "code": key[0], "trade_date": key[1], "reason": key[2],
+            "close": _f(r.get("CLOSE_PRICE")), "change_pct": _f(r.get("CHANGE_RATE")),
+            "turnover_rate": _f(r.get("TURNOVERRATE")), "buy_amt": _f(r.get("BILLBOARD_BUY_AMT")),
+            "sell_amt": _f(r.get("BILLBOARD_SELL_AMT")), "net_amt": _f(r.get("BILLBOARD_NET_AMT")),
+            "deal_amt": _f(r.get("BILLBOARD_DEAL_AMT")), "deal_ratio": _f(r.get("DEAL_AMOUNT_RATIO")),
+            "comment": (r.get("EXPLAIN") or "")[:256],
+        }
+    return list(rows.values())
+
+
+def block_trade_rows(raw: list[dict]) -> list[dict]:
+    return [
+        {"code": r["SECURITY_CODE"], "trade_date": _d(r["TRADE_DATE"]), "price": _f(r.get("DEAL_PRICE")),
+         "premium_pct": None if _f(r.get("PREMIUM_RATIO")) is None else _f(r["PREMIUM_RATIO"]) * 100,
+         "volume": _i(r.get("DEAL_VOLUME")),
+         "amount": _f(r.get("DEAL_AMT")), "buyer": (r.get("BUYER_NAME") or "")[:128],
+         "seller": (r.get("SELLER_NAME") or "")[:128]}
+        for r in raw
+        if r.get("SECURITY_TYPE") == "EQA" and _is_a(r) and r.get("TRADE_DATE")  # 去掉基金、债券
+    ]
+
+
+def refresh_margin(db, days: list[date]) -> int:
+    n = 0
+    for day in days:
+        rows = margin_rows(eastmoney_dc.fetch_report(
+            "RPTA_WEB_RZRQ_GGMX", f"(DATE='{day.isoformat()}')", sort="SCODE"))
+        upsert_rows(db, margin_trading, rows)
+        db.commit()
+        n += len(rows)
+    return n
+
+
+def refresh_billboard(db, months: list[tuple[date, date]]) -> int:
+    n = 0
+    for start, end in months:
+        rows = billboard_rows(eastmoney_dc.fetch_report(
+            "RPT_DAILYBILLBOARD_DETAILSNEW", _range_filter("TRADE_DATE", start, end),
+            sort="TRADE_DATE,SECUCODE,EXPLANATION"))
+        upsert_rows(db, billboard, rows)
+        db.commit()
+        n += len(rows)
+    return n
+
+
+def refresh_block_trade(db, months: list[tuple[date, date]]) -> int:
+    n = 0
+    for start, end in months:
+        rows = block_trade_rows(eastmoney_dc.fetch_report(
+            "RPT_DATA_BLOCKTRADE", _range_filter("TRADE_DATE", start, end),
+            sort="TRADE_DATE,SECUCODE,DEAL_AMT,BUYER_NAME,SELLER_NAME"))
+        db.execute(delete(block_trade).where(block_trade.c.trade_date.between(start, end)))
+        if rows:
+            db.execute(insert(block_trade), rows)
+        db.commit()
+        n += len(rows)
+    return n
+
+
+def _days(since: date, until: date) -> list[date]:
+    """since 到 until 的工作日，倒序（节假日接口返回空，代价一次请求）。"""
+    out, d = [], until
+    while d >= since:
+        if d.weekday() < 5:
+            out.append(d)
+        d -= timedelta(days=1)
+    return out
 
 
 # ---------------------------------------------------------------- 宏观
@@ -646,7 +739,8 @@ def backfill_history(db, tencent=None, throttle: float = 0.15) -> tuple[int, int
 
 # ---------------------------------------------------------------- 组合入口
 
-PARTS = ("fin", "stmt", "div", "macro", "index", "capital", "holdernum", "holders", "lockup")
+PARTS = ("fin", "stmt", "div", "macro", "index", "capital", "holdernum", "holders", "lockup",
+         "margin", "billboard", "block")
 
 
 def _run(db, label: str, fn) -> None:  # noqa: ANN001
@@ -659,7 +753,8 @@ def _run(db, label: str, fn) -> None:  # noqa: ANN001
 
 def daily(db) -> None:
     """日更：财报与三大报表最近 2 个报告期、分红最近 4 个报告期、宏观各序列最新一页、指数成分当日名单、
-    近 40 天的股本变动和股东户数、最近 2 期十大股东、近 30 天起的解禁（含未来计划）。"""
+    近 40 天的股本变动和股东户数、最近 2 期十大股东、近 30 天起的解禁（含未来计划）、
+    近 7 天的两融 / 龙虎榜 / 大宗交易。"""
     _run(db, "fin", lambda: refresh_financials(db, quarter_ends(2)))
     _run(db, "stmt", lambda: refresh_statements(db, quarter_ends(2)))
     _run(db, "dividend", lambda: refresh_dividends(db, quarter_ends(4)))
@@ -671,11 +766,15 @@ def daily(db) -> None:
     _run(db, "holdernum", lambda: refresh_holder_count(db, recent))
     _run(db, "holders", lambda: refresh_top_holders(db, quarter_ends(2)))
     _run(db, "lockup", lambda: refresh_lockup(db, today - timedelta(days=30)))
+    _run(db, "margin", lambda: refresh_margin(db, _days(today - timedelta(days=7), today)))
+    _run(db, "billboard", lambda: refresh_billboard(db, month_ranges(today - timedelta(days=7), today)))
+    _run(db, "block", lambda: refresh_block_trade(db, month_ranges(today - timedelta(days=7), today)))
 
 
 def backfill(db, parts: tuple[str, ...] = PARTS) -> None:
     """全量回补：财报与三大报表 1988 年起、分红 1990 年起、宏观全历史、指数成分 2005 年起逐月、
-    股本变动 1990 年起、股东户数 2010 年起、十大股东 1990 年起、解禁全部。十大股东最慢，约 1 小时。"""
+    股本变动 1990 年起、股东户数 2010 年起、十大股东 1990 年起、解禁全部、两融 2010 年起（约 4000
+    个交易日，最慢，约 2 小时）、龙虎榜 2004 年起、大宗交易 2000 年起。"""
     today = _today_cst()
     if "fin" in parts:
         periods = quarter_ends((today.year - 1988) * 4 + 4)
@@ -702,11 +801,20 @@ def backfill(db, parts: tuple[str, ...] = PARTS) -> None:
         _run(db, "holders backfill", lambda: refresh_top_holders(db, periods))
     if "lockup" in parts:
         _run(db, "lockup backfill", lambda: refresh_lockup(db))
+    if "margin" in parts:
+        _run(db, "margin backfill", lambda: refresh_margin(db, _days(date(2010, 3, 31), today)))
+    if "billboard" in parts:
+        months = month_ranges(date(2004, 6, 1), today)
+        _run(db, "billboard backfill", lambda: refresh_billboard(db, months))
+    if "block" in parts:
+        months = month_ranges(date(2000, 8, 1), today)
+        _run(db, "block backfill", lambda: refresh_block_trade(db, months))
 
 
 def missing_parts(db) -> tuple[str, ...]:
     tables = {"fin": fin_report, "stmt": fin_statement, "div": dividend, "macro": macro_series, "index": index_constituent,
               "capital": share_capital, "holdernum": holder_count, "holders": top_holder,
-              "lockup": lockup}
+              "lockup": lockup, "margin": margin_trading, "billboard": billboard,
+              "block": block_trade}
     return tuple(k for k, t in tables.items()
                  if not db.execute(select(func.count()).select_from(t)).scalar())
