@@ -13,10 +13,10 @@ from datetime import date, datetime, timedelta, timezone
 from sqlalchemy import delete, func, insert, select
 
 from kairos_data.schema import (STATEMENT_ITEMS, announcement, billboard, block_trade, dividend,
-                                fin_report, fin_statement, holder_count, index_constituent, kline,
-                                lockup, macro_series, margin_trading, share_capital, stock_info,
+                                fin_report, fin_statement, holder_count, index_bar, index_constituent,
+                                kline, lockup, macro_series, margin_trading, share_capital, stock_info,
                                 top_holder)
-from kairos_data.sources import baostock, eastmoney_dc
+from kairos_data.sources import baostock, csindex, eastmoney_dc
 from kairos_data.store import upsert_rows
 
 logger = logging.getLogger("kairos_data")
@@ -478,6 +478,53 @@ def refresh_index_constituents(db, days: list[date]) -> int:
     return n
 
 
+# 指数代码 → (名称, 东财 secid, 中证官网有无成分权重)
+INDEXES: dict[str, tuple[str, str, bool]] = {
+    "000001": ("上证指数", "1.000001", False),
+    "399001": ("深证成指", "0.399001", False),
+    "399006": ("创业板指", "0.399006", False),
+    "000016": ("上证 50", "1.000016", True),
+    "000300": ("沪深 300", "1.000300", True),
+    "000905": ("中证 500", "1.000905", True),
+    "000852": ("中证 1000", "1.000852", True),
+    "932000": ("中证 2000", "2.932000", True),
+    "000688": ("科创 50", "1.000688", True),
+    "899050": ("北证 50", "0.899050", False),
+    "000985": ("中证全指", "1.000985", False),
+}
+
+
+def index_bar_rows(index_code: str, raw: list[dict]) -> list[dict]:
+    return [{"index_code": index_code, "trade_date": _d(r["date"]), "open": r["open"], "high": r["high"],
+             "low": r["low"], "close": r["close"], "volume": r.get("volume"), "amount": r.get("amount")}
+            for r in raw]
+
+
+def refresh_index_bars(db) -> int:
+    """主要指数日线，每次取全历史整段 upsert（每个指数一次请求）。"""
+    n = 0
+    for code, (_name, secid, _csi) in INDEXES.items():
+        rows = index_bar_rows(code, eastmoney_dc.fetch_index_kline(secid))
+        upsert_rows(db, index_bar, rows)
+        db.commit()
+        n += len(rows)
+    return n
+
+
+def refresh_index_weights(db) -> int:
+    """中证官网当期成分与权重，按其快照日写入 index_constituent。"""
+    n = 0
+    for code, (_name, _secid, csi) in INDEXES.items():
+        if not csi:
+            continue
+        rows = [{"index_code": code, "snapshot_date": w["date"], "code": w["code"], "weight": w["weight"]}
+                for w in csindex.fetch_weights(code)]
+        upsert_rows(db, index_constituent, rows)
+        db.commit()
+        n += len(rows)
+    return n
+
+
 def month_starts(since: date, until: date) -> list[date]:
     out, d = [], date(since.year, since.month, 1)
     while d <= until:
@@ -739,8 +786,8 @@ def backfill_history(db, tencent=None, throttle: float = 0.15) -> tuple[int, int
 
 # ---------------------------------------------------------------- 组合入口
 
-PARTS = ("fin", "stmt", "div", "macro", "index", "capital", "holdernum", "holders", "lockup",
-         "margin", "billboard", "block")
+PARTS = ("fin", "stmt", "div", "macro", "index", "indexbar", "capital", "holdernum", "holders",
+         "lockup", "margin", "billboard", "block")
 
 
 def _run(db, label: str, fn) -> None:  # noqa: ANN001
@@ -760,6 +807,8 @@ def daily(db) -> None:
     _run(db, "dividend", lambda: refresh_dividends(db, quarter_ends(4)))
     _run(db, "macro", lambda: refresh_macro(db))
     _run(db, "index", lambda: refresh_index_constituents(db, [_today_cst()]))
+    _run(db, "index weight", lambda: refresh_index_weights(db))
+    _run(db, "index bar", lambda: refresh_index_bars(db))
     today = _today_cst()
     recent = month_ranges(today - timedelta(days=40), today)
     _run(db, "capital", lambda: refresh_share_capital(db, recent))
@@ -790,6 +839,9 @@ def backfill(db, parts: tuple[str, ...] = PARTS) -> None:
     if "index" in parts:
         days = month_starts(date(2005, 1, 1), today)
         _run(db, "index backfill", lambda: refresh_index_constituents(db, days))
+        _run(db, "index weight", lambda: refresh_index_weights(db))
+    if "indexbar" in parts:
+        _run(db, "index bar backfill", lambda: refresh_index_bars(db))
     if "capital" in parts:
         months = month_ranges(date(1990, 1, 1), today)
         _run(db, "capital backfill", lambda: refresh_share_capital(db, months))
@@ -812,7 +864,8 @@ def backfill(db, parts: tuple[str, ...] = PARTS) -> None:
 
 
 def missing_parts(db) -> tuple[str, ...]:
-    tables = {"fin": fin_report, "stmt": fin_statement, "div": dividend, "macro": macro_series, "index": index_constituent,
+    tables = {"fin": fin_report, "stmt": fin_statement, "div": dividend, "macro": macro_series,
+              "index": index_constituent, "indexbar": index_bar,
               "capital": share_capital, "holdernum": holder_count, "holders": top_holder,
               "lockup": lockup, "margin": margin_trading, "billboard": billboard,
               "block": block_trade}

@@ -134,13 +134,28 @@ dividend = Table(
     Column("plan", String(128), nullable=False, default=""),
 )
 
-# 指数成分快照（BaoStock），每个成分调整日一份全量名单。
+# 指数成分快照，每个快照日一份全量名单。来源两个：BaoStock（50 / 300 / 500，2005 年起按调整日，
+# 无权重）与中证官网（中证系列当期成分与权重，月度快照，从开始采集时积累）。
 # 取某日成分 = 不晚于该日的最近一个 snapshot_date 的全部行
 index_constituent = Table(
     "index_constituent", metadata,
-    Column("index_code", String(16), primary_key=True),  # 000300 / 000905 / 000016
+    Column("index_code", String(16), primary_key=True),
     Column("snapshot_date", Date, primary_key=True),
     Column("code", String(16), primary_key=True, index=True),
+    Column("weight", Float, nullable=True),  # 权重 %，只有中证官网的快照有
+)
+
+# 主要指数日线（东财），成交量单位手、成交额元
+index_bar = Table(
+    "index_bar", metadata,
+    Column("index_code", String(16), primary_key=True),
+    Column("trade_date", Date, primary_key=True),
+    Column("open", Float, nullable=False),
+    Column("high", Float, nullable=False),
+    Column("low", Float, nullable=False),
+    Column("close", Float, nullable=False),
+    Column("volume", Float, nullable=True),
+    Column("amount", Float, nullable=True),
 )
 
 # 宏观与利率序列（窄表），indicator 的定义见 kairos_data.sync.MACRO。

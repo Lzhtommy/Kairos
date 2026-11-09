@@ -11,6 +11,8 @@ import { LineChart } from "@/components/data/line-chart"
 import { Markdown } from "@/components/research/research-ui"
 import {
   fetchAnnouncements,
+  fetchIndexCatalog,
+  fetchIndexDetail,
   fetchKline,
   fetchMacroCatalog,
   fetchMacroSeries,
@@ -810,10 +812,88 @@ function MacroView() {
   )
 }
 
+function IndexView() {
+  const navigate = useNavigate()
+  const { data: catalog } = useQuery({ queryKey: ["data-index"], queryFn: fetchIndexCatalog })
+  const [sel, setSel] = useState("000300")
+  const [years, setYears] = useState(10)
+  const { data } = useQuery({ queryKey: ["data-index", sel, years], queryFn: () => fetchIndexDetail(sel, years) })
+  const hasWeight = data?.members.some((m) => m.weight != null)
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6">
+        {(catalog ?? []).map((x) => (
+          <button
+            key={x.code}
+            type="button"
+            onClick={() => setSel(x.code)}
+            className={cn(
+              "rounded-lg border p-3 text-left transition-colors",
+              sel === x.code ? "border-foreground/40 bg-muted/60" : "border-border hover:bg-muted/40",
+            )}
+          >
+            <p className="text-xs text-muted-foreground">{x.name}</p>
+            <p className="mt-1 font-mono text-base tabular-nums">{x.close == null ? "—" : x.close.toFixed(2)}</p>
+            <p className={cn("mt-0.5 font-mono text-[11px] tabular-nums", pctCls(x.changePct))}>
+              {x.changePct == null ? (x.date ?? "—") : `${x.changePct > 0 ? "+" : ""}${x.changePct.toFixed(2)}%`}
+            </p>
+          </button>
+        ))}
+      </div>
+      {data && (
+        <>
+          <Section title={`${data.name} · 走势`} extra={<Segmented value={years} options={MACRO_YEARS} onChange={setYears} />}>
+            <LineChart points={data.points} height={260} />
+          </Section>
+          <Section title={`成分股${data.snapshotDate ? `（${data.snapshotDate}，${data.members.length} 只）` : ""}`}>
+            {data.members.length ? (
+              <div className="max-h-[480px] overflow-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>代码</TableHead>
+                      <TableHead>名称</TableHead>
+                      <TableHead>行业</TableHead>
+                      {hasWeight && <TableHead className="text-right">权重</TableHead>}
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {data.members.map((m) => (
+                      <TableRow
+                        key={m.code}
+                        className="cursor-pointer text-xs"
+                        onClick={() => navigate(`/app/data/${m.code}`)}
+                      >
+                        <TableCell className="font-mono tabular-nums text-muted-foreground">{m.code}</TableCell>
+                        <TableCell>{m.name}</TableCell>
+                        <TableCell className="text-muted-foreground">{m.industry}</TableCell>
+                        {hasWeight && (
+                          <TableCell className="text-right font-mono tabular-nums">
+                            {m.weight == null ? "—" : `${m.weight.toFixed(3)}%`}
+                          </TableCell>
+                        )}
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">暂未收录该指数的成分</p>
+            )}
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              上证 50 / 沪深 300 / 中证 500 有 2005 年以来的历次调整；其余中证指数的成分与权重来自中证官网月度快照，从开始采集时积累。
+            </p>
+          </Section>
+        </>
+      )}
+    </div>
+  )
+}
+
 export function DataPage() {
   const { code } = useParams()
   const navigate = useNavigate()
-  const [tab, setTab] = useState<"stock" | "macro">("stock")
+  const [tab, setTab] = useState<"stock" | "index" | "macro">("stock")
   return (
     <div className="mx-auto max-w-[1600px] space-y-6 px-4 py-6 lg:px-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -826,6 +906,7 @@ export function DataPage() {
         <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)}>
           <TabsList>
             <TabsTrigger value="stock">个股资料</TabsTrigger>
+            <TabsTrigger value="index">指数</TabsTrigger>
             <TabsTrigger value="macro">宏观利率</TabsTrigger>
           </TabsList>
         </Tabs>
@@ -844,6 +925,8 @@ export function DataPage() {
             </div>
           )}
         </div>
+      ) : tab === "index" ? (
+        <IndexView />
       ) : (
         <MacroView />
       )}

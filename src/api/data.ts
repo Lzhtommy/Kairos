@@ -156,6 +156,22 @@ export type MacroSeries = {
   points: [string, number][]
 }
 
+export type IndexCatalogItem = {
+  code: string
+  name: string
+  date: string | null
+  close: number | null
+  changePct: number | null
+}
+
+export type IndexDetail = {
+  code: string
+  name: string
+  points: [string, number][]
+  snapshotDate: string | null
+  members: { code: string; name: string; industry: string; weight: number | null }[]
+}
+
 export type Bar = { t: string; open: number; high: number; low: number; close: number; volume: number }
 
 export const searchStocks = (q: string) => api<StockHit[]>(`/data/search?q=${encodeURIComponent(q)}`)
@@ -168,3 +184,6 @@ export const fetchMacroCatalog = () => api<MacroCatalogItem[]>("/data/macro")
 export const fetchMacroSeries = (key: string, years: number) =>
   api<MacroSeries>(`/data/macro/${key}?years=${years}`)
 export const fetchKline = (code: string, limit: number) => api<Bar[]>(`/kline?code=${code}&limit=${limit}`)
+export const fetchIndexCatalog = () => api<IndexCatalogItem[]>("/data/index")
+export const fetchIndexDetail = (code: string, years: number) =>
+  api<IndexDetail>(`/data/index/${code}?years=${years}`)

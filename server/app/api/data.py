@@ -13,11 +13,11 @@ from app.core.db import get_db
 from kairos_data.store import upsert_rows
 from app.core.security import get_current_user
 from kairos_data.schema import STATEMENT_ITEMS
-from kairos_data.sync import MACRO, announcement_rows
+from kairos_data.sync import INDEXES, MACRO, announcement_rows
 from app.models.market import Fundamental, Kline, Quote, StockInfo
 from app.models.warehouse import (Announcement, Billboard, BlockTrade, Dividend, FinReport, FinStatement,
-                                  HolderCount, IndexConstituent, Lockup, MacroSeries, MarginTrading,
-                                  ShareCapital, TopHolder)
+                                  HolderCount, IndexBar, IndexConstituent, Lockup, MacroSeries,
+                                  MarginTrading, ShareCapital, TopHolder)
 from kairos_data.sources import eastmoney_dc as eastmoney_data
 from app.services.market import change_pct
 
@@ -25,7 +25,7 @@ logger = logging.getLogger("kairos.data")
 
 router = APIRouter(prefix="/data", tags=["data"], dependencies=[Depends(get_current_user)])
 
-INDEX_NAMES = {"000016": "上证 50", "000300": "沪深 300", "000905": "中证 500"}
+INDEX_NAMES = {code: name for code, (name, *_rest) in INDEXES.items()}
 
 
 def _iso(d: date | datetime | None) -> str | None:
@@ -322,3 +322,48 @@ def macro_series(indicator: str, years: int = Query(default=10, ge=1, le=40),
     name, unit, freq, *_rest = MACRO[indicator]
     return {"key": indicator, "name": name, "unit": unit, "freq": freq,
             "points": [[_iso(p), v] for p, v in rows]}
+
+
+@router.get("/index")
+def index_catalog(db: Session = Depends(get_db)):
+    """主要指数的最新收盘与涨跌幅。"""
+    out = []
+    for code, name in INDEX_NAMES.items():
+        last2 = db.execute(
+            select(IndexBar.trade_date, IndexBar.close).where(IndexBar.index_code == code)
+            .order_by(IndexBar.trade_date.desc()).limit(2)
+        ).all()
+        out.append({
+            "code": code, "name": name, "date": _iso(last2[0][0]) if last2 else None,
+            "close": last2[0][1] if last2 else None,
+            "changePct": change_pct(last2[0][1], last2[1][1]) if len(last2) == 2 else None,
+        })
+    return out
+
+
+@router.get("/index/{code}")
+def index_detail(code: str, years: int = Query(default=10, ge=1, le=40), db: Session = Depends(get_db)):
+    """指数日线（收盘）与最新一期成分（有权重时按权重排序）。"""
+    if code not in INDEX_NAMES:
+        raise HTTPException(status_code=404, detail="未收录的指数")
+    since = date.today() - timedelta(days=365 * years)
+    bars = db.execute(
+        select(IndexBar.trade_date, IndexBar.close)
+        .where(IndexBar.index_code == code, IndexBar.trade_date >= since).order_by(IndexBar.trade_date)
+    ).all()
+    snap = db.execute(
+        select(func.max(IndexConstituent.snapshot_date)).where(IndexConstituent.index_code == code)
+    ).scalar()
+    members = []
+    if snap:
+        rows = db.execute(
+            select(IndexConstituent.code, IndexConstituent.weight, StockInfo.name, StockInfo.industry)
+            .outerjoin(StockInfo, StockInfo.code == IndexConstituent.code)
+            .where(IndexConstituent.index_code == code, IndexConstituent.snapshot_date == snap)
+        ).all()
+        members = sorted(
+            ({"code": c, "name": n or c, "industry": ind or "—", "weight": w} for c, w, n, ind in rows),
+            key=lambda m: (-(m["weight"] or 0), m["code"]),
+        )
+    return {"code": code, "name": INDEX_NAMES[code], "points": [[_iso(d), c] for d, c in bars],
+            "snapshotDate": _iso(snap), "members": members}

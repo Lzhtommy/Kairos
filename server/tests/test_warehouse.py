@@ -15,8 +15,8 @@ from kairos_data.store import upsert_rows
 from app.core.security import get_current_user
 from kairos_data import sync as warehouse
 from app.models.market import Kline, StockInfo
-from app.models.warehouse import (Announcement, Dividend, FinReport, HolderCount, IndexConstituent, Lockup,
-                                  MacroSeries, TopHolder)
+from app.models.warehouse import (Announcement, Dividend, FinReport, HolderCount, IndexBar, IndexConstituent,
+                                  Lockup, MacroSeries, TopHolder)
 from kairos_data.sync import delisted_bars as bars
 
 
@@ -195,3 +195,23 @@ def test_macro_endpoints(client, db):
     s = client.get("/data/macro/cpi_yoy").json()
     assert s["points"] == [["2026-08-01", 0.5], ["2026-09-01", 0.9]]
     assert client.get("/data/macro/nope").status_code == 404
+
+
+def test_index_endpoints(client, db):
+    db.add(StockInfo(code="600519", name="贵州茅台", market="SH", industry="白酒"))
+    db.commit()
+    upsert_rows(db, IndexBar, [
+        {"index_code": "000300", "trade_date": date(2026, 11, 5), "open": 1, "high": 1, "low": 1, "close": 4000},
+        {"index_code": "000300", "trade_date": date(2026, 11, 6), "open": 1, "high": 1, "low": 1, "close": 4040},
+    ])
+    upsert_rows(db, IndexConstituent, [
+        {"index_code": "000300", "snapshot_date": date(2026, 10, 30), "code": "000001", "weight": 0.5},
+        {"index_code": "000300", "snapshot_date": date(2026, 10, 30), "code": "600519", "weight": 4.2},
+    ])
+    db.commit()
+    cat = {i["code"]: i for i in client.get("/data/index").json()}
+    assert cat["000300"]["changePct"] == 1.0 and cat["000852"]["close"] is None
+    d = client.get("/data/index/000300", params={"years": 40}).json()
+    assert [m["code"] for m in d["members"]] == ["600519", "000001"] and d["members"][0]["name"] == "贵州茅台"
+    assert d["points"][-1] == ["2026-11-06", 4040]
+    assert client.get("/data/index/999999").status_code == 404

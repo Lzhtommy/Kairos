@@ -184,3 +184,16 @@ def test_margin_and_billboard_rows():
          "EXPLANATION": "日涨幅偏离值达到7%", "BILLBOARD_NET_AMT": 9.9e7},
     ])
     assert len(b) == 1 and b[0]["net_amt"] == 9.9e7
+
+
+def test_index_weights_and_bars(db, monkeypatch):
+    monkeypatch.setattr(sync.csindex, "fetch_weights", lambda code: [
+        {"date": date(2026, 10, 30), "code": "600519", "weight": 4.2}])
+    monkeypatch.setattr(sync.eastmoney_dc, "fetch_index_kline", lambda secid: [
+        {"date": "2026-11-06", "open": 1, "high": 2, "low": 1, "close": 2, "volume": 10, "amount": 100}])
+    csi = sum(1 for _n, _s, c in sync.INDEXES.values() if c)
+    assert sync.refresh_index_weights(db) == csi
+    assert sync.refresh_index_bars(db) == len(sync.INDEXES)
+    w = db.execute(select(schema.index_constituent.c.weight)
+                   .where(schema.index_constituent.c.index_code == "000300")).scalar()
+    assert w == 4.2

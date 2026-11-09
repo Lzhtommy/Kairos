@@ -26,6 +26,10 @@ class IndexConstituent(Base):
     __table__ = schema.index_constituent.to_metadata(Base.metadata)
 
 
+class IndexBar(Base):
+    __table__ = schema.index_bar.to_metadata(Base.metadata)
+
+
 class MacroSeries(Base):
     __table__ = schema.macro_series.to_metadata(Base.metadata)
 

@@ -79,3 +79,24 @@ def fetch_announcement_text(art_code: str, max_pages: int = 3) -> tuple[str, str
         if page >= int(data.get("page_size") or 1):
             break
     return "\n".join(texts).strip(), pdf
+
+
+_KLINE_URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+
+
+def fetch_index_kline(secid: str) -> list[dict]:
+    """指数日线全历史（push2his 延时 / 历史集群，无实时集群的 IP 风控）。
+
+    secid 形如 1.000300（上证 / 中证）、0.399001（深证 / 北证）、2.932000（中证新编指数）。
+    返回 {date, open, close, high, low, volume, amount}，成交量单位手、成交额元。
+    """
+    body = _get(_KLINE_URL, {
+        "secid": secid, "klt": 101, "fqt": 0, "lmt": 100000, "end": "20500101",
+        "fields1": "f1,f2,f3", "fields2": "f51,f52,f53,f54,f55,f56,f57",
+    })
+    out = []
+    for line in (body.get("data") or {}).get("klines") or []:
+        d, o, c, h, low, vol, amt = line.split(",")[:7]
+        out.append({"date": d, "open": float(o), "close": float(c), "high": float(h), "low": float(low),
+                    "volume": float(vol), "amount": float(amt)})
+    return out
