@@ -1,4 +1,4 @@
-"""数据库表结构（SQLAlchemy Core）：股票池、日 K、财报、分红、股本股东、指数成分、宏观、公告。
+"""数据库表结构（SQLAlchemy Core）：股票池、日 K、财报与三大报表、分红、股本股东、指数成分、宏观、公告。
 
 单独使用时 `metadata.create_all(engine)` 建表；嵌入 Kairos 时由 app.models 把这些表
 复制进业务库的 metadata 并映射 ORM 类，两边共用同一份定义。
@@ -64,6 +64,58 @@ fin_report = Table(
     Column("gross_margin", Float, nullable=True),  # 销售毛利率 %
     Column("dividend_plan", String(128), nullable=True),
     Column("updated_at", DateTime(timezone=True), nullable=False, default=_now),
+)
+
+# 三大报表主要科目（东财年报季报），每股每报告期一行，金额单位元。
+# 列名 → (报表, 东财字段) 见 STATEMENT_ITEMS；完整科目需逐股取 F10，暂未收录
+STATEMENT_ITEMS: dict[str, tuple[str, str, str]] = {
+    # 资产负债表
+    "total_assets": ("bs", "TOTAL_ASSETS", "总资产"),
+    "monetary_funds": ("bs", "MONETARYFUNDS", "货币资金"),
+    "accounts_rece": ("bs", "ACCOUNTS_RECE", "应收账款"),
+    "inventory": ("bs", "INVENTORY", "存货"),
+    "fixed_asset": ("bs", "FIXED_ASSET", "固定资产"),
+    "loan_advance": ("bs", "LOAN_ADVANCE", "发放贷款及垫款"),
+    "total_liabilities": ("bs", "TOTAL_LIABILITIES", "总负债"),
+    "short_loan": ("bs", "SHORT_LOAN", "短期借款"),
+    "accounts_payable": ("bs", "ACCOUNTS_PAYABLE", "应付账款"),
+    "advance_receivables": ("bs", "ADVANCE_RECEIVABLES", "预收款项"),
+    "accept_deposit": ("bs", "ACCEPT_DEPOSIT", "吸收存款"),
+    "total_equity": ("bs", "TOTAL_EQUITY", "股东权益"),
+    "current_ratio": ("bs", "CURRENT_RATIO", "流动比率 %"),
+    "debt_asset_ratio": ("bs", "DEBT_ASSET_RATIO", "资产负债率 %"),
+    # 利润表
+    "operate_income": ("is", "TOTAL_OPERATE_INCOME", "营业总收入"),
+    "operate_total_cost": ("is", "TOTAL_OPERATE_COST", "营业总成本"),
+    "operate_cost": ("is", "OPERATE_COST", "营业成本"),
+    "sale_expense": ("is", "SALE_EXPENSE", "销售费用"),
+    "manage_expense": ("is", "MANAGE_EXPENSE", "管理费用"),
+    "finance_expense": ("is", "FINANCE_EXPENSE", "财务费用"),
+    "operate_tax": ("is", "OPERATE_TAX_ADD", "税金及附加"),
+    "interest_ni": ("is", "INTEREST_NI", "利息净收入"),
+    "fee_commission_ni": ("is", "FEE_COMMISSION_NI", "手续费及佣金净收入"),
+    "invest_income": ("is", "INVEST_INCOME", "投资收益"),
+    "operate_profit": ("is", "OPERATE_PROFIT", "营业利润"),
+    "total_profit": ("is", "TOTAL_PROFIT", "利润总额"),
+    "income_tax": ("is", "INCOME_TAX", "所得税"),
+    "parent_netprofit": ("is", "PARENT_NETPROFIT", "归母净利润"),
+    "deduct_netprofit": ("is", "DEDUCT_PARENT_NETPROFIT", "扣非归母净利润"),
+    # 现金流量表
+    "ocf": ("cf", "NETCASH_OPERATE", "经营活动现金流净额"),
+    "sales_cash": ("cf", "SALES_SERVICES", "销售商品收到的现金"),
+    "staff_cash": ("cf", "PAY_STAFF_CASH", "支付给职工的现金"),
+    "icf": ("cf", "NETCASH_INVEST", "投资活动现金流净额"),
+    "capex": ("cf", "CONSTRUCT_LONG_ASSET", "购建长期资产支付的现金"),
+    "fcf": ("cf", "NETCASH_FINANCE", "筹资活动现金流净额"),
+    "cash_change": ("cf", "CCE_ADD", "现金及等价物净增加额"),
+}
+
+fin_statement = Table(
+    "fin_statement", metadata,
+    Column("code", String(16), primary_key=True),
+    Column("report_date", Date, primary_key=True, index=True),
+    Column("notice_date", Date, nullable=True),  # 利润表的公告日（三张表一般同时披露）
+    *(Column(name, Float, nullable=True) for name in STATEMENT_ITEMS),
 )
 
 # 分红送转（东财分红送配），每股每报告期一行。比例都是"每 10 股"

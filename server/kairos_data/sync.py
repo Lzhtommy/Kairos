@@ -12,8 +12,9 @@ from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import delete, func, insert, select
 
-from kairos_data.schema import (announcement, dividend, fin_report, holder_count, index_constituent,
-                                kline, lockup, macro_series, share_capital, stock_info, top_holder)
+from kairos_data.schema import (STATEMENT_ITEMS, announcement, dividend, fin_report, fin_statement,
+                                holder_count, index_constituent, kline, lockup, macro_series,
+                                share_capital, stock_info, top_holder)
 from kairos_data.sources import baostock, eastmoney_dc
 from kairos_data.store import upsert_rows
 
@@ -108,6 +109,41 @@ def refresh_financials(db, periods: list[date]) -> int:
         rows = fin_rows(eastmoney_dc.fetch_report(
             "RPT_LICO_FN_CPD", _period_filter("REPORTDATE", p) + _A_SHARE, sort="SECURITY_CODE"))
         upsert_rows(db, fin_report, rows)
+        db.commit()
+        n += len(rows)
+    return n
+
+
+# ---------------------------------------------------------------- 三大报表主要科目
+
+_STATEMENT_REPORTS = {"bs": "RPT_DMSK_FN_BALANCE", "is": "RPT_DMSK_FN_INCOME", "cf": "RPT_DMSK_FN_CASHFLOW"}
+
+
+def statement_rows(raw_by_kind: dict[str, list[dict]]) -> list[dict]:
+    """三张报表按 (代码, 报告期) 合成一行；某张表缺这只股票时对应列留空。"""
+    rows: dict[tuple, dict] = {}
+    for kind, raw in raw_by_kind.items():
+        for r in raw:
+            if r.get("SECURITY_TYPE_CODE") not in (None, "058001001") or not r.get("REPORT_DATE"):
+                continue
+            key = (r["SECURITY_CODE"], _d(r["REPORT_DATE"]))
+            row = rows.setdefault(key, {"code": key[0], "report_date": key[1], "notice_date": None,
+                                        **{c: None for c in STATEMENT_ITEMS}})
+            for col, (k, field, _label) in STATEMENT_ITEMS.items():
+                if k == kind:
+                    row[col] = _f(r.get(field))
+            if kind == "is" or row["notice_date"] is None:
+                row["notice_date"] = _d(r.get("NOTICE_DATE")) or row["notice_date"]
+    return list(rows.values())
+
+
+def refresh_statements(db, periods: list[date]) -> int:
+    n = 0
+    for p in periods:
+        raw = {kind: eastmoney_dc.fetch_report(report, _period_filter("REPORT_DATE", p), sort="SECUCODE")
+               for kind, report in _STATEMENT_REPORTS.items()}
+        rows = statement_rows(raw)
+        upsert_rows(db, fin_statement, rows)
         db.commit()
         n += len(rows)
     return n
@@ -610,7 +646,7 @@ def backfill_history(db, tencent=None, throttle: float = 0.15) -> tuple[int, int
 
 # ---------------------------------------------------------------- 组合入口
 
-PARTS = ("fin", "div", "macro", "index", "capital", "holdernum", "holders", "lockup")
+PARTS = ("fin", "stmt", "div", "macro", "index", "capital", "holdernum", "holders", "lockup")
 
 
 def _run(db, label: str, fn) -> None:  # noqa: ANN001
@@ -622,9 +658,10 @@ def _run(db, label: str, fn) -> None:  # noqa: ANN001
 
 
 def daily(db) -> None:
-    """日更：财报最近 2 个报告期、分红最近 4 个报告期、宏观各序列最新一页、指数成分当日名单、
+    """日更：财报与三大报表最近 2 个报告期、分红最近 4 个报告期、宏观各序列最新一页、指数成分当日名单、
     近 40 天的股本变动和股东户数、最近 2 期十大股东、近 30 天起的解禁（含未来计划）。"""
     _run(db, "fin", lambda: refresh_financials(db, quarter_ends(2)))
+    _run(db, "stmt", lambda: refresh_statements(db, quarter_ends(2)))
     _run(db, "dividend", lambda: refresh_dividends(db, quarter_ends(4)))
     _run(db, "macro", lambda: refresh_macro(db))
     _run(db, "index", lambda: refresh_index_constituents(db, [_today_cst()]))
@@ -637,12 +674,15 @@ def daily(db) -> None:
 
 
 def backfill(db, parts: tuple[str, ...] = PARTS) -> None:
-    """全量回补：财报 1988 年起、分红 1990 年起、宏观全历史、指数成分 2005 年起逐月、
+    """全量回补：财报与三大报表 1988 年起、分红 1990 年起、宏观全历史、指数成分 2005 年起逐月、
     股本变动 1990 年起、股东户数 2010 年起、十大股东 1990 年起、解禁全部。十大股东最慢，约 1 小时。"""
     today = _today_cst()
     if "fin" in parts:
         periods = quarter_ends((today.year - 1988) * 4 + 4)
         _run(db, "fin backfill", lambda: refresh_financials(db, periods))
+    if "stmt" in parts:
+        periods = quarter_ends((today.year - 1988) * 4 + 4)
+        _run(db, "stmt backfill", lambda: refresh_statements(db, periods))
     if "div" in parts:
         periods = quarter_ends((today.year - 1990) * 4 + 4)
         _run(db, "dividend backfill", lambda: refresh_dividends(db, periods))
@@ -665,7 +705,7 @@ def backfill(db, parts: tuple[str, ...] = PARTS) -> None:
 
 
 def missing_parts(db) -> tuple[str, ...]:
-    tables = {"fin": fin_report, "div": dividend, "macro": macro_series, "index": index_constituent,
+    tables = {"fin": fin_report, "stmt": fin_statement, "div": dividend, "macro": macro_series, "index": index_constituent,
               "capital": share_capital, "holdernum": holder_count, "holders": top_holder,
               "lockup": lockup}
     return tuple(k for k, t in tables.items()

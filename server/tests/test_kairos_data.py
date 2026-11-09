@@ -139,3 +139,19 @@ def test_month_ranges():
     assert sync.month_ranges(date(2026, 9, 15), date(2026, 11, 9)) == [
         (date(2026, 11, 1), date(2026, 11, 9)), (date(2026, 10, 1), date(2026, 10, 31)),
         (date(2026, 9, 1), date(2026, 9, 30))]
+
+
+def test_statement_rows_merge_three_reports():
+    base = {"SECUCODE": "600519.SH", "SECURITY_CODE": "600519", "SECURITY_TYPE_CODE": "058001001",
+            "REPORT_DATE": "2025-12-31 00:00:00"}
+    rows = sync.statement_rows({
+        "bs": [{**base, "TOTAL_ASSETS": 3.0e11, "NOTICE_DATE": "2026-10-31 00:00:00"},
+               {**base, "SECURITY_CODE": "900906", "SECURITY_TYPE_CODE": "058001002", "TOTAL_ASSETS": 1}],
+        "is": [{**base, "PARENT_NETPROFIT": 8.2e10, "NOTICE_DATE": "2026-04-17 00:00:00"}],
+        "cf": [{**base, "NETCASH_OPERATE": 6.1e10}],
+    })
+    assert len(rows) == 1
+    r = rows[0]
+    assert (r["total_assets"], r["parent_netprofit"], r["ocf"]) == (3.0e11, 8.2e10, 6.1e10)
+    assert r["notice_date"] == date(2026, 4, 17)  # 以利润表公告日为准
+    assert r["inventory"] is None

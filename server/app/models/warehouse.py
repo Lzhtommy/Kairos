@@ -14,6 +14,10 @@ class FinReport(Base):
     __table__ = schema.fin_report.to_metadata(Base.metadata)
 
 
+class FinStatement(Base):
+    __table__ = schema.fin_statement.to_metadata(Base.metadata)
+
+
 class Dividend(Base):
     __table__ = schema.dividend.to_metadata(Base.metadata)
 

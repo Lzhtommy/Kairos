@@ -255,6 +255,74 @@ function FinancialSection({ p }: { p: StockProfile }) {
   )
 }
 
+const STATEMENTS = [
+  { key: "bs", label: "资产负债表" },
+  { key: "is", label: "利润表" },
+  { key: "cf", label: "现金流量表" },
+] as const
+
+function StatementSection({ p }: { p: StockProfile }) {
+  const [kind, setKind] = useState<"bs" | "is" | "cf">("is")
+  const [annual, setAnnual] = useState(false)
+  const { periods, items } = p.statements
+  const cols = useMemo(
+    () => periods.map((d, i) => [d, i] as const).filter(([d]) => !annual || d.endsWith("12-31")).slice(0, 12),
+    [periods, annual],
+  )
+  if (!periods.length) return null
+  const rows = items.filter((it) => it.statement === kind)
+  const fmt = (key: string, v: number | null) =>
+    v == null ? "—" : key.endsWith("_ratio") ? `${v.toFixed(2)}%` : (v / 1e8).toFixed(2)
+  return (
+    <Section
+      title="三大报表（主要科目，亿元）"
+      extra={
+        <div className="flex items-center gap-2">
+          <Segmented
+            value={annual ? "y" : "all"}
+            onChange={(v) => setAnnual(v === "y")}
+            options={[
+              { key: "all", label: "全部报告期" },
+              { key: "y", label: "仅年报" },
+            ]}
+          />
+          <Segmented value={kind} onChange={setKind} options={STATEMENTS.map((x) => ({ ...x }))} />
+        </div>
+      }
+    >
+      {rows.length ? (
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="sticky left-0 bg-background">科目</TableHead>
+                {cols.map(([d]) => (
+                  <TableHead key={d} className="text-right font-mono tabular-nums">{d}</TableHead>
+                ))}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((it) => (
+                <TableRow key={it.key} className="text-xs">
+                  <TableCell className="sticky left-0 whitespace-nowrap bg-background">{it.label}</TableCell>
+                  {cols.map(([d, i]) => (
+                    <TableCell key={d} className={cn("text-right font-mono tabular-nums", (it.values[i] ?? 0) < 0 && "text-down")}>
+                      {fmt(it.key, it.values[i])}
+                    </TableCell>
+                  ))}
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      ) : (
+        <p className="text-sm text-muted-foreground">暂无数据</p>
+      )}
+      <p className="mt-2 text-[11px] text-muted-foreground">利润表、现金流量表为年初至报告期末的累计数；比率科目单位为 %。</p>
+    </Section>
+  )
+}
+
 function DividendSection({ p }: { p: StockProfile }) {
   return (
     <Section title="分红送转（每 10 股）">
@@ -560,6 +628,7 @@ function StockView({ code }: { code: string }) {
       <Overview p={data} />
       <PriceSection code={code} />
       <FinancialSection p={data} />
+      <StatementSection p={data} />
       <DividendSection p={data} />
       <CapitalSection p={data} />
       <HoldersSection p={data} />

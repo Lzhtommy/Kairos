@@ -12,10 +12,11 @@ from sqlalchemy.orm import Session
 from app.core.db import get_db
 from kairos_data.store import upsert_rows
 from app.core.security import get_current_user
+from kairos_data.schema import STATEMENT_ITEMS
 from kairos_data.sync import MACRO, announcement_rows
 from app.models.market import Fundamental, Kline, Quote, StockInfo
-from app.models.warehouse import (Announcement, Dividend, FinReport, HolderCount, IndexConstituent, Lockup,
-                                  MacroSeries, ShareCapital, TopHolder)
+from app.models.warehouse import (Announcement, Dividend, FinReport, FinStatement, HolderCount,
+                                  IndexConstituent, Lockup, MacroSeries, ShareCapital, TopHolder)
 from kairos_data.sources import eastmoney_dc as eastmoney_data
 from app.services.market import change_pct
 
@@ -114,8 +115,24 @@ def stock_profile(code: str, db: Session = Depends(get_db)):
              "progress": d.progress, "plan": d.plan}
             for d in divs
         ],
+        "statements": _statements(db, code),
         **_holders_section(db, code),
     }
+
+
+def _statements(db: Session, code: str) -> dict:
+    """三大报表主要科目，最近 24 个报告期，按科目 → 各期数值组织（前端转置成 F10 样式）。"""
+    rows = db.execute(
+        select(FinStatement).where(FinStatement.code == code)
+        .order_by(FinStatement.report_date.desc()).limit(24)
+    ).scalars().all()
+    items = [
+        {"key": col, "label": label, "statement": kind, "values": [getattr(r, col) for r in rows]}
+        for col, (kind, _field, label) in STATEMENT_ITEMS.items()
+        if any(getattr(r, col) is not None for r in rows)
+    ]
+    return {"periods": [_iso(r.report_date) for r in rows],
+            "noticeDates": [_iso(r.notice_date) for r in rows], "items": items}
 
 
 def _holders_section(db: Session, code: str) -> dict:

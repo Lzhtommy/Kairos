@@ -158,6 +158,7 @@ def test_profile_and_search(client, db):
     assert mt["topHolders"]["all"]["endDate"] == "2026-09-30"
     assert [h["name"] for h in mt["topHolders"]["all"]["items"]] == ["茅台集团"]
     assert mt["topHolders"]["float"] == {"endDate": None, "noticeDate": None, "items": []}
+    assert mt["statements"] == {"periods": [], "noticeDates": [], "items": []}
     assert client.get("/data/stock/999999").status_code == 404
 
 

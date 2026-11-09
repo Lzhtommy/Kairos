@@ -91,6 +91,11 @@ export type StockProfile = {
   indexes: { index: string; name: string; current: boolean; first: string; last: string }[]
   financials: FinRow[]
   dividends: DividendRow[]
+  statements: {
+    periods: string[]
+    noticeDates: (string | null)[]
+    items: { key: string; label: string; statement: "bs" | "is" | "cf"; values: (number | null)[] }[]
+  }
   capital: CapitalRow[]
   holderCount: { date: string; num: number; avgShares: number | null }[]
   topHolders: { all: HolderTable; float: HolderTable }
