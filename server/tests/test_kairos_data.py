@@ -230,3 +230,26 @@ def test_securities_and_snapshot(db, monkeypatch):
         {"code": "113052", "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1, "amount": 1, "ts": ts - 86400},
     ], date(2026, 11, 9))
     assert [r["code"] for r in rows] == ["510300"]
+
+
+def test_backfill_marks_parts_and_resumes(db, monkeypatch):
+    # 老部分表非空即算完成；新部分要有完成标记
+    db.execute(insert(schema.fin_report), [{"code": "600519", "report_date": date(2025, 12, 31),
+                                            "updated_at": datetime(2026, 1, 1)}])
+    db.execute(insert(schema.fin_statement), [{"code": "600519", "report_date": date(2025, 12, 31)}])
+    db.commit()
+    missing = sync.missing_parts(db)
+    assert "fin" not in missing and "stmt" in missing
+
+    fetched = []
+
+    def fake(report, filter="", **_kw):
+        fetched.append(filter)
+        return []
+
+    monkeypatch.setattr(sync.eastmoney_dc, "fetch_report", fake)
+    monkeypatch.setattr(sync, "_today_cst", lambda: date(2026, 3, 1))
+    sync.backfill(db, ("stmt",))
+    # 库里已有的 2025-12-31 期不再拉
+    assert fetched and not any("2025-12-31" in f for f in fetched)
+    assert "stmt" not in sync.missing_parts(db)

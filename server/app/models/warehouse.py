@@ -72,3 +72,7 @@ class SecurityInfo(Base):
 
 class SecurityBar(Base):
     __table__ = schema.security_bar.to_metadata(Base.metadata)
+
+
+class SyncState(Base):
+    __table__ = schema.sync_state.to_metadata(Base.metadata)

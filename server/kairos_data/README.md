@@ -9,11 +9,20 @@
 | 表 | 内容 | 来源 |
 |---|---|---|
 | `stock_info` | 沪深 A 股股票池，含已退市股票与上市 / 退市日期 | BaoStock |
-| `kline` | 日 K（前复权，成交量单位：手），在市股票补到上市日，退市股全历史 | 腾讯，限流时 BaoStock |
+| `kline` | 日 K（前复权，成交量单位手），在市股票补到上市日，退市股全历史 | 腾讯，限流时 BaoStock |
 | `fin_report` | 定期报告主要指标，按报告期，带公告日（1988 年起） | 东方财富数据中心 |
+| `fin_statement` | 资产负债表 / 利润表 / 现金流量表主要科目（各 13~15 项） | 东方财富数据中心 |
 | `dividend` | 分红送转：预案 / 登记 / 除权日，每 10 股派现、送股、转增 | 东方财富数据中心 |
-| `index_constituent` | 上证 50、沪深 300、中证 500 历次调整后的成分（2005 年起） | BaoStock |
-| `macro_series` | GDP、CPI、PPI、PMI、M1/M2、社零、LPR、Shibor、中美国债收益率 | 东方财富数据中心 |
+| `share_capital` | 股本变动：总股本、流通 A 股、限售股、变动原因 | 东方财富数据中心 |
+| `holder_count` | 股东户数（2010 年起） | 东方财富数据中心 |
+| `top_holder` | 十大股东、十大流通股东（按报告期） | 东方财富数据中心 |
+| `lockup` | 限售解禁（历史与未来计划） | 东方财富数据中心 |
+| `margin_trading` | 融资融券个股明细（2010 年起） | 东方财富数据中心 |
+| `billboard` / `block_trade` | 龙虎榜（2004 年起）、大宗交易（2000 年起） | 东方财富数据中心 |
+| `index_bar` | 11 个主要指数日线（上证、深成、创业板、50 / 300 / 500 / 1000 / 2000、科创 50、北证 50、中证全指） | 东方财富 |
+| `index_constituent` | 50 / 300 / 500 历次调整后的成分（2005 年起）；中证系列当期成分与权重（月度快照） | BaoStock、中证指数官网 |
+| `security_info` / `security_bar` | ETF、可转债清单（可转债带正股、评级、规模、转股价）与日线 | BaoStock、东方财富 |
+| `macro_series` | GDP、CPI、PPI、PMI、工业增加值、固投、进出口、M1/M2、新增贷款、社零、外储、LPR、Shibor、存准率、中美国债收益率、两融余额 | 东方财富数据中心 |
 | `announcement` | 上市公司公告列表 | 东方财富公告中心 |
 
 财报、分红、公告都带公告日，可以按"当时市场已经知道什么"来查。
@@ -21,7 +30,7 @@
 ## 安装与使用
 
 ```bash
-pip install "kairos-data[baostock]"
+pip install "kairos-data[baostock,csindex]"
 
 kairos-data all          # 建表 + 股票池 + 财报 / 分红 / 宏观 / 指数成分全量 + 全部日 K
 kairos-data daily        # 之后每个交易日跑一次增量
@@ -35,8 +44,7 @@ pip install "kairos-data[all]"
 kairos-data all --db "mysql+pymysql://user:pass@host:3306/stock?charset=utf8mb4"
 ```
 
-财报等全量回补约 15~45 分钟；全市场日 K 补到上市日要几个小时。所有命令都是幂等的，中断后重跑即可。
-
+全量回补需要几个小时（十大股东、两融、日 K 最慢）。所有命令都是幂等的；`backfill` 会跳过已有的报告期 / 交易日，中断后重跑即可续上。
 在 Python 里使用：
 
 ```python

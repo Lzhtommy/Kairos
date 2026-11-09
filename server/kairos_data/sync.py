@@ -15,7 +15,7 @@ from sqlalchemy import delete, func, insert, select
 from kairos_data.schema import (STATEMENT_ITEMS, announcement, billboard, block_trade, dividend,
                                 fin_report, fin_statement, holder_count, index_bar, index_constituent,
                                 kline, lockup, macro_series, margin_trading, security_bar, security_info,
-                                share_capital, stock_info, top_holder)
+                                share_capital, stock_info, sync_state, top_holder)
 from kairos_data.sources import baostock, csindex, eastmoney_dc
 from kairos_data.store import upsert_rows
 
@@ -33,6 +33,15 @@ MACRO: dict[str, tuple[str, str, str, str, str, str, str]] = {
     "m2_yoy": ("M2 同比", "%", "M", "RPT_ECONOMY_CURRENCY_SUPPLY", "REPORT_DATE", "BASIC_CURRENCY_SAME", ""),
     "m1_yoy": ("M1 同比", "%", "M", "RPT_ECONOMY_CURRENCY_SUPPLY", "REPORT_DATE", "CURRENCY_SAME", ""),
     "retail_yoy": ("社零同比", "%", "M", "RPT_ECONOMY_TOTAL_RETAIL", "REPORT_DATE", "RETAIL_TOTAL_SAME", ""),
+    "indus_yoy": ("工业增加值同比", "%", "M", "RPT_ECONOMY_INDUS_GROW", "REPORT_DATE", "BASE_SAME", ""),
+    "fai_yoy": ("固定资产投资当月同比", "%", "M", "RPT_ECONOMY_ASSET_INVEST", "REPORT_DATE", "BASE_SAME", ""),
+    "export_yoy": ("出口同比", "%", "M", "RPT_ECONOMY_CUSTOMS", "REPORT_DATE", "EXIT_BASE_SAME", ""),
+    "import_yoy": ("进口同比", "%", "M", "RPT_ECONOMY_CUSTOMS", "REPORT_DATE", "IMPORT_BASE_SAME", ""),
+    "new_loan": ("新增人民币贷款", "亿元", "M", "RPT_ECONOMY_RMB_LOAN", "REPORT_DATE", "RMB_LOAN", ""),
+    "fx_reserve": ("外汇储备", "亿美元", "M", "RPT_ECONOMY_GOLD_CURRENCY", "REPORT_DATE", "FOREX", ""),
+    # 按公告日记，值为调整后的大型金融机构存准率
+    "rrr_large": ("存款准备金率（大型机构）", "%", "D", "RPT_ECONOMY_DEPOSIT_RESERVE", "REPORT_DATE",
+                  "INTEREST_RATE_BA", ""),
     "lpr_1y": ("LPR 1 年", "%", "D", "RPTA_WEB_RATE", "TRADE_DATE", "LPR1Y", ""),
     "lpr_5y": ("LPR 5 年以上", "%", "D", "RPTA_WEB_RATE", "TRADE_DATE", "LPR5Y", ""),
     "shibor_on": ("Shibor 隔夜", "%", "D", "RPT_IMP_INTRESTRATEN", "REPORT_DATE", "IR_RATE",
@@ -138,6 +147,10 @@ def statement_rows(raw_by_kind: dict[str, list[dict]]) -> list[dict]:
             if kind == "is" or row["notice_date"] is None:
                 row["notice_date"] = _d(r.get("NOTICE_DATE")) or row["notice_date"]
     return list(rows.values())
+
+
+def _have(db, col) -> set:  # noqa: ANN001
+    return set(db.execute(select(col).distinct()).scalars())
 
 
 def refresh_statements(db, periods: list[date]) -> int:
@@ -891,12 +904,14 @@ PARTS = ("fin", "stmt", "div", "macro", "index", "indexbar", "capital", "holdern
          "lockup", "margin", "billboard", "block", "securities")
 
 
-def _run(db, label: str, fn) -> None:  # noqa: ANN001
+def _run(db, label: str, fn) -> bool:  # noqa: ANN001
     try:
         logger.info("%s: %d rows", label, fn())
+        return True
     except Exception:  # noqa: BLE001 — 单项数据源失败不拖累其他项
         logger.exception("%s failed", label)
         db.rollback()
+        return False
 
 
 def daily(db) -> None:
@@ -932,50 +947,84 @@ def backfill(db, parts: tuple[str, ...] = PARTS) -> None:
     today = _today_cst()
     if "fin" in parts:
         periods = quarter_ends((today.year - 1988) * 4 + 4)
-        _run(db, "fin backfill", lambda: refresh_financials(db, periods))
+        if _run(db, "fin backfill", lambda: refresh_financials(db, periods)):
+            _mark_done(db, "fin")
     if "stmt" in parts:
-        periods = quarter_ends((today.year - 1988) * 4 + 4)
-        _run(db, "stmt backfill", lambda: refresh_statements(db, periods))
+        have = _have(db, fin_statement.c.report_date)  # 每期一次提交，已有的期次是完整的
+        periods = [p for p in quarter_ends((today.year - 1988) * 4 + 4) if p not in have]
+        if _run(db, "stmt backfill", lambda: refresh_statements(db, periods)):
+            _mark_done(db, "stmt")
     if "div" in parts:
         periods = quarter_ends((today.year - 1990) * 4 + 4)
-        _run(db, "dividend backfill", lambda: refresh_dividends(db, periods))
+        if _run(db, "dividend backfill", lambda: refresh_dividends(db, periods)):
+            _mark_done(db, "div")
     if "macro" in parts:
-        _run(db, "macro backfill", lambda: refresh_macro(db, full=True))
+        if _run(db, "macro backfill", lambda: refresh_macro(db, full=True)):
+            _mark_done(db, "macro")
     if "index" in parts:
         days = month_starts(date(2005, 1, 1), today)
-        _run(db, "index backfill", lambda: refresh_index_constituents(db, days))
-        _run(db, "index weight", lambda: refresh_index_weights(db))
+        ok = _run(db, "index backfill", lambda: refresh_index_constituents(db, days))
+        if _run(db, "index weight", lambda: refresh_index_weights(db)) and ok:
+            _mark_done(db, "index")
     if "indexbar" in parts:
-        _run(db, "index bar backfill", lambda: refresh_index_bars(db))
+        if _run(db, "index bar backfill", lambda: refresh_index_bars(db)):
+            _mark_done(db, "indexbar")
     if "capital" in parts:
         months = month_ranges(date(1990, 1, 1), today)
-        _run(db, "capital backfill", lambda: refresh_share_capital(db, months))
+        if _run(db, "capital backfill", lambda: refresh_share_capital(db, months)):
+            _mark_done(db, "capital")
     if "holdernum" in parts:
         months = month_ranges(date(2010, 1, 1), today)
-        _run(db, "holdernum backfill", lambda: refresh_holder_count(db, months))
+        if _run(db, "holdernum backfill", lambda: refresh_holder_count(db, months)):
+            _mark_done(db, "holdernum")
     if "holders" in parts:
-        periods = quarter_ends((today.year - 1990) * 4 + 4)
-        _run(db, "holders backfill", lambda: refresh_top_holders(db, periods))
+        # 流通股东先写、全部股东后写，后者有了这期才完整
+        have = set(db.execute(select(top_holder.c.end_date).where(top_holder.c.kind == "all")
+                              .distinct()).scalars())
+        periods = [p for p in quarter_ends((today.year - 1990) * 4 + 4) if p not in have]
+        if _run(db, "holders backfill", lambda: refresh_top_holders(db, periods)):
+            _mark_done(db, "holders")
     if "lockup" in parts:
-        _run(db, "lockup backfill", lambda: refresh_lockup(db))
+        if _run(db, "lockup backfill", lambda: refresh_lockup(db)):
+            _mark_done(db, "lockup")
     if "margin" in parts:
-        _run(db, "margin backfill", lambda: refresh_margin(db, _days(date(2010, 3, 31), today)))
+        have = _have(db, margin_trading.c.trade_date)
+        days = [d for d in _days(date(2010, 3, 31), today) if d not in have]
+        if _run(db, "margin backfill", lambda: refresh_margin(db, days)):
+            _mark_done(db, "margin")
     if "billboard" in parts:
         months = month_ranges(date(2004, 6, 1), today)
-        _run(db, "billboard backfill", lambda: refresh_billboard(db, months))
+        if _run(db, "billboard backfill", lambda: refresh_billboard(db, months)):
+            _mark_done(db, "billboard")
     if "block" in parts:
         months = month_ranges(date(2000, 8, 1), today)
-        _run(db, "block backfill", lambda: refresh_block_trade(db, months))
+        if _run(db, "block backfill", lambda: refresh_block_trade(db, months)):
+            _mark_done(db, "block")
     if "securities" in parts:
         _run(db, "securities", lambda: refresh_securities(db))
-        _run(db, "security bar backfill", lambda: backfill_security_bars(db)[0])
+        if _run(db, "security bar backfill", lambda: backfill_security_bars(db)[0]):
+            _mark_done(db, "securities")
+
+
+def _mark_done(db, part: str) -> None:
+    upsert_rows(db, sync_state, [{"key": f"backfill:{part}", "value": "done",
+                                  "updated_at": datetime.now(timezone.utc)}])
+    db.commit()
 
 
 def missing_parts(db) -> tuple[str, ...]:
+    """还没完成全量回补的部分：以 sync_state 的完成标记为准。完成标记上线前就已补完的
+    几项（LEGACY_DONE）没有标记，表非空即视为完成。"""
+    done = {k.removeprefix("backfill:") for k in db.execute(select(sync_state.c.key)).scalars()}
     tables = {"fin": fin_report, "stmt": fin_statement, "div": dividend, "macro": macro_series,
               "index": index_constituent, "indexbar": index_bar,
               "capital": share_capital, "holdernum": holder_count, "holders": top_holder,
               "lockup": lockup, "margin": margin_trading, "billboard": billboard,
               "block": block_trade, "securities": security_bar}
     return tuple(k for k, t in tables.items()
-                 if not db.execute(select(func.count()).select_from(t)).scalar())
+                 if k not in done and (k not in LEGACY_DONE
+                                       or not db.execute(select(func.count()).select_from(t)).scalar()))
+
+
+# 完成标记上线（2026-11-09）前已在线上补完的部分
+LEGACY_DONE = frozenset({"fin", "div", "macro", "index", "capital", "holdernum"})

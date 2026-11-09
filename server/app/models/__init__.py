@@ -6,7 +6,8 @@ from app.models.strategy import Backtest, ChatMessage, Strategy
 from app.models.user import User
 from app.models.warehouse import (Announcement, Billboard, BlockTrade, Dividend, FinReport, FinStatement,
                                   HolderCount, IndexBar, IndexConstituent, Lockup, MacroSeries,
-                                  MarginTrading, SecurityBar, SecurityInfo, ShareCapital, TopHolder)
+                                  MarginTrading, SecurityBar, SecurityInfo, ShareCapital, SyncState,
+                                  TopHolder)
 from app.models.watchlist import Watchlist, WatchlistImport, WatchlistImportItem, WatchlistItem
 
 __all__ = [
@@ -26,6 +27,7 @@ __all__ = [
     "BlockTrade",
     "SecurityInfo",
     "SecurityBar",
+    "SyncState",
     "User",
     "StockInfo",
     "Quote",

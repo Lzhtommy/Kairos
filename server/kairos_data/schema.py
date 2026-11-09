@@ -306,3 +306,11 @@ security_bar = Table(
     Column("volume", Float, nullable=True),
     Column("amount", Float, nullable=True),
 )
+
+# 同步状态：已完成全量回补的部分（kairos_data.sync.PARTS），回补中断后重启只补没完成的
+sync_state = Table(
+    "sync_state", metadata,
+    Column("key", String(64), primary_key=True),
+    Column("value", String(256), nullable=False, default=""),
+    Column("updated_at", DateTime(timezone=True), nullable=False, default=_now),
+)

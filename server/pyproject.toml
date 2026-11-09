@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "kairos-data"
 dynamic = ["version"]
-description = "A 股公开数据采集入库：股票池（含退市股）、日 K、财报、分红、指数成分、宏观利率、公告"
+description = "A 股公开数据采集入库：股票池（含退市股）、日 K、财报与三大报表、股本股东、两融龙虎榜、指数、ETF 与可转债、宏观利率、公告"
 readme = "kairos_data/README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -16,7 +16,8 @@ dependencies = ["sqlalchemy>=2.0", "httpx>=0.27"]
 [project.optional-dependencies]
 baostock = ["baostock>=0.9.4"]
 mysql = ["pymysql>=1.1"]
-all = ["baostock>=0.9.4", "pymysql>=1.1"]
+csindex = ["pandas>=2.0", "xlrd>=2.0"]  # 中证官网成分权重（xls）
+all = ["baostock>=0.9.4", "pymysql>=1.1", "pandas>=2.0", "xlrd>=2.0"]
 
 [project.scripts]
 kairos-data = "kairos_data.cli:main"

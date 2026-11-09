@@ -813,7 +813,9 @@ const MACRO_YEARS = [
 
 function fmtMacro(m: MacroCatalogItem, v: number | null) {
   if (v == null) return "—"
-  return m.unit === "%" ? `${v.toFixed(2)}%` : v.toFixed(2)
+  if (m.unit === "%") return `${v.toFixed(2)}%`
+  if (m.unit === "元") return `${(v / 1e8).toFixed(0)} 亿`
+  return m.unit ? `${v.toFixed(2)} ${m.unit}` : v.toFixed(2)
 }
 
 function MacroView() {
@@ -848,7 +850,7 @@ function MacroView() {
                 {delta != null && (
                   <span className={cn("ml-1.5", pctCls(delta))}>
                     {delta > 0 ? "+" : ""}
-                    {delta.toFixed(2)}
+                    {m.unit === "元" ? `${(delta / 1e8).toFixed(0)} 亿` : delta.toFixed(2)}
                   </span>
                 )}
               </p>
