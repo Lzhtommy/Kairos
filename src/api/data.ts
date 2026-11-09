@@ -36,6 +36,38 @@ export type DividendRow = {
   plan: string
 }
 
+export type CapitalRow = {
+  date: string
+  noticeDate: string | null
+  total: number | null
+  floatA: number | null
+  limited: number | null
+  reason: string
+}
+
+export type HolderRow = {
+  rank: number
+  name: string
+  type: string
+  sharesType: string
+  holdNum: number | null
+  ratio: number | null
+  change: string
+}
+
+export type HolderTable = { endDate: string | null; noticeDate: string | null; items: HolderRow[] }
+
+export type LockupRow = {
+  date: string
+  type: string
+  shares: number | null
+  ableShares: number | null
+  marketCap: number | null
+  floatRatio: number | null
+  totalRatio: number | null
+  upcoming: boolean
+}
+
 export type StockProfile = {
   info: {
     code: string
@@ -59,6 +91,10 @@ export type StockProfile = {
   indexes: { index: string; name: string; current: boolean; first: string; last: string }[]
   financials: FinRow[]
   dividends: DividendRow[]
+  capital: CapitalRow[]
+  holderCount: { date: string; num: number; avgShares: number | null }[]
+  topHolders: { all: HolderTable; float: HolderTable }
+  lockups: LockupRow[]
 }
 
 export type AnnouncementItem = {

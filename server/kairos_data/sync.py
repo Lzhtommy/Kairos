@@ -1,4 +1,4 @@
-"""采集与写库：股票池、日 K（在市补到上市日 / 退市股全历史）、财报、分红、宏观利率、指数成分、公告。
+"""采集与写库：股票池、日 K（在市补到上市日 / 退市股全历史）、财报、分红、股本股东、宏观利率、指数成分、公告。
 
 每个函数接收 SQLAlchemy 会话，拉取数据源后批量 upsert 并提交；重复执行幂等。
 不依赖 Kairos，命令行入口见 kairos_data.cli。
@@ -12,8 +12,8 @@ from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import delete, func, insert, select
 
-from kairos_data.schema import (announcement, dividend, fin_report, index_constituent, kline,
-                                macro_series, stock_info)
+from kairos_data.schema import (announcement, dividend, fin_report, holder_count, index_constituent,
+                                kline, lockup, macro_series, share_capital, stock_info, top_holder)
 from kairos_data.sources import baostock, eastmoney_dc
 from kairos_data.store import upsert_rows
 
@@ -106,7 +106,7 @@ def refresh_financials(db, periods: list[date]) -> int:
     n = 0
     for p in periods:
         rows = fin_rows(eastmoney_dc.fetch_report(
-            "RPT_LICO_FN_CPD", _period_filter("REPORTDATE", p) + _A_SHARE))
+            "RPT_LICO_FN_CPD", _period_filter("REPORTDATE", p) + _A_SHARE, sort="SECURITY_CODE"))
         upsert_rows(db, fin_report, rows)
         db.commit()
         n += len(rows)
@@ -135,11 +135,164 @@ def refresh_dividends(db, periods: list[date]) -> int:
     n = 0
     for p in periods:
         rows = dividend_rows(eastmoney_dc.fetch_report(
-            "RPT_SHAREBONUS_DET", _period_filter("REPORT_DATE", p)))
+            "RPT_SHAREBONUS_DET", _period_filter("REPORT_DATE", p), sort="SECURITY_CODE"))
         upsert_rows(db, dividend, rows)
         db.commit()
         n += len(rows)
     return n
+
+
+# ---------------------------------------------------------------- 股本、股东、解禁
+
+def _is_a(r: dict) -> bool:
+    """沪深京 A 股：排除新三板（.NQ）和 B 股（沪 900、深 200 开头）。"""
+    suffix = (r.get("SECUCODE") or "").rpartition(".")[2]
+    code = r.get("SECURITY_CODE") or ""
+    return suffix == "BJ" or (suffix in ("SH", "SZ") and not code.startswith(("2", "9")))
+
+
+def _i(x) -> int | None:  # noqa: ANN001
+    v = _f(x)
+    return None if v is None else int(round(v))
+
+
+def month_ranges(since: date, until: date) -> list[tuple[date, date]]:
+    """[since, until] 按自然月切成闭区间，倒序（最近的先拉）。"""
+    out = []
+    for start in month_starts(since, until):
+        nxt = date(start.year + (start.month == 12), start.month % 12 + 1, 1)
+        out.append((start, min(nxt - timedelta(days=1), until)))
+    return out[::-1]
+
+
+def _range_filter(col: str, start: date, end: date) -> str:
+    return f"({col}>='{start.isoformat()}')({col}<='{end.isoformat()}')"
+
+
+def share_capital_rows(raw: list[dict]) -> list[dict]:
+    rows = {}
+    for r in raw:
+        if not _is_a(r) or not r.get("END_DATE"):
+            continue
+        key = (r["SECURITY_CODE"], _d(r["END_DATE"]))
+        rows[key] = {
+            "code": key[0], "change_date": key[1], "notice_date": _d(r.get("NOTICE_DATE")),
+            "total_shares": _i(r.get("TOTAL_SHARES")), "float_a_shares": _i(r.get("LISTED_A_SHARES")),
+            "limited_shares": _i(r.get("LIMITED_SHARES")),
+            "change_reason": (r.get("CHANGE_REASON") or "")[:64],
+        }
+    return list(rows.values())
+
+
+def holder_count_rows(raw: list[dict]) -> list[dict]:
+    rows = {}
+    for r in raw:
+        if not _is_a(r) or not r.get("END_DATE"):
+            continue
+        key = (r["SECURITY_CODE"], _d(r["END_DATE"]))
+        rows[key] = {
+            "code": key[0], "end_date": key[1], "notice_date": _d(r.get("HOLD_NOTICE_DATE")),
+            "holder_num": _i(r.get("HOLDER_NUM")), "avg_hold_shares": _f(r.get("AVG_HOLD_NUM")),
+            "total_a_shares": _i(r.get("TOTAL_A_SHARES")),
+        }
+    return list(rows.values())
+
+
+def top_holder_rows(raw: list[dict], kind: str) -> list[dict]:
+    ratio_col = "HOLD_NUM_RATIO" if kind == "all" else "FREE_HOLDNUM_RATIO"
+    rows = {}
+    for r in raw:
+        if not _is_a(r) or not r.get("END_DATE") or r.get("HOLDER_RANK") is None:
+            continue
+        key = (r["SECURITY_CODE"], _d(r["END_DATE"]), kind, int(r["HOLDER_RANK"]))
+        rows[key] = {
+            "code": key[0], "end_date": key[1], "kind": kind, "rank": key[3],
+            "holder_name": (r.get("HOLDER_NAME") or "")[:256],
+            "holder_type": (r.get("HOLDER_TYPE") or "")[:32],
+            "shares_type": (r.get("SHARES_TYPE") or "")[:64],
+            "hold_num": _i(r.get("HOLD_NUM")), "hold_ratio": _f(r.get(ratio_col)),
+            "change": str(r.get("HOLD_NUM_CHANGE") or "")[:32],
+            "notice_date": _d(r.get("NOTICE_DATE")) or _d(r.get("UPDATE_DATE")),
+        }
+    return list(rows.values())
+
+
+def lockup_rows(raw: list[dict]) -> list[dict]:
+    def shares(x):  # noqa: ANN001, ANN202 — 接口单位万股 / 万元
+        v = _f(x)
+        return None if v is None else v * 1e4
+
+    def pct(x):  # noqa: ANN001, ANN202 — 接口是比例
+        v = _f(x)
+        return None if v is None else v * 100
+
+    rows = {}
+    for r in raw:
+        if not _is_a(r) or not r.get("FREE_DATE"):
+            continue
+        key = (r["SECURITY_CODE"], _d(r["FREE_DATE"]), (r.get("FREE_SHARES_TYPE") or "")[:64])
+        rows[key] = {
+            "code": key[0], "free_date": key[1], "shares_type": key[2],
+            "holder_num": _i(r.get("BATCH_HOLDER_NUM")),
+            "free_shares": shares(r.get("CURRENT_FREE_SHARES")),
+            "able_free_shares": shares(r.get("ABLE_FREE_SHARES")),
+            "market_cap": shares(r.get("LIFT_MARKET_CAP")),
+            "float_ratio": pct(r.get("FREE_RATIO")), "total_ratio": pct(r.get("TOTAL_RATIO")),
+        }
+    return list(rows.values())
+
+
+def refresh_share_capital(db, months: list[tuple[date, date]]) -> int:
+    n = 0
+    for start, end in months:
+        rows = share_capital_rows(eastmoney_dc.fetch_report(
+            "RPT_F10_EH_EQUITY", _range_filter("END_DATE", start, end),
+            sort="SECURITY_CODE,END_DATE,SECUCODE"))
+        upsert_rows(db, share_capital, rows)
+        db.commit()
+        n += len(rows)
+    return n
+
+
+def refresh_holder_count(db, months: list[tuple[date, date]]) -> int:
+    n = 0
+    for start, end in months:
+        rows = holder_count_rows(eastmoney_dc.fetch_report(
+            "RPT_HOLDERNUM_DET", _range_filter("END_DATE", start, end),
+            sort="SECURITY_CODE,END_DATE,SECUCODE"))
+        upsert_rows(db, holder_count, rows)
+        db.commit()
+        n += len(rows)
+    return n
+
+
+def refresh_top_holders(db, periods: list[date]) -> int:
+    """十大股东 + 十大流通股东。十大股东接口没有公告日，用同期十大流通股东的补上。"""
+    n = 0
+    for p in periods:
+        by_kind = {
+            kind: top_holder_rows(eastmoney_dc.fetch_report(
+                report, _period_filter("END_DATE", p), sort="SECUCODE,HOLDER_RANK"), kind)
+            for kind, report in (("float", "RPT_F10_EH_FREEHOLDERS"), ("all", "RPT_F10_EH_HOLDERS"))
+        }
+        notice = {r["code"]: r["notice_date"] for r in by_kind["float"] if r["notice_date"]}
+        for r in by_kind["all"]:
+            r["notice_date"] = r["notice_date"] or notice.get(r["code"])
+        for rows in by_kind.values():
+            upsert_rows(db, top_holder, rows)
+            db.commit()
+            n += len(rows)
+    return n
+
+
+def refresh_lockup(db, since: date | None = None) -> int:
+    """since 之后（含）的解禁，含未来的解禁计划；None 为全部历史。"""
+    flt = f"(FREE_DATE>='{since.isoformat()}')" if since else ""
+    rows = lockup_rows(eastmoney_dc.fetch_report("RPT_LIFT_STAGE", flt,
+                                                 sort="SECUCODE,FREE_DATE,FREE_SHARES_TYPE"))
+    upsert_rows(db, lockup, rows)
+    db.commit()
+    return len(rows)
 
 
 # ---------------------------------------------------------------- 宏观
@@ -457,7 +610,7 @@ def backfill_history(db, tencent=None, throttle: float = 0.15) -> tuple[int, int
 
 # ---------------------------------------------------------------- 组合入口
 
-PARTS = ("fin", "div", "macro", "index")
+PARTS = ("fin", "div", "macro", "index", "capital", "holdernum", "holders", "lockup")
 
 
 def _run(db, label: str, fn) -> None:  # noqa: ANN001
@@ -469,15 +622,23 @@ def _run(db, label: str, fn) -> None:  # noqa: ANN001
 
 
 def daily(db) -> None:
-    """日更：财报最近 2 个报告期、分红最近 4 个报告期、宏观各序列最新一页、指数成分当日名单。"""
+    """日更：财报最近 2 个报告期、分红最近 4 个报告期、宏观各序列最新一页、指数成分当日名单、
+    近 40 天的股本变动和股东户数、最近 2 期十大股东、近 30 天起的解禁（含未来计划）。"""
     _run(db, "fin", lambda: refresh_financials(db, quarter_ends(2)))
     _run(db, "dividend", lambda: refresh_dividends(db, quarter_ends(4)))
     _run(db, "macro", lambda: refresh_macro(db))
     _run(db, "index", lambda: refresh_index_constituents(db, [_today_cst()]))
+    today = _today_cst()
+    recent = month_ranges(today - timedelta(days=40), today)
+    _run(db, "capital", lambda: refresh_share_capital(db, recent))
+    _run(db, "holdernum", lambda: refresh_holder_count(db, recent))
+    _run(db, "holders", lambda: refresh_top_holders(db, quarter_ends(2)))
+    _run(db, "lockup", lambda: refresh_lockup(db, today - timedelta(days=30)))
 
 
 def backfill(db, parts: tuple[str, ...] = PARTS) -> None:
-    """全量回补：财报 1988 年起、分红 1990 年起、宏观全历史、指数成分 2005 年起逐月。"""
+    """全量回补：财报 1988 年起、分红 1990 年起、宏观全历史、指数成分 2005 年起逐月、
+    股本变动 1990 年起、股东户数 2010 年起、十大股东 1990 年起、解禁全部。十大股东最慢，约 1 小时。"""
     today = _today_cst()
     if "fin" in parts:
         periods = quarter_ends((today.year - 1988) * 4 + 4)
@@ -490,9 +651,22 @@ def backfill(db, parts: tuple[str, ...] = PARTS) -> None:
     if "index" in parts:
         days = month_starts(date(2005, 1, 1), today)
         _run(db, "index backfill", lambda: refresh_index_constituents(db, days))
+    if "capital" in parts:
+        months = month_ranges(date(1990, 1, 1), today)
+        _run(db, "capital backfill", lambda: refresh_share_capital(db, months))
+    if "holdernum" in parts:
+        months = month_ranges(date(2010, 1, 1), today)
+        _run(db, "holdernum backfill", lambda: refresh_holder_count(db, months))
+    if "holders" in parts:
+        periods = quarter_ends((today.year - 1990) * 4 + 4)
+        _run(db, "holders backfill", lambda: refresh_top_holders(db, periods))
+    if "lockup" in parts:
+        _run(db, "lockup backfill", lambda: refresh_lockup(db))
 
 
 def missing_parts(db) -> tuple[str, ...]:
-    tables = {"fin": fin_report, "div": dividend, "macro": macro_series, "index": index_constituent}
+    tables = {"fin": fin_report, "div": dividend, "macro": macro_series, "index": index_constituent,
+              "capital": share_capital, "holdernum": holder_count, "holders": top_holder,
+              "lockup": lockup}
     return tuple(k for k, t in tables.items()
                  if not db.execute(select(func.count()).select_from(t)).scalar())

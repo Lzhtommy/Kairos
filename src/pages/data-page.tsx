@@ -298,6 +298,182 @@ function DividendSection({ p }: { p: StockProfile }) {
   )
 }
 
+function wan(v: number | null | undefined) {
+  if (v == null) return "—"
+  return v >= 1e8 ? `${(v / 1e8).toFixed(2)} 亿` : `${(v / 1e4).toFixed(0)} 万`
+}
+
+function changeCls(v: string) {
+  if (v === "新进" || v === "增加" || /^\d/.test(v)) return "text-up"
+  if (v === "减少" || v.startsWith("-")) return "text-down"
+  return "text-muted-foreground"
+}
+
+function changeLabel(v: string) {
+  if (/^-?\d+(\.\d+)?$/.test(v)) {
+    const n = Number(v)
+    return n === 0 ? "不变" : `${n > 0 ? "+" : "-"}${wan(Math.abs(n))}`
+  }
+  return v || "—"
+}
+
+function CapitalSection({ p }: { p: StockProfile }) {
+  const latest = p.capital[0]
+  const counts = useMemo(() => p.holderCount.map((h) => [h.date, h.num] as [string, number]), [p.holderCount])
+  if (!latest && !counts.length) return null
+  return (
+    <Section title="股本与股东户数">
+      {latest && (
+        <dl className="mb-3 grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
+          {([
+            ["总股本", wan(latest.total)],
+            ["流通 A 股", wan(latest.floatA)],
+            ["限售股", wan(latest.limited)],
+            ["最近变动", `${latest.date} · ${latest.reason || "—"}`],
+          ] as [string, string][]).map(([k, v]) => (
+            <div key={k}>
+              <dt className="text-xs text-muted-foreground">{k}</dt>
+              <dd className="font-mono tabular-nums">{v}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      {counts.length >= 2 && (
+        <div className="mb-3">
+          <p className="mb-1 text-xs text-muted-foreground">股东户数（户数下降通常意味着筹码集中）</p>
+          <LineChart points={counts} height={160} format={(v) => `${Math.round(v).toLocaleString()} 户`} />
+        </div>
+      )}
+      {p.capital.length > 0 && (
+        <details className="text-sm">
+          <summary className="cursor-pointer text-xs text-muted-foreground">股本变动记录（最近 {p.capital.length} 次）</summary>
+          <div className="mt-2 overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>变动日</TableHead>
+                  <TableHead>公告日</TableHead>
+                  <TableHead>原因</TableHead>
+                  <TableHead className="text-right">总股本</TableHead>
+                  <TableHead className="text-right">流通 A 股</TableHead>
+                  <TableHead className="text-right">限售股</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {p.capital.map((c) => (
+                  <TableRow key={c.date} className="text-xs">
+                    <TableCell className="font-mono tabular-nums">{c.date}</TableCell>
+                    <TableCell className="font-mono tabular-nums text-muted-foreground">{c.noticeDate ?? "—"}</TableCell>
+                    <TableCell>{c.reason || "—"}</TableCell>
+                    <TableCell className="text-right font-mono tabular-nums">{wan(c.total)}</TableCell>
+                    <TableCell className="text-right font-mono tabular-nums">{wan(c.floatA)}</TableCell>
+                    <TableCell className="text-right font-mono tabular-nums">{wan(c.limited)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </details>
+      )}
+    </Section>
+  )
+}
+
+function HoldersSection({ p }: { p: StockProfile }) {
+  const [kind, setKind] = useState<"all" | "float">("float")
+  const t = p.topHolders[kind]
+  if (!p.topHolders.all.items.length && !p.topHolders.float.items.length) return null
+  return (
+    <Section
+      title={`十大${kind === "float" ? "流通" : ""}股东${t.endDate ? `（${t.endDate}）` : ""}`}
+      extra={
+        <Segmented
+          value={kind}
+          onChange={setKind}
+          options={[
+            { key: "float", label: "流通股东" },
+            { key: "all", label: "全部股东" },
+          ]}
+        />
+      }
+    >
+      {t.items.length ? (
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-10">#</TableHead>
+                <TableHead>股东</TableHead>
+                <TableHead>股份类型</TableHead>
+                <TableHead className="text-right">持股</TableHead>
+                <TableHead className="text-right">{kind === "float" ? "占流通股" : "占总股本"}</TableHead>
+                <TableHead className="text-right">较上期</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {t.items.map((h) => (
+                <TableRow key={h.rank} className="text-xs">
+                  <TableCell className="font-mono tabular-nums text-muted-foreground">{h.rank}</TableCell>
+                  <TableCell className="max-w-[320px] truncate" title={h.name}>
+                    {h.name}
+                    {h.type && <span className="ml-1.5 text-muted-foreground">{h.type}</span>}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">{h.sharesType || "—"}</TableCell>
+                  <TableCell className="text-right font-mono tabular-nums">{wan(h.holdNum)}</TableCell>
+                  <TableCell className="text-right font-mono tabular-nums">{h.ratio == null ? "—" : `${h.ratio.toFixed(2)}%`}</TableCell>
+                  <TableCell className={cn("text-right font-mono tabular-nums", changeCls(h.change))}>{changeLabel(h.change)}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+          {t.noticeDate && <p className="mt-2 text-[11px] text-muted-foreground">披露日 {t.noticeDate}</p>}
+        </div>
+      ) : (
+        <p className="text-sm text-muted-foreground">暂无数据</p>
+      )}
+    </Section>
+  )
+}
+
+function LockupSection({ p }: { p: StockProfile }) {
+  if (!p.lockups.length) return null
+  return (
+    <Section title="限售解禁">
+      <div className="overflow-x-auto">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>解禁日</TableHead>
+              <TableHead>限售类型</TableHead>
+              <TableHead className="text-right">解禁股数</TableHead>
+              <TableHead className="text-right">实际可流通</TableHead>
+              <TableHead className="text-right">解禁市值</TableHead>
+              <TableHead className="text-right">占流通股</TableHead>
+              <TableHead className="text-right">占总股本</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {p.lockups.map((x) => (
+              <TableRow key={`${x.date}-${x.type}`} className={cn("text-xs", !x.upcoming && "text-muted-foreground")}>
+                <TableCell className="font-mono tabular-nums">
+                  {x.date}
+                  {x.upcoming && <Badge variant="secondary" className="ml-1.5">待解禁</Badge>}
+                </TableCell>
+                <TableCell>{x.type || "—"}</TableCell>
+                <TableCell className="text-right font-mono tabular-nums">{wan(x.shares)}</TableCell>
+                <TableCell className="text-right font-mono tabular-nums">{wan(x.ableShares)}</TableCell>
+                <TableCell className="text-right font-mono tabular-nums">{wan(x.marketCap)}</TableCell>
+                <TableCell className="text-right font-mono tabular-nums">{x.floatRatio == null ? "—" : `${x.floatRatio.toFixed(2)}%`}</TableCell>
+                <TableCell className="text-right font-mono tabular-nums">{x.totalRatio == null ? "—" : `${x.totalRatio.toFixed(2)}%`}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    </Section>
+  )
+}
+
 function AnnouncementSection({ code }: { code: string }) {
   const [page, setPage] = useState(1)
   const [open, setOpen] = useState<string | null>(null)
@@ -385,6 +561,9 @@ function StockView({ code }: { code: string }) {
       <PriceSection code={code} />
       <FinancialSection p={data} />
       <DividendSection p={data} />
+      <CapitalSection p={data} />
+      <HoldersSection p={data} />
+      <LockupSection p={data} />
       <AnnouncementSection code={code} />
     </div>
   )
@@ -468,7 +647,7 @@ export function DataPage() {
         <div>
           <h1 className="text-lg font-semibold text-foreground">数据</h1>
           <p className="mt-0.5 text-sm text-muted-foreground">
-            个股资料（含已退市）、财报、分红、指数成分、公告，以及宏观与利率序列
+            个股资料（含已退市）、财报、分红、股本股东、解禁、指数成分、公告，以及宏观与利率序列
           </p>
         </div>
         <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)}>

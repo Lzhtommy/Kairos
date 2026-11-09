@@ -1,4 +1,4 @@
-"""数据仓库表的 ORM 映射：财报、分红、指数成分、宏观、公告。
+"""数据仓库表的 ORM 映射：财报、分红、股本股东、指数成分、宏观、公告。
 
 表结构定义在 kairos_data.schema（独立的采集包），这里复制进业务库的 metadata，
 Alembic 和查阅接口照常用 ORM 类。
@@ -28,3 +28,19 @@ class MacroSeries(Base):
 
 class Announcement(Base):
     __table__ = schema.announcement.to_metadata(Base.metadata)
+
+
+class ShareCapital(Base):
+    __table__ = schema.share_capital.to_metadata(Base.metadata)
+
+
+class HolderCount(Base):
+    __table__ = schema.holder_count.to_metadata(Base.metadata)
+
+
+class TopHolder(Base):
+    __table__ = schema.top_holder.to_metadata(Base.metadata)
+
+
+class Lockup(Base):
+    __table__ = schema.lockup.to_metadata(Base.metadata)

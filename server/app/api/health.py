@@ -52,7 +52,7 @@ def health_data(db: Session = Depends(get_db)) -> dict:
 
 def _warehouse_freshness(db: Session) -> dict:
     """数据仓库各表的最新日期，判断日更是否在跑。"""
-    from app.models.warehouse import Announcement, Dividend, FinReport, MacroSeries
+    from app.models.warehouse import Announcement, Dividend, FinReport, HolderCount, MacroSeries, TopHolder
 
     def latest(col):  # noqa: ANN001, ANN202
         v = db.execute(select(func.max(col))).scalar()
@@ -63,4 +63,6 @@ def _warehouse_freshness(db: Session) -> dict:
         "dividendNotice": latest(Dividend.notice_date),
         "macro": latest(MacroSeries.period),
         "announcement": latest(Announcement.ann_date),
+        "holderCount": latest(HolderCount.end_date),
+        "topHolders": latest(TopHolder.end_date),
     }

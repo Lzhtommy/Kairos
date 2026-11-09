@@ -15,7 +15,8 @@ from kairos_data.store import upsert_rows
 from app.core.security import get_current_user
 from kairos_data import sync as warehouse
 from app.models.market import Kline, StockInfo
-from app.models.warehouse import Announcement, Dividend, FinReport, IndexConstituent, MacroSeries
+from app.models.warehouse import (Announcement, Dividend, FinReport, HolderCount, IndexConstituent, Lockup,
+                                  MacroSeries, TopHolder)
 from kairos_data.sync import delisted_bars as bars
 
 
@@ -139,8 +140,24 @@ def test_profile_and_search(client, db):
     assert p["kline"] == {"first": "2009-12-28", "last": "2009-12-28", "count": 1}
     assert p["indexes"] == [{"index": "000300", "name": "沪深 300", "current": False,
                              "first": "2009-01-01", "last": "2009-01-01"}]
+    upsert_rows(db, Lockup, [
+        {"code": "600519", "free_date": date(2099, 1, 1), "shares_type": "首发", "free_shares": 1e6},
+        {"code": "600519", "free_date": date(2001, 8, 27), "shares_type": "首发", "free_shares": 2e6},
+    ])
+    upsert_rows(db, HolderCount, [{"code": "600519", "end_date": date(2026, 9, 30), "holder_num": 160000}])
+    upsert_rows(db, TopHolder, [
+        {"code": "600519", "end_date": d, "kind": "all", "rank": 1, "holder_name": n, "holder_type": "",
+         "shares_type": "", "change": ""}
+        for d, n in ((date(2026, 6, 30), "旧"), (date(2026, 9, 30), "茅台集团"))
+    ])
+    db.commit()
     mt = client.get("/data/stock/600519").json()
     assert mt["indexes"][0]["current"] is True and mt["dividends"][0]["cashPer10"] == 300
+    assert [x["upcoming"] for x in mt["lockups"]] == [True, False]
+    assert mt["holderCount"] == [{"date": "2026-09-30", "num": 160000, "avgShares": None}]
+    assert mt["topHolders"]["all"]["endDate"] == "2026-09-30"
+    assert [h["name"] for h in mt["topHolders"]["all"]["items"]] == ["茅台集团"]
+    assert mt["topHolders"]["float"] == {"endDate": None, "noticeDate": None, "items": []}
     assert client.get("/data/stock/999999").status_code == 404
 
 

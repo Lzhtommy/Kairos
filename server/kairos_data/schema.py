@@ -1,4 +1,4 @@
-"""数据库表结构（SQLAlchemy Core）：股票池、日 K、财报、分红、指数成分、宏观、公告。
+"""数据库表结构（SQLAlchemy Core）：股票池、日 K、财报、分红、股本股东、指数成分、宏观、公告。
 
 单独使用时 `metadata.create_all(engine)` 建表；嵌入 Kairos 时由 app.models 把这些表
 复制进业务库的 metadata 并映射 ORM 类，两边共用同一份定义。
@@ -110,4 +110,57 @@ announcement = Table(
     Column("ann_date", Date, nullable=False, index=True),
     Column("summary", Text, nullable=True),
     Column("summary_at", DateTime(timezone=True), nullable=True),
+)
+
+# 股本变动：每次变动一行（变动日 = 新股本生效日）
+share_capital = Table(
+    "share_capital", metadata,
+    Column("code", String(16), primary_key=True),
+    Column("change_date", Date, primary_key=True),
+    Column("notice_date", Date, nullable=True),
+    Column("total_shares", BigInteger, nullable=True),  # 总股本（股）
+    Column("float_a_shares", BigInteger, nullable=True),  # 已上市流通 A 股（股）
+    Column("limited_shares", BigInteger, nullable=True),  # 限售股（股）
+    Column("change_reason", String(64), nullable=False, default=""),
+)
+
+# 股东户数：按统计截止日，定期报告之外还有公司在互动平台披露的中间时点
+holder_count = Table(
+    "holder_count", metadata,
+    Column("code", String(16), primary_key=True),
+    Column("end_date", Date, primary_key=True, index=True),
+    Column("notice_date", Date, nullable=True),
+    Column("holder_num", BigInteger, nullable=True),
+    Column("avg_hold_shares", Float, nullable=True),  # 户均持股（股）
+    Column("total_a_shares", BigInteger, nullable=True),
+)
+
+# 十大股东（kind=all）与十大流通股东（kind=float），按报告期
+top_holder = Table(
+    "top_holder", metadata,
+    Column("code", String(16), primary_key=True),
+    Column("end_date", Date, primary_key=True, index=True),
+    Column("kind", String(8), primary_key=True),
+    Column("rank", Integer, primary_key=True),
+    Column("holder_name", String(256), nullable=False, index=True),
+    Column("holder_type", String(32), nullable=False, default=""),
+    Column("shares_type", String(64), nullable=False, default=""),
+    Column("hold_num", BigInteger, nullable=True),  # 持股数（股）
+    Column("hold_ratio", Float, nullable=True),  # 占总股本 / 流通股本 %
+    Column("change", String(32), nullable=False, default=""),  # 新进 / 增加 / 减少 / 不变
+    Column("notice_date", Date, nullable=True),
+)
+
+# 限售解禁：每股每解禁日每类限售股一行
+lockup = Table(
+    "lockup", metadata,
+    Column("code", String(16), primary_key=True),
+    Column("free_date", Date, primary_key=True, index=True),
+    Column("shares_type", String(64), primary_key=True),  # 首发原股东限售 / 定增限售…
+    Column("holder_num", Integer, nullable=True),  # 本批涉及股东数
+    Column("free_shares", Float, nullable=True),  # 本次解禁（股）
+    Column("able_free_shares", Float, nullable=True),  # 实际可流通（股）
+    Column("market_cap", Float, nullable=True),  # 解禁市值（元，按公告时股价）
+    Column("float_ratio", Float, nullable=True),  # 占解禁前流通股 %
+    Column("total_ratio", Float, nullable=True),  # 占总股本 %
 )

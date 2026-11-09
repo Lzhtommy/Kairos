@@ -14,7 +14,8 @@ from kairos_data.store import upsert_rows
 from app.core.security import get_current_user
 from kairos_data.sync import MACRO, announcement_rows
 from app.models.market import Fundamental, Kline, Quote, StockInfo
-from app.models.warehouse import Announcement, Dividend, FinReport, IndexConstituent, MacroSeries
+from app.models.warehouse import (Announcement, Dividend, FinReport, HolderCount, IndexConstituent, Lockup,
+                                  MacroSeries, ShareCapital, TopHolder)
 from kairos_data.sources import eastmoney_dc as eastmoney_data
 from app.services.market import change_pct
 
@@ -112,6 +113,58 @@ def stock_profile(code: str, db: Session = Depends(get_db)):
              "bonusPer10": d.bonus_per10, "transferPer10": d.transfer_per10,
              "progress": d.progress, "plan": d.plan}
             for d in divs
+        ],
+        **_holders_section(db, code),
+    }
+
+
+def _holders_section(db: Session, code: str) -> dict:
+    """股本变动、股东户数走势、最新一期十大（流通）股东、解禁（未来全部 + 最近 10 次）。"""
+    caps = db.execute(
+        select(ShareCapital).where(ShareCapital.code == code)
+        .order_by(ShareCapital.change_date.desc()).limit(30)
+    ).scalars().all()
+    counts = db.execute(
+        select(HolderCount).where(HolderCount.code == code).order_by(HolderCount.end_date)
+    ).scalars().all()
+    holders: dict[str, dict] = {}
+    for kind in ("all", "float"):
+        latest = db.execute(
+            select(func.max(TopHolder.end_date)).where(TopHolder.code == code, TopHolder.kind == kind)
+        ).scalar()
+        rows = db.execute(
+            select(TopHolder).where(TopHolder.code == code, TopHolder.kind == kind,
+                                    TopHolder.end_date == latest).order_by(TopHolder.rank)
+        ).scalars().all() if latest else []
+        holders[kind] = {
+            "endDate": _iso(latest), "noticeDate": _iso(rows[0].notice_date) if rows else None,
+            "items": [{"rank": h.rank, "name": h.holder_name, "type": h.holder_type,
+                       "sharesType": h.shares_type, "holdNum": h.hold_num, "ratio": h.hold_ratio,
+                       "change": h.change} for h in rows],
+        }
+    today = date.today()
+    lockups = db.execute(
+        select(Lockup).where(Lockup.code == code, Lockup.free_date >= today).order_by(Lockup.free_date)
+    ).scalars().all() + db.execute(
+        select(Lockup).where(Lockup.code == code, Lockup.free_date < today)
+        .order_by(Lockup.free_date.desc()).limit(10)
+    ).scalars().all()
+    return {
+        "capital": [
+            {"date": _iso(c.change_date), "noticeDate": _iso(c.notice_date), "total": c.total_shares,
+             "floatA": c.float_a_shares, "limited": c.limited_shares, "reason": c.change_reason}
+            for c in caps
+        ],
+        "holderCount": [
+            {"date": _iso(h.end_date), "num": h.holder_num, "avgShares": h.avg_hold_shares}
+            for h in counts if h.holder_num
+        ],
+        "topHolders": holders,
+        "lockups": [
+            {"date": _iso(x.free_date), "type": x.shares_type, "shares": x.free_shares,
+             "ableShares": x.able_free_shares, "marketCap": x.market_cap,
+             "floatRatio": x.float_ratio, "totalRatio": x.total_ratio, "upcoming": x.free_date >= today}
+            for x in lockups
         ],
     }
 

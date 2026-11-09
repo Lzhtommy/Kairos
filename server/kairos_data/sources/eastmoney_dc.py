@@ -14,7 +14,7 @@ _DC_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
 _ANN_URL = "https://np-anotice-stock.eastmoney.com/api/security/ann"
 _ANN_TEXT_URL = "https://np-cnotice-stock.eastmoney.com/api/content/ann"
 _HEADERS = {"User-Agent": "Mozilla/5.0", "Referer": "https://data.eastmoney.com/"}
-_PAGE = 500
+_PAGE = 2500  # 接口单页上限
 
 
 def _get(url: str, params: dict[str, Any], retries: int = 3) -> dict:
@@ -32,7 +32,11 @@ def _get(url: str, params: dict[str, Any], retries: int = 3) -> dict:
 
 def fetch_report(name: str, filter: str = "", sort: str = "", desc: bool = True,
                  max_pages: int | None = None, columns: str = "ALL") -> list[dict]:
-    """拉取一个数据中心报表的全部页。查无数据时返回空列表（接口这时 result 为 null）。"""
+    """拉取一个数据中心报表的全部页。查无数据时返回空列表（接口这时 result 为 null）。
+
+    sort 为逗号分隔的排序列，必须能唯一定序：不排序时翻页结果不稳定，
+    实测相邻两页 500 行里 496 行重复，全量拉取会大量漏行。
+    """
     out: list[dict] = []
     page = 1
     while True:
@@ -40,7 +44,8 @@ def fetch_report(name: str, filter: str = "", sort: str = "", desc: bool = True,
         if filter:
             params["filter"] = filter
         if sort:
-            params.update(sortColumns=sort, sortTypes="-1" if desc else "1")
+            n = len(sort.split(","))
+            params.update(sortColumns=sort, sortTypes=",".join(["-1" if desc else "1"] * n))
         body = _get(_DC_URL, params)
         result = body.get("result") or {}
         out.extend(result.get("data") or [])

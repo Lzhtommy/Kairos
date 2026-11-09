@@ -94,3 +94,48 @@ def test_backfill_history_skips_complete_and_falls_back(db, monkeypatch):
     assert _klines(db, "600000")[0][0] == datetime(1999, 1, 4)
     assert _klines(db, "600002")[0][0] == datetime(1999, 1, 4)
     assert sync.history_gaps(db) == []
+
+
+def test_holder_parsers_filter_non_a_and_convert_units():
+    raw = [
+        {"SECUCODE": "603926.SH", "SECURITY_CODE": "603926", "END_DATE": "2026-09-30 00:00:00",
+         "HOLDER_RANK": 1, "HOLDER_NAME": "杭州德萨", "HOLDER_TYPE": "其它", "SHARES_TYPE": "A股",
+         "HOLD_NUM": 81302242, "FREE_HOLDNUM_RATIO": 35.22, "HOLD_NUM_CHANGE": "不变",
+         "UPDATE_DATE": "2026-10-28 00:00:00"},
+        {"SECUCODE": "900906.SH", "SECURITY_CODE": "900906", "END_DATE": "2026-09-30 00:00:00",
+         "HOLDER_RANK": 1, "HOLDER_NAME": "B 股"},
+        {"SECUCODE": "875004.NQ", "SECURITY_CODE": "875004", "END_DATE": "2026-09-30 00:00:00",
+         "HOLDER_RANK": 1, "HOLDER_NAME": "新三板"},
+        {"SECUCODE": "920992.BJ", "SECURITY_CODE": "920992", "END_DATE": "2026-09-30 00:00:00",
+         "HOLDER_RANK": 1, "HOLDER_NAME": "北交所"},
+    ]
+    rows = sync.top_holder_rows(raw, "float")
+    assert [r["code"] for r in rows] == ["603926", "920992"]
+    assert rows[0]["hold_ratio"] == 35.22 and rows[0]["notice_date"] == date(2026, 10, 28)
+    lock = sync.lockup_rows([{
+        "SECUCODE": "600367.SH", "SECURITY_CODE": "600367", "FREE_DATE": "2026-11-02 00:00:00",
+        "FREE_SHARES_TYPE": "定向增发机构配售股份", "BATCH_HOLDER_NUM": 1, "CURRENT_FREE_SHARES": 1915.772,
+        "ABLE_FREE_SHARES": 1915.772, "LIFT_MARKET_CAP": 50633.85, "FREE_RATIO": 0.0561, "TOTAL_RATIO": 0.0561,
+    }])[0]
+    assert round(lock["free_shares"]) == 19157720 and round(lock["float_ratio"], 2) == 5.61
+
+
+def test_top_holders_fill_notice_date_from_float(db, monkeypatch):
+    def fake(report, filter="", sort="", **_kw):
+        assert sort  # 东财不排序时翻页不稳定
+        base = {"SECUCODE": "600519.SH", "SECURITY_CODE": "600519", "END_DATE": "2026-09-30 00:00:00",
+                "HOLDER_RANK": 1, "HOLDER_NAME": "茅台集团", "HOLD_NUM": 681282935}
+        if report == "RPT_F10_EH_FREEHOLDERS":
+            return [{**base, "UPDATE_DATE": "2026-10-31 00:00:00", "FREE_HOLDNUM_RATIO": 54.49}]
+        return [{**base, "HOLD_NUM_RATIO": 54.5}]
+
+    monkeypatch.setattr(sync.eastmoney_dc, "fetch_report", fake)
+    assert sync.refresh_top_holders(db, [date(2026, 9, 30)]) == 2
+    rows = {r["kind"]: r for r in db.execute(select(schema.top_holder)).mappings()}
+    assert rows["all"]["notice_date"] == date(2026, 10, 31) and rows["all"]["hold_ratio"] == 54.5
+
+
+def test_month_ranges():
+    assert sync.month_ranges(date(2026, 9, 15), date(2026, 11, 9)) == [
+        (date(2026, 11, 1), date(2026, 11, 9)), (date(2026, 10, 1), date(2026, 10, 31)),
+        (date(2026, 9, 1), date(2026, 9, 30))]
