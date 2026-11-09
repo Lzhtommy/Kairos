@@ -64,3 +64,11 @@ class Billboard(Base):
 
 class BlockTrade(Base):
     __table__ = schema.block_trade.to_metadata(Base.metadata)
+
+
+class SecurityInfo(Base):
+    __table__ = schema.security_info.to_metadata(Base.metadata)
+
+
+class SecurityBar(Base):
+    __table__ = schema.security_bar.to_metadata(Base.metadata)

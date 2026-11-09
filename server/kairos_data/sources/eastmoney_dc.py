@@ -84,11 +84,12 @@ def fetch_announcement_text(art_code: str, max_pages: int = 3) -> tuple[str, str
 _KLINE_URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
 
 
-def fetch_index_kline(secid: str) -> list[dict]:
-    """指数日线全历史（push2his 延时 / 历史集群，无实时集群的 IP 风控）。
+def fetch_his_kline(secid: str) -> list[dict]:
+    """日线全历史（不复权；push2his 延时 / 历史集群，无实时集群的 IP 风控）。
 
-    secid 形如 1.000300（上证 / 中证）、0.399001（深证 / 北证）、2.932000（中证新编指数）。
-    返回 {date, open, close, high, low, volume, amount}，成交量单位手、成交额元。
+    secid 形如 1.000300（沪市 / 中证指数、沪市 ETF / 转债）、0.399001（深市、北证）、
+    2.932000（中证新编指数）。返回 {date, open, close, high, low, volume, amount}，
+    成交量单位手（指数、股票、ETF）或张（转债），成交额元。
     """
     body = _get(_KLINE_URL, {
         "secid": secid, "klt": 101, "fqt": 0, "lmt": 100000, "end": "20500101",
@@ -100,3 +101,33 @@ def fetch_index_kline(secid: str) -> list[dict]:
         out.append({"date": d, "open": float(o), "close": float(c), "high": float(h), "low": float(low),
                     "volume": float(vol), "amount": float(amt)})
     return out
+
+
+_CLIST_URL = "https://push2delay.eastmoney.com/api/qt/clist/get"
+SNAPSHOT_FS = {
+    "etf": "b:MK0021,b:MK0022,b:MK0023,b:MK0024",
+    "cb": "b:MK0354",
+}
+
+
+def fetch_snapshot(fs: str) -> list[dict]:
+    """全市场行情快照（push2delay 延时集群），收盘后即当日日线。
+
+    返回 {code, market(1 沪 / 0 深), name, open, high, low, close, volume, amount, ts(Unix 秒)}。
+    """
+    out: list[dict] = []
+    page = 1
+    while True:
+        # 接口单页最多返回 100 行（pz 再大也会截断），按累计行数翻页
+        body = _get(_CLIST_URL, {"pn": page, "pz": 100, "po": 1, "np": 1, "fltt": 2, "invt": 2,
+                                 "fid": "f12", "fs": fs,
+                                 "fields": "f12,f13,f14,f2,f5,f6,f15,f16,f17,f124"})
+        data = body.get("data") or {}
+        diff = data.get("diff") or []
+        for d in diff:
+            out.append({"code": d["f12"], "market": d["f13"], "name": d["f14"], "open": d["f17"],
+                        "high": d["f15"], "low": d["f16"], "close": d["f2"], "volume": d["f5"],
+                        "amount": d["f6"], "ts": d["f124"]})
+        if not diff or len(out) >= int(data.get("total") or 0):
+            return out
+        page += 1

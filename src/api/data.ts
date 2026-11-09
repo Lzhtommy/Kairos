@@ -5,7 +5,25 @@ export type StockHit = {
   name: string
   market: string
   industry: string
+  type: "stock" | "etf" | "cb"
   delistDate: string | null
+}
+
+export type SecurityProfile = {
+  code: string
+  name: string
+  type: "etf" | "cb"
+  exchange: string
+  listDate: string | null
+  delistDate: string | null
+  stockCode: string | null
+  stockName: string | null
+  rating: string | null
+  issueSize: number | null
+  maturityDate: string | null
+  convertPrice: number | null
+  points: [string, number][]
+  lastAmount: number | null
 }
 
 export type FinRow = {
@@ -187,3 +205,5 @@ export const fetchKline = (code: string, limit: number) => api<Bar[]>(`/kline?co
 export const fetchIndexCatalog = () => api<IndexCatalogItem[]>("/data/index")
 export const fetchIndexDetail = (code: string, years: number) =>
   api<IndexDetail>(`/data/index/${code}?years=${years}`)
+export const fetchSecurity = (code: string, years: number) =>
+  api<SecurityProfile>(`/data/security/${code}?years=${years}`)

@@ -1,4 +1,4 @@
-"""数据库表结构（SQLAlchemy Core）：股票池、日 K、财报与三大报表、分红、股本股东、交易类数据、指数成分、宏观、公告。
+"""数据库表结构（SQLAlchemy Core）：股票池、日 K、财报与三大报表、分红、股本股东、交易类数据、指数、ETF 与可转债、宏观、公告。
 
 单独使用时 `metadata.create_all(engine)` 建表；嵌入 Kairos 时由 app.models 把这些表
 复制进业务库的 metadata 并映射 ORM 类，两边共用同一份定义。
@@ -275,4 +275,34 @@ block_trade = Table(
     Column("amount", Float, nullable=True),  # 元
     Column("buyer", String(128), nullable=False, default=""),
     Column("seller", String(128), nullable=False, default=""),
+)
+
+# ETF 与可转债清单（股票之外的场内证券）。ETF 来自 BaoStock，可转债来自东财可转债列表
+security_info = Table(
+    "security_info", metadata,
+    Column("code", String(16), primary_key=True),
+    Column("exchange", String(8), nullable=False),  # SH / SZ
+    Column("sec_type", String(8), nullable=False, index=True),  # etf / cb
+    Column("name", String(64), nullable=False),
+    Column("list_date", Date, nullable=True),
+    Column("delist_date", Date, nullable=True),
+    # 以下只有可转债
+    Column("stock_code", String(16), nullable=True, index=True),  # 正股
+    Column("rating", String(16), nullable=True),
+    Column("issue_size", Float, nullable=True),  # 发行规模（亿元）
+    Column("maturity_date", Date, nullable=True),
+    Column("convert_price", Float, nullable=True),  # 初始转股价
+)
+
+# ETF 与可转债日线（不复权），成交量单位手（ETF）/ 张（转债），成交额元
+security_bar = Table(
+    "security_bar", metadata,
+    Column("code", String(16), primary_key=True),
+    Column("trade_date", Date, primary_key=True),
+    Column("open", Float, nullable=False),
+    Column("high", Float, nullable=False),
+    Column("low", Float, nullable=False),
+    Column("close", Float, nullable=False),
+    Column("volume", Float, nullable=True),
+    Column("amount", Float, nullable=True),
 )

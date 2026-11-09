@@ -16,6 +16,7 @@ import {
   fetchKline,
   fetchMacroCatalog,
   fetchMacroSeries,
+  fetchSecurity,
   fetchStockProfile,
   searchStocks,
   summarizeAnnouncement,
@@ -99,7 +100,7 @@ function StockSearch() {
       <Input
         value={q}
         onChange={(e) => setQ(e.target.value)}
-        placeholder="输入代码或名称，含已退市股票"
+        placeholder="输入代码或名称：股票（含已退市）、ETF、可转债"
         className="pl-8"
       />
       {q && data && data.length > 0 && (
@@ -724,9 +725,69 @@ function AnnouncementSection({ code }: { code: string }) {
   )
 }
 
-function StockView({ code }: { code: string }) {
-  const { data, isLoading, error } = useQuery({ queryKey: ["data-stock", code], queryFn: () => fetchStockProfile(code) })
+function SecurityView({ code }: { code: string }) {
+  const navigate = useNavigate()
+  const [years, setYears] = useState(5)
+  const { data, isLoading } = useQuery({
+    queryKey: ["data-security", code, years],
+    queryFn: () => fetchSecurity(code, years),
+    retry: false,
+  })
   if (isLoading) return <p className="text-sm text-muted-foreground">加载中…</p>
+  if (!data) return <p className="text-sm text-muted-foreground">没有找到 {code}</p>
+  const facts: [string, string][] = [
+    ["类型", data.type === "etf" ? "ETF" : "可转债"],
+    ["市场", MARKET_LABEL[data.exchange] ?? data.exchange],
+    ["上市日期", data.listDate ?? "未上市"],
+  ]
+  if (data.type === "cb") {
+    facts.push(
+      ["评级", data.rating ?? "—"],
+      ["发行规模", data.issueSize == null ? "—" : `${data.issueSize.toFixed(2)} 亿`],
+      ["到期日", data.maturityDate ?? "—"],
+      ["初始转股价", num(data.convertPrice)],
+    )
+  }
+  const last = data.points.length ? data.points[data.points.length - 1] : null
+  return (
+    <div className="space-y-4">
+      <div className="rounded-lg border border-border p-4">
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <h2 className="text-lg font-semibold">{data.name}</h2>
+          <span className="font-mono text-sm tabular-nums text-muted-foreground">{data.code}</span>
+          {data.delistDate && <Badge variant="secondary">已退市 · {data.delistDate}</Badge>}
+          {last && <span className="font-mono text-sm tabular-nums">{last[1].toFixed(3)}（{last[0]}）</span>}
+          {data.stockCode && (
+            <button type="button" className="text-sm underline" onClick={() => navigate(`/app/data/${data.stockCode}`)}>
+              正股 {data.stockName ?? data.stockCode}
+            </button>
+          )}
+        </div>
+        <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-4">
+          {facts.map(([k, v]) => (
+            <div key={k}>
+              <dt className="text-xs text-muted-foreground">{k}</dt>
+              <dd className="font-mono tabular-nums">{v}</dd>
+            </div>
+          ))}
+        </dl>
+      </div>
+      <Section title="价格走势（不复权收盘价）" extra={<Segmented value={years} options={MACRO_YEARS} onChange={setYears} />}>
+        <LineChart points={data.points} height={240} format={(v) => v.toFixed(3)} />
+      </Section>
+    </div>
+  )
+}
+
+function StockView({ code }: { code: string }) {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["data-stock", code],
+    queryFn: () => fetchStockProfile(code),
+    retry: false,
+  })
+  if (isLoading) return <p className="text-sm text-muted-foreground">加载中…</p>
+  // 股票池里没有的代码可能是 ETF / 可转债
+  if (error instanceof ApiError && error.status === 404) return <SecurityView code={code} />
   if (error || !data) return <p className="text-sm text-muted-foreground">没有找到 {code}</p>
   return (
     <div className="space-y-4">

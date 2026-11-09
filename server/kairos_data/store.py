@@ -31,6 +31,14 @@ def upsert_rows(db, table, rows: list[dict], batch: int = 1000) -> None:  # noqa
         return
     if not isinstance(table, Table):
         table = table.__table__
+    # 多行 VALUES 要求每行列相同；列不同的行分组写，缺的列保留库里原值而不是写成 NULL
+    groups: dict[tuple, list[dict]] = {}
+    for r in rows:
+        groups.setdefault(tuple(sorted(r)), []).append(r)
+    if len(groups) > 1:
+        for group in groups.values():
+            upsert_rows(db, table, group, batch)
+        return
     pk = {c.name for c in table.primary_key.columns}
     dialect = (db.get_bind() if isinstance(db, Session) else db).dialect.name
     for i in range(0, len(rows), batch):

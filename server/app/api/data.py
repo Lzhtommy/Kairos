@@ -17,7 +17,7 @@ from kairos_data.sync import INDEXES, MACRO, announcement_rows
 from app.models.market import Fundamental, Kline, Quote, StockInfo
 from app.models.warehouse import (Announcement, Billboard, BlockTrade, Dividend, FinReport, FinStatement,
                                   HolderCount, IndexBar, IndexConstituent, Lockup, MacroSeries,
-                                  MarginTrading, ShareCapital, TopHolder)
+                                  MarginTrading, SecurityBar, SecurityInfo, ShareCapital, TopHolder)
 from kairos_data.sources import eastmoney_dc as eastmoney_data
 from app.services.market import change_pct
 
@@ -35,19 +35,32 @@ def _iso(d: date | datetime | None) -> str | None:
 @router.get("/search")
 def search(q: str = Query(min_length=1, max_length=32), limit: int = Query(default=20, le=50),
            db: Session = Depends(get_db)):
+    """股票（含退市）、ETF、可转债按代码前缀或名称搜索；在市的排前面。"""
     q = q.strip()
-    rows = db.execute(
+    stocks = db.execute(
         select(StockInfo)
         .where(or_(StockInfo.code.startswith(q), StockInfo.name.contains(q)))
-        # 在市的排前面，再按代码
         .order_by(StockInfo.delist_date.is_not(None), StockInfo.code)
         .limit(limit)
-    ).scalars()
-    return [
-        {"code": s.code, "name": s.name, "market": s.market, "industry": s.industry,
+    ).scalars().all()
+    others = db.execute(
+        select(SecurityInfo)
+        .where(or_(SecurityInfo.code.startswith(q), SecurityInfo.name.contains(q)))
+        .order_by(SecurityInfo.delist_date.is_not(None), SecurityInfo.code)
+        .limit(limit)
+    ).scalars().all()
+    hits = [
+        {"code": s.code, "name": s.name, "market": s.market, "industry": s.industry, "type": "stock",
          "delistDate": _iso(s.delist_date)}
-        for s in rows
+        for s in stocks
+    ] + [
+        {"code": s.code, "name": s.name, "market": s.exchange,
+         "industry": "ETF" if s.sec_type == "etf" else "可转债", "type": s.sec_type,
+         "delistDate": _iso(s.delist_date)}
+        for s in others
     ]
+    hits.sort(key=lambda h: (h["delistDate"] is not None, h["type"] != "stock", h["code"]))
+    return hits[:limit]
 
 
 def _index_membership(db: Session, code: str) -> list[dict]:
@@ -367,3 +380,25 @@ def index_detail(code: str, years: int = Query(default=10, ge=1, le=40), db: Ses
         )
     return {"code": code, "name": INDEX_NAMES[code], "points": [[_iso(d), c] for d, c in bars],
             "snapshotDate": _iso(snap), "members": members}
+
+
+@router.get("/security/{code}")
+def security_profile(code: str, years: int = Query(default=5, ge=1, le=40), db: Session = Depends(get_db)):
+    """ETF / 可转债：基本信息与日线收盘走势；可转债附正股名称。"""
+    sec = db.get(SecurityInfo, code)
+    if sec is None:
+        raise HTTPException(status_code=404, detail="没有这只证券")
+    since = date.today() - timedelta(days=365 * years)
+    bars = db.execute(
+        select(SecurityBar.trade_date, SecurityBar.close, SecurityBar.amount)
+        .where(SecurityBar.code == code, SecurityBar.trade_date >= since).order_by(SecurityBar.trade_date)
+    ).all()
+    stock = db.get(StockInfo, sec.stock_code) if sec.stock_code else None
+    return {
+        "code": sec.code, "name": sec.name, "type": sec.sec_type, "exchange": sec.exchange,
+        "listDate": _iso(sec.list_date), "delistDate": _iso(sec.delist_date),
+        "stockCode": sec.stock_code, "stockName": stock.name if stock else None, "rating": sec.rating,
+        "issueSize": sec.issue_size, "maturityDate": _iso(sec.maturity_date), "convertPrice": sec.convert_price,
+        "points": [[_iso(d), c] for d, c, _a in bars],
+        "lastAmount": bars[-1][2] if bars else None,
+    }

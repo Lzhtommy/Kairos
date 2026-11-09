@@ -14,8 +14,8 @@ from sqlalchemy import delete, func, insert, select
 
 from kairos_data.schema import (STATEMENT_ITEMS, announcement, billboard, block_trade, dividend,
                                 fin_report, fin_statement, holder_count, index_bar, index_constituent,
-                                kline, lockup, macro_series, margin_trading, share_capital, stock_info,
-                                top_holder)
+                                kline, lockup, macro_series, margin_trading, security_bar, security_info,
+                                share_capital, stock_info, top_holder)
 from kairos_data.sources import baostock, csindex, eastmoney_dc
 from kairos_data.store import upsert_rows
 
@@ -424,6 +424,107 @@ def _days(since: date, until: date) -> list[date]:
     return out
 
 
+# ---------------------------------------------------------------- ETF 与可转债
+
+def etf_rows(raw: list[dict[str, str]]) -> list[dict]:
+    """BaoStock 证券列表里的 ETF（type=5）。"""
+    out = []
+    for r in raw:
+        if r.get("type") != "5":
+            continue
+        exchange, code = r["code"].split(".", 1)
+        out.append({"code": code, "exchange": exchange.upper(), "sec_type": "etf",
+                    "name": r["code_name"].strip()[:64], "list_date": _d(r["ipoDate"]),
+                    "delist_date": _d(r["outDate"])})
+    return out
+
+
+def cb_rows(raw: list[dict]) -> list[dict]:
+    """东财可转债列表；还没上市的（申购阶段）没有上市日，也收录。"""
+    out = []
+    for r in raw:
+        suffix = (r.get("SECUCODE") or "").rpartition(".")[2]
+        if suffix not in ("SH", "SZ"):
+            continue
+        out.append({
+            "code": r["SECURITY_CODE"], "exchange": suffix, "sec_type": "cb",
+            "name": (r.get("SECURITY_NAME_ABBR") or "")[:64], "list_date": _d(r.get("LISTING_DATE")),
+            "delist_date": _d(r.get("DELIST_DATE")), "stock_code": r.get("CONVERT_STOCK_CODE"),
+            "rating": (r.get("RATING") or None) and r["RATING"][:16],
+            "issue_size": _f(r.get("ACTUAL_ISSUE_SCALE")), "maturity_date": _d(r.get("EXPIRE_DATE")),
+            "convert_price": _f(r.get("INITIAL_TRANSFER_PRICE")),
+        })
+    return out
+
+
+def refresh_securities(db) -> int:
+    """ETF 与可转债清单。两类列名不同，分开 upsert。"""
+    etfs = etf_rows(baostock.fetch_security_basics())
+    cbs = cb_rows(eastmoney_dc.fetch_report("RPT_BOND_CB_LIST", sort="SECURITY_CODE"))
+    upsert_rows(db, security_info, etfs)
+    upsert_rows(db, security_info, cbs)
+    db.commit()
+    return len(etfs) + len(cbs)
+
+
+def _secid(exchange: str, code: str) -> str:
+    return f"{1 if exchange == 'SH' else 0}.{code}"
+
+
+def backfill_security_bars(db, throttle: float = 0.1) -> tuple[int, int]:
+    """ETF 与可转债日线全历史，每只一次请求；已有日线的跳过（日更由快照接上）。返回 (写入, 失败)。"""
+    have = set(db.execute(select(security_bar.c.code).distinct()).scalars())
+    todo = db.execute(
+        select(security_info.c.code, security_info.c.exchange)
+        .where(security_info.c.list_date.is_not(None)).order_by(security_info.c.code)
+    ).tuples().all()
+    done = failed = 0
+    for i, (code, exchange) in enumerate(todo, 1):
+        if code in have:
+            continue
+        try:
+            raw = eastmoney_dc.fetch_his_kline(_secid(exchange, code))
+        except Exception as exc:  # noqa: BLE001
+            failed += 1
+            logger.warning("%s 日线取数失败：%s", code, exc)
+            continue
+        rows = [{"code": code, "trade_date": _d(r["date"]), "open": r["open"], "high": r["high"],
+                 "low": r["low"], "close": r["close"], "volume": r["volume"], "amount": r["amount"]}
+                for r in raw]
+        upsert_rows(db, security_bar, rows)
+        db.commit()
+        done += 1
+        if i % 200 == 0:
+            logger.info("ETF / 转债日线 %d/%d：写入 %d，失败 %d", i, len(todo), done, failed)
+        time.sleep(throttle)
+    return done, failed
+
+
+def snapshot_security_rows(raw: list[dict], today: date) -> list[dict]:
+    """收盘快照 → 当日日线：只要更新时间落在 today、且当天有成交的。"""
+    out = []
+    for r in raw:
+        if not isinstance(r.get("close"), (int, float)) or not isinstance(r.get("open"), (int, float)):
+            continue  # 停牌 / 未上市时字段是 "-"
+        ts = r.get("ts")
+        if not ts or (datetime.fromtimestamp(ts, timezone.utc) + timedelta(hours=8)).date() != today:
+            continue
+        out.append({"code": r["code"], "trade_date": today, "open": r["open"], "high": r["high"],
+                    "low": r["low"], "close": r["close"], "volume": r["volume"], "amount": r["amount"]})
+    return out
+
+
+def refresh_security_snapshot(db) -> int:
+    today = _today_cst()
+    n = 0
+    for fs in eastmoney_dc.SNAPSHOT_FS.values():
+        rows = snapshot_security_rows(eastmoney_dc.fetch_snapshot(fs), today)
+        upsert_rows(db, security_bar, rows)
+        db.commit()
+        n += len(rows)
+    return n
+
+
 # ---------------------------------------------------------------- 宏观
 
 def macro_rows(indicator: str, raw: list[dict]) -> list[dict]:
@@ -504,7 +605,7 @@ def refresh_index_bars(db) -> int:
     """主要指数日线，每次取全历史整段 upsert（每个指数一次请求）。"""
     n = 0
     for code, (_name, secid, _csi) in INDEXES.items():
-        rows = index_bar_rows(code, eastmoney_dc.fetch_index_kline(secid))
+        rows = index_bar_rows(code, eastmoney_dc.fetch_his_kline(secid))
         upsert_rows(db, index_bar, rows)
         db.commit()
         n += len(rows)
@@ -787,7 +888,7 @@ def backfill_history(db, tencent=None, throttle: float = 0.15) -> tuple[int, int
 # ---------------------------------------------------------------- 组合入口
 
 PARTS = ("fin", "stmt", "div", "macro", "index", "indexbar", "capital", "holdernum", "holders",
-         "lockup", "margin", "billboard", "block")
+         "lockup", "margin", "billboard", "block", "securities")
 
 
 def _run(db, label: str, fn) -> None:  # noqa: ANN001
@@ -801,7 +902,8 @@ def _run(db, label: str, fn) -> None:  # noqa: ANN001
 def daily(db) -> None:
     """日更：财报与三大报表最近 2 个报告期、分红最近 4 个报告期、宏观各序列最新一页、指数成分当日名单、
     近 40 天的股本变动和股东户数、最近 2 期十大股东、近 30 天起的解禁（含未来计划）、
-    近 7 天的两融 / 龙虎榜 / 大宗交易。"""
+    近 7 天的两融 / 龙虎榜 / 大宗交易、主要指数日线与中证成分权重、ETF 与可转债清单和当日快照。
+    需在收盘后（建议 18:00 后）跑，快照才是当日收盘。"""
     _run(db, "fin", lambda: refresh_financials(db, quarter_ends(2)))
     _run(db, "stmt", lambda: refresh_statements(db, quarter_ends(2)))
     _run(db, "dividend", lambda: refresh_dividends(db, quarter_ends(4)))
@@ -818,12 +920,15 @@ def daily(db) -> None:
     _run(db, "margin", lambda: refresh_margin(db, _days(today - timedelta(days=7), today)))
     _run(db, "billboard", lambda: refresh_billboard(db, month_ranges(today - timedelta(days=7), today)))
     _run(db, "block", lambda: refresh_block_trade(db, month_ranges(today - timedelta(days=7), today)))
+    _run(db, "securities", lambda: refresh_securities(db))
+    _run(db, "security snapshot", lambda: refresh_security_snapshot(db))
 
 
 def backfill(db, parts: tuple[str, ...] = PARTS) -> None:
     """全量回补：财报与三大报表 1988 年起、分红 1990 年起、宏观全历史、指数成分 2005 年起逐月、
     股本变动 1990 年起、股东户数 2010 年起、十大股东 1990 年起、解禁全部、两融 2010 年起（约 4000
-    个交易日，最慢，约 2 小时）、龙虎榜 2004 年起、大宗交易 2000 年起。"""
+    个交易日，最慢，约 2 小时）、龙虎榜 2004 年起、大宗交易 2000 年起、主要指数全历史、
+    ETF 与可转债清单及全历史日线（约 2700 只，每只一次请求）。"""
     today = _today_cst()
     if "fin" in parts:
         periods = quarter_ends((today.year - 1988) * 4 + 4)
@@ -861,6 +966,9 @@ def backfill(db, parts: tuple[str, ...] = PARTS) -> None:
     if "block" in parts:
         months = month_ranges(date(2000, 8, 1), today)
         _run(db, "block backfill", lambda: refresh_block_trade(db, months))
+    if "securities" in parts:
+        _run(db, "securities", lambda: refresh_securities(db))
+        _run(db, "security bar backfill", lambda: backfill_security_bars(db)[0])
 
 
 def missing_parts(db) -> tuple[str, ...]:
@@ -868,6 +976,6 @@ def missing_parts(db) -> tuple[str, ...]:
               "index": index_constituent, "indexbar": index_bar,
               "capital": share_capital, "holdernum": holder_count, "holders": top_holder,
               "lockup": lockup, "margin": margin_trading, "billboard": billboard,
-              "block": block_trade}
+              "block": block_trade, "securities": security_bar}
     return tuple(k for k, t in tables.items()
                  if not db.execute(select(func.count()).select_from(t)).scalar())

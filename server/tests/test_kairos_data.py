@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 from sqlalchemy import create_engine, insert, inspect, select
 
@@ -189,7 +189,7 @@ def test_margin_and_billboard_rows():
 def test_index_weights_and_bars(db, monkeypatch):
     monkeypatch.setattr(sync.csindex, "fetch_weights", lambda code: [
         {"date": date(2026, 10, 30), "code": "600519", "weight": 4.2}])
-    monkeypatch.setattr(sync.eastmoney_dc, "fetch_index_kline", lambda secid: [
+    monkeypatch.setattr(sync.eastmoney_dc, "fetch_his_kline", lambda secid: [
         {"date": "2026-11-06", "open": 1, "high": 2, "low": 1, "close": 2, "volume": 10, "amount": 100}])
     csi = sum(1 for _n, _s, c in sync.INDEXES.values() if c)
     assert sync.refresh_index_weights(db) == csi
@@ -197,3 +197,36 @@ def test_index_weights_and_bars(db, monkeypatch):
     w = db.execute(select(schema.index_constituent.c.weight)
                    .where(schema.index_constituent.c.index_code == "000300")).scalar()
     assert w == 4.2
+
+
+def test_securities_and_snapshot(db, monkeypatch):
+    monkeypatch.setattr(sync.baostock, "fetch_security_basics", lambda: [
+        {"code": "sh.510300", "code_name": "沪深300ETF", "ipoDate": "2012-05-28", "outDate": "", "type": "5",
+         "status": "1"},
+        {"code": "sh.600519", "code_name": "贵州茅台", "ipoDate": "2001-08-27", "outDate": "", "type": "1",
+         "status": "1"},
+    ])
+    monkeypatch.setattr(sync.eastmoney_dc, "fetch_report", lambda *a, **k: [
+        {"SECURITY_CODE": "113052", "SECUCODE": "113052.SH", "SECURITY_NAME_ABBR": "兴业转债",
+         "LISTING_DATE": "2022-01-14 00:00:00", "CONVERT_STOCK_CODE": "601166", "RATING": "AAA",
+         "ACTUAL_ISSUE_SCALE": 500, "EXPIRE_DATE": "2027-12-27 00:00:00", "INITIAL_TRANSFER_PRICE": 25.51},
+    ])
+    assert sync.refresh_securities(db) == 2
+    secids = []
+
+    def his(secid):
+        secids.append(secid)
+        return [{"date": "2026-11-06", "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1, "amount": 1}]
+
+    monkeypatch.setattr(sync.eastmoney_dc, "fetch_his_kline", his)
+    assert sync.backfill_security_bars(db, throttle=0) == (2, 0)
+    assert sorted(secids) == ["1.113052", "1.510300"]
+    assert sync.backfill_security_bars(db, throttle=0) == (0, 0)  # 已有日线的跳过
+
+    ts = int(datetime(2026, 11, 9, 7, 0, tzinfo=timezone.utc).timestamp())  # 15:00 CST
+    rows = sync.snapshot_security_rows([
+        {"code": "510300", "open": 4.1, "high": 4.2, "low": 4.0, "close": 4.1, "volume": 9, "amount": 9, "ts": ts},
+        {"code": "511111", "open": "-", "high": "-", "low": "-", "close": "-", "volume": "-", "amount": "-", "ts": ts},
+        {"code": "113052", "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1, "amount": 1, "ts": ts - 86400},
+    ], date(2026, 11, 9))
+    assert [r["code"] for r in rows] == ["510300"]

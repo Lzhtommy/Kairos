@@ -16,7 +16,7 @@ from app.core.security import get_current_user
 from kairos_data import sync as warehouse
 from app.models.market import Kline, StockInfo
 from app.models.warehouse import (Announcement, Dividend, FinReport, HolderCount, IndexBar, IndexConstituent,
-                                  Lockup, MacroSeries, TopHolder)
+                                  Lockup, MacroSeries, SecurityBar, SecurityInfo, TopHolder)
 from kairos_data.sync import delisted_bars as bars
 
 
@@ -215,3 +215,21 @@ def test_index_endpoints(client, db):
     assert [m["code"] for m in d["members"]] == ["600519", "000001"] and d["members"][0]["name"] == "贵州茅台"
     assert d["points"][-1] == ["2026-11-06", 4040]
     assert client.get("/data/index/999999").status_code == 404
+
+
+def test_search_and_security_profile(client, db):
+    db.add(StockInfo(code="601166", name="兴业银行", market="SH", industry="银行"))
+    db.commit()
+    upsert_rows(db, SecurityInfo, [
+        {"code": "113052", "exchange": "SH", "sec_type": "cb", "name": "兴业转债", "list_date": date(2022, 1, 14),
+         "stock_code": "601166", "convert_price": 25.51},
+        {"code": "510300", "exchange": "SH", "sec_type": "etf", "name": "沪深300ETF", "list_date": date(2012, 5, 28)},
+    ])
+    upsert_rows(db, SecurityBar, [{"code": "113052", "trade_date": date.today(), "open": 1, "high": 1, "low": 1,
+                                   "close": 113.2, "amount": 3e8}])
+    db.commit()
+    hits = client.get("/data/search", params={"q": "兴业"}).json()
+    assert [(h["code"], h["type"]) for h in hits] == [("601166", "stock"), ("113052", "cb")]
+    p = client.get("/data/security/113052").json()
+    assert p["stockName"] == "兴业银行" and p["points"][-1][1] == 113.2 and p["lastAmount"] == 3e8
+    assert client.get("/data/security/999999").status_code == 404
