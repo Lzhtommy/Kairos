@@ -22,7 +22,7 @@ from app.core.config import settings
 from app.core.db import SessionLocal
 from app.jobs.collect import in_trading_session
 from app.models.sector import SectorBar, SectorInfo, SectorMetric, SectorTilt, SectorValuation
-from app.providers.sector_provider import get_sector_source, throttle
+from kairos_data.sources.sector import get_sector_source, throttle
 from app.services.sector_metrics import build_panel, crowding_rows, month_key, tilt_rows
 from app.services.sector_valuation import rolling_pct
 

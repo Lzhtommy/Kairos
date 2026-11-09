@@ -13,7 +13,8 @@ from time import sleep
 
 from sqlalchemy import delete, func, insert, select, update
 
-from app.core.db import SessionLocal, upsert_rows
+from app.core.db import SessionLocal
+from kairos_data.store import upsert_rows
 from app.models.market import (
     AdjustmentEvent,
     FactorSnapshot,

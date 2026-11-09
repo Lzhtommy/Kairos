@@ -1,9 +1,10 @@
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, Date, DateTime, Float, Integer, String
+from sqlalchemy import BigInteger, DateTime, Float, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
+from kairos_data import schema
 
 
 def _now() -> datetime:
@@ -11,18 +12,12 @@ def _now() -> datetime:
 
 
 class StockInfo(Base):
-    """Static per-stock metadata (the股票池)."""
+    """股票池（在市 + 已退市），表结构定义在 kairos_data.schema。
 
-    __tablename__ = "stock_info"
+    退市股也留在表里供查阅，遍历"当前股票池"的地方用 listed() 过滤。
+    """
 
-    code: Mapped[str] = mapped_column(String(16), primary_key=True)
-    name: Mapped[str] = mapped_column(String(64))
-    market: Mapped[str] = mapped_column(String(8))  # SH / SZ / BJ
-    industry: Mapped[str] = mapped_column(String(64))
-    # 上市 / 退市日期来自 BaoStock（北交所没有，留空）。退市股也留在表里供查阅，
-    # 遍历"当前股票池"的地方用 listed() 过滤
-    list_date: Mapped[date | None] = mapped_column(Date, nullable=True, default=None)
-    delist_date: Mapped[date | None] = mapped_column(Date, nullable=True, default=None)
+    __table__ = schema.stock_info.to_metadata(Base.metadata)
 
     @classmethod
     def listed(cls):  # noqa: ANN206
@@ -51,17 +46,9 @@ class Quote(Base):
 
 
 class Kline(Base):
-    __tablename__ = "kline"
+    """日 K，表结构定义在 kairos_data.schema。"""
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    code: Mapped[str] = mapped_column(String(16), index=True)
-    period: Mapped[str] = mapped_column(String(8), default="1d")
-    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    open: Mapped[float] = mapped_column(Float)
-    high: Mapped[float] = mapped_column(Float)
-    low: Mapped[float] = mapped_column(Float)
-    close: Mapped[float] = mapped_column(Float)
-    volume: Mapped[int] = mapped_column(BigInteger)
+    __table__ = schema.kline.to_metadata(Base.metadata)
 
 
 class AdjustmentEvent(Base):

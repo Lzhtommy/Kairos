@@ -135,7 +135,7 @@ class FakeSource:
         return [(code, f"板块{code}") for code in self._bars]
 
     def get_bars(self, code, limit=3000):
-        from app.providers.sector_provider import SectorBarData
+        from kairos_data.sources.sector import SectorBarData
 
         return [
             SectorBarData(ts=d, open=c, high=c, low=c, close=c, volume=100, amount=a)
@@ -196,7 +196,7 @@ class FakeValSource(FakeSource):
         self.calls: list[str] = []
 
     def get_valuations(self, code, start, end):
-        from app.providers.sector_provider import SectorValuationData
+        from kairos_data.sources.sector import SectorValuationData
 
         self.calls.append(code)
         codes = list(self._bars) if code == "all" else [code]

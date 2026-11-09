@@ -9,7 +9,7 @@ from app.jobs.collect import _apply_adjustments
 from app.models.market import AdjustmentEvent, Kline
 from app.models.strategy import PaperAccount, PaperPosition, Strategy
 from app.models.user import User
-from app.providers.base import QuoteData
+from kairos_data.sources.base import QuoteData
 from tests.conftest import add_stock, trading_days
 
 

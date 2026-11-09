@@ -2,7 +2,7 @@ from datetime import date
 
 from sqlalchemy import select
 
-from app.jobs.listing import sync
+from kairos_data.sync import sync_listing as sync
 from app.models.market import StockInfo
 
 

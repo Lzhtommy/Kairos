@@ -10,12 +10,13 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from app.api import data as data_api
-from app.core.db import get_db, upsert_rows
+from app.core.db import get_db
+from kairos_data.store import upsert_rows
 from app.core.security import get_current_user
-from app.jobs import warehouse
+from kairos_data import sync as warehouse
 from app.models.market import Kline, StockInfo
 from app.models.warehouse import Announcement, Dividend, FinReport, IndexConstituent, MacroSeries
-from scripts.backfill_delisted import bars
+from kairos_data.sync import delisted_bars as bars
 
 
 def test_quarter_ends():
@@ -37,9 +38,9 @@ def test_financials_upsert_idempotent(db, monkeypatch):
         calls.append(filter)
         return [_fin("000001", 4.2e10), _fin("600519", 8.6e10, notice=None)]
 
-    monkeypatch.setattr(warehouse.eastmoney_data, "fetch_report", fake)
+    monkeypatch.setattr(warehouse.eastmoney_dc, "fetch_report", fake)
     assert warehouse.refresh_financials(db, [date(2025, 12, 31)]) == 2
-    monkeypatch.setattr(warehouse.eastmoney_data, "fetch_report",
+    monkeypatch.setattr(warehouse.eastmoney_dc, "fetch_report",
                         lambda *a, **k: [_fin("000001", 4.3e10)])  # 更正版本覆盖
     warehouse.refresh_financials(db, [date(2025, 12, 31)])
     db.expire_all()
@@ -75,7 +76,7 @@ def test_macro_shares_report_and_skips_nulls(db, monkeypatch):
                  "SOLAR_DATE": "2026-11-06 00:00:00", "NATIONAL_SAME": 0.9, "BASE_SAME": None,
                  "EMM00166466": 1.5868, "LPR1Y": 3, "IR_RATE": 1.398}]
 
-    monkeypatch.setattr(warehouse.eastmoney_data, "fetch_report", fake)
+    monkeypatch.setattr(warehouse.eastmoney_dc, "fetch_report", fake)
     warehouse.refresh_macro(db)
     # 国债 6 个期限、LPR 两个期限共用一次请求
     assert len(fetched) == len(set(fetched))

@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from app.providers.base import (
+from kairos_data.sources.base import (
     Candle,
     FundamentalData,
     IndexData,

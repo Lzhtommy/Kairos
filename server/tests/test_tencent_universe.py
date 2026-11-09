@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from app.providers import tencent_provider
-from app.providers.tencent_provider import TencentProvider
+from kairos_data.sources import tencent as tencent_provider
+from kairos_data.sources.tencent import TencentProvider
 
 
 class _Resp:

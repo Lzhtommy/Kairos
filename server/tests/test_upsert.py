@@ -2,7 +2,7 @@ from datetime import datetime
 
 from sqlalchemy import func, select
 
-from app.core.db import upsert_rows
+from kairos_data.store import upsert_rows
 from app.models.market import Fundamental, Quote
 
 

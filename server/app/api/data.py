@@ -9,12 +9,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.core.db import get_db, upsert_rows
+from app.core.db import get_db
+from kairos_data.store import upsert_rows
 from app.core.security import get_current_user
-from app.jobs.warehouse import MACRO, announcement_rows
+from kairos_data.sync import MACRO, announcement_rows
 from app.models.market import Fundamental, Kline, Quote, StockInfo
 from app.models.warehouse import Announcement, Dividend, FinReport, IndexConstituent, MacroSeries
-from app.providers import eastmoney_data
+from kairos_data.sources import eastmoney_dc as eastmoney_data
 from app.services.market import change_pct
 
 logger = logging.getLogger("kairos.data")

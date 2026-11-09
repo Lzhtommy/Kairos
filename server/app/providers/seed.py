@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from datetime import datetime, timedelta, timezone
 
-from app.providers.base import (
+from kairos_data.sources.base import (
     Candle,
     FundamentalData,
     IndexData,

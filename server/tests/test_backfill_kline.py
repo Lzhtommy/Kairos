@@ -3,7 +3,7 @@
 from sqlalchemy import select
 
 from app.models.market import Kline
-from app.providers.base import Candle
+from kairos_data.sources.base import Candle
 from scripts.backfill_kline import backfill_code
 from tests.conftest import add_stock, trading_days
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 
 from app.core.config import settings
-from app.providers.base import DataProvider
+from kairos_data.sources.base import DataProvider
 from app.providers.seed import SeedProvider
 
 logger = logging.getLogger("kairos.provider")
@@ -13,7 +13,7 @@ _provider: DataProvider | None = None
 
 def _try_akshare() -> DataProvider | None:
     try:
-        from app.providers.akshare_provider import AkShareProvider
+        from kairos_data.sources.akshare import AkShareProvider
 
         provider = AkShareProvider()
         # Quick connectivity probe — one small call.
@@ -27,7 +27,7 @@ def _try_akshare() -> DataProvider | None:
 
 def _try_tencent() -> DataProvider | None:
     try:
-        from app.providers.tencent_provider import TencentProvider
+        from kairos_data.sources.tencent import TencentProvider
 
         provider = TencentProvider()
         # Quick connectivity probe — one small call.
@@ -42,7 +42,7 @@ def _try_tencent() -> DataProvider | None:
 
 def _try_eastmoney() -> DataProvider | None:
     try:
-        from app.providers.eastmoney_provider import EastmoneyProvider
+        from kairos_data.sources.eastmoney import EastmoneyProvider
 
         provider = EastmoneyProvider()
         # Quick connectivity probe — one small call.

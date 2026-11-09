@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from app.providers.base import (
+from kairos_data.sources.base import (
     Candle,
     FundamentalData,
     IndexData,
