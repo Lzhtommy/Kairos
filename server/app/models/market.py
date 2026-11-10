@@ -6,6 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
 from kairos_data import schema
+from kairos_data.schema import TradeDay
 
 
 def _now() -> datetime:
@@ -89,7 +90,7 @@ class FactorSnapshot(Base):
     __tablename__ = "factor_history"
 
     code: Mapped[str] = mapped_column(String(16), primary_key=True)
-    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True, index=True)
+    ts: Mapped[datetime] = mapped_column(TradeDay, primary_key=True, index=True)
     pe: Mapped[float | None] = mapped_column(Float, nullable=True)
     pb: Mapped[float] = mapped_column(Float)
     roe: Mapped[float] = mapped_column(Float)

@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from datetime import date
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.models.market import Kline, StockInfo
 from app.models.warehouse import DailyBasic
@@ -241,7 +241,8 @@ def test_insert_bars_upserts_on_natural_key(db):
     _insert_bars(db, "600519", [Candle(datetime(2026, 11, 9), 1, 1, 1, 1, 10)])
     _insert_bars(db, "600519", [Candle(datetime(2026, 11, 9), 2, 2, 2, 2, 20)])
     db.commit()
-    assert db.execute(select(Kline.close, Kline.volume)).all() == [(2.0, 20)]
+    # 数据源的"手"入库为股
+    assert db.execute(select(Kline.close, Kline.volume)).all() == [(2.0, 2000)]
 
 
 def test_backfill_shards_split_by_code(db, monkeypatch):
@@ -258,3 +259,18 @@ def test_backfill_shards_split_by_code(db, monkeypatch):
     monkeypatch.setattr(sync.baostock, "fetch_daily_basic", lambda _bs, sym, s, e: seen.append(sym) or [])
     sync.backfill_daily_basic(db, throttle=0, shard=1, shards=2)
     assert seen == ["sh.600001", "sh.600003"]
+
+
+def test_trade_day_stores_date_returns_midnight_datetime(db):
+    from datetime import datetime
+
+    from app.models.market import FactorSnapshot
+
+    db.add(Kline(code="600519", period="1d", ts=datetime(2026, 11, 9), open=1, high=1, low=1, close=1, volume=1))
+    db.add(FactorSnapshot(code="600519", ts=datetime(2026, 11, 9), pb=1, roe=1, turnover_rate=1, turnover=1,
+                          market_cap=1, change_pct=0, price=1))
+    db.commit()
+    db.expire_all()
+    assert db.execute(select(Kline.ts)).scalar() == datetime(2026, 11, 9)
+    assert db.execute(select(Kline.code).where(Kline.ts >= datetime(2026, 11, 9))).scalar() == "600519"
+    assert db.execute(select(func.max(FactorSnapshot.ts))).scalar() == datetime(2026, 11, 9)

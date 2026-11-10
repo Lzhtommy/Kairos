@@ -98,7 +98,7 @@ def test_announcement_rows_pick_requested_code():
                      "category": "董事会决议", "ann_date": date(2026, 11, 7)}]
 
 
-def test_delisted_bars_skip_suspended_and_convert_volume():
+def test_delisted_bars_skip_suspended_keep_shares():
     out = bars([
         {"date": "2009-12-28", "open": "5.2", "high": "5.3", "low": "5.1", "close": "5.29",
          "volume": "123456", "tradestatus": "1"},
@@ -106,7 +106,7 @@ def test_delisted_bars_skip_suspended_and_convert_volume():
          "volume": "", "tradestatus": "0"},
     ])
     assert out == [{"period": "1d", "ts": datetime(2009, 12, 28), "open": 5.2, "high": 5.3,
-                    "low": 5.1, "close": 5.29, "volume": 1234}]
+                    "low": 5.1, "close": 5.29, "volume": 123456}]
 
 
 @pytest.fixture()

@@ -9,7 +9,7 @@
 - 缺值语义：窗口不足、除零、任一操作数缺值 → 该日结果 None；
   顶层为 None 的交易日判 False（数据不足不通过，不降级凑数）。
 - 价格变量（open/high/low/close）取值 ≤0 视为缺值；volume 的 0 是合法值。
-- amount（成交额，亿元）= volume(手) × 100 × close / 1e8：日 K 不存成交额，按收盘价
+- amount（成交额，亿元）= volume(股) × close / 1e8：日 K 不存成交额，按收盘价
   近似（实测与真实成交额偏差 <1%）。
 """
 
@@ -226,7 +226,7 @@ def _eval(node: ast.expr, s: dict[str, list[float] | None], n: int) -> _Series:
     if isinstance(node, ast.Name):
         if node.id == "amount":
             vol, close = _eval(ast.Name("volume"), s, n), _eval(ast.Name("close"), s, n)
-            return vol * close * 100 / 1e8
+            return vol * close / 1e8
         raw = s.get(node.id)
         if raw is None or len(raw) != n:
             return _nan(n)

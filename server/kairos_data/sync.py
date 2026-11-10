@@ -777,7 +777,7 @@ def refresh_listing(db, add_listed: bool = True) -> int:
 # ---------------------------------------------------------------- 退市股日 K
 
 def delisted_bars(raw: list[dict[str, str]]) -> list[dict]:
-    """BaoStock 日 K 行 → kline 行：只要交易日，成交量股 → 手（与腾讯口径一致）。"""
+    """BaoStock 日 K 行 → kline 行：只要交易日，成交量单位股。"""
     out = []
     for r in raw:
         if r.get("tradestatus") != "1" or not r.get("close"):
@@ -785,7 +785,7 @@ def delisted_bars(raw: list[dict[str, str]]) -> list[dict]:
         out.append({
             "period": "1d", "ts": datetime.fromisoformat(r["date"]),
             "open": float(r["open"]), "high": float(r["high"]), "low": float(r["low"]),
-            "close": float(r["close"]), "volume": int(float(r["volume"] or 0)) // 100,
+            "close": float(r["close"]), "volume": int(float(r["volume"] or 0)),
         })
     return out
 
@@ -851,7 +851,7 @@ _TENCENT_COOLDOWN = 600  # 腾讯 ifzq 限流后改走 BaoStock 的秒数
 
 def candle_rows(candles) -> list[dict]:  # noqa: ANN001
     return [{"period": "1d", "ts": c.ts, "open": c.open, "high": c.high, "low": c.low,
-             "close": c.close, "volume": c.volume} for c in candles]
+             "close": c.close, "volume": c.volume * 100} for c in candles]  # 手 → 股
 
 
 def replace_kline(db, code: str, rows: list[dict]) -> int:

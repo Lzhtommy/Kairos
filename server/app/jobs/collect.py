@@ -189,7 +189,7 @@ def _upsert_today_bars(db, quotes) -> None:
     db.execute(delete(Kline).where(Kline.period == "1d", Kline.ts == day_start))
     db.execute(insert(Kline), [
         {"code": q.code, "period": "1d", "ts": day_start, "open": q.open,
-         "high": q.high, "low": q.low, "close": q.price, "volume": q.volume}
+         "high": q.high, "low": q.low, "close": q.price, "volume": q.volume * 100}
         for q in todays
     ])
 
@@ -200,7 +200,7 @@ def _insert_bars(db, code: str, candles) -> None:
         return
     upsert_rows(db, Kline, [
         {"code": code, "period": "1d", "ts": c.ts, "open": c.open, "high": c.high,
-         "low": c.low, "close": c.close, "volume": c.volume}
+         "low": c.low, "close": c.close, "volume": c.volume * 100}
         for c in candles
     ])
 

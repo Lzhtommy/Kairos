@@ -49,7 +49,7 @@ def backfill_code(db, provider, code: str, bars: int) -> int:
     # Core 批量插入：ORM add 在 MySQL 上会逐行 INSERT 取自增主键
     db.execute(insert(Kline), [
         {"code": code, "period": "1d", "ts": c.ts, "open": c.open, "high": c.high,
-         "low": c.low, "close": c.close, "volume": c.volume}
+         "low": c.low, "close": c.close, "volume": c.volume * 100}  # 手 → 股
         for c in candles
     ])
     db.commit()

@@ -16,6 +16,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import JSON
 
 from app.core.db import Base
+from kairos_data.schema import TradeDay
 
 
 def _now() -> datetime:
@@ -38,7 +39,7 @@ class SectorBar(Base):
     __tablename__ = "sector_bar"
 
     code: Mapped[str] = mapped_column(String(16), primary_key=True)
-    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True, index=True)
+    ts: Mapped[datetime] = mapped_column(TradeDay, primary_key=True, index=True)
     open: Mapped[float] = mapped_column(Float)
     high: Mapped[float] = mapped_column(Float)
     low: Mapped[float] = mapped_column(Float)
@@ -53,7 +54,7 @@ class SectorMetric(Base):
     __tablename__ = "sector_metric"
 
     code: Mapped[str] = mapped_column(String(16), primary_key=True)
-    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True, index=True)
+    ts: Mapped[datetime] = mapped_column(TradeDay, primary_key=True, index=True)
     crowd: Mapped[float | None] = mapped_column(Float, nullable=True)        # 0~1 合成
     crowd_share: Mapped[float | None] = mapped_column(Float, nullable=True)  # 成交额占比分位
     crowd_heat: Mapped[float | None] = mapped_column(Float, nullable=True)   # 换手热度分位
@@ -67,7 +68,7 @@ class SectorValuation(Base):
     __tablename__ = "sector_valuation"
 
     code: Mapped[str] = mapped_column(String(16), primary_key=True)
-    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True, index=True)
+    ts: Mapped[datetime] = mapped_column(TradeDay, primary_key=True, index=True)
     pe: Mapped[float | None] = mapped_column(Float, nullable=True)
     pb: Mapped[float | None] = mapped_column(Float, nullable=True)
     dp: Mapped[float | None] = mapped_column(Float, nullable=True)       # 股息率（%）

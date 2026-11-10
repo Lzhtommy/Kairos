@@ -7,12 +7,26 @@ Float / DateTime 在 MySQL 下的编译口径见 kairos_data.store。
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from sqlalchemy import (BigInteger, Boolean, Column, Date, DateTime, Float, Integer, MetaData, String,
-                        Table, Text)
+                        Table, Text, TypeDecorator)
 
 metadata = MetaData()
+
+
+class TradeDay(TypeDecorator):
+    """日线的交易日：库里存 DATE，Python 侧仍是当天零点的 naive datetime（与改类型前一致，
+    调用方的 strftime / 与基准日期序列对齐等都不用改）。"""
+
+    impl = Date
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):  # noqa: ANN001, ANN201
+        return value.date() if isinstance(value, datetime) else value
+
+    def process_result_value(self, value, dialect):  # noqa: ANN001, ANN201
+        return datetime(value.year, value.month, value.day) if isinstance(value, date) else value
 
 
 def _now() -> datetime:
@@ -30,13 +44,13 @@ stock_info = Table(
     Column("delist_date", Date, nullable=True),
 )
 
-# 日 K（前复权，成交量单位：手）。主键 (code, period, ts) 让 InnoDB 按股连续存放，
+# 日 K（前复权，成交量单位：股，与数据仓库各表一致；数据源给的"手"在写入时 ×100）。主键 (code, period, ts) 让 InnoDB 按股连续存放，
 # 按股取最近 N 根是主键范围扫描；按日取全市场走 ts 索引
 kline = Table(
     "kline", metadata,
     Column("code", String(16), primary_key=True),
     Column("period", String(8), primary_key=True, default="1d"),
-    Column("ts", DateTime(timezone=True), primary_key=True, index=True),
+    Column("ts", TradeDay, primary_key=True, index=True),
     Column("open", Float, nullable=False),
     Column("high", Float, nullable=False),
     Column("low", Float, nullable=False),

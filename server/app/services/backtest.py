@@ -723,7 +723,7 @@ def _reconstructed_rows(
                 "high_change_pct": hi, "low_change_pct": lo, "open_change_pct": opn,
                 "intraday_change_pct": intra,
                 "hot_rank": hot[0].get(code), "hot_rank_prev": hot[1].get(code),
-                "turnover": round(day[1] * 100 * day[0] / 1e8, 2),
+                "turnover": round(day[1] * day[0] / 1e8, 2),
                 "turnover_rate": (
                     round(r["turnover_rate"] * day[1] / ref[1], 2) if ref[1] else r["turnover_rate"]
                 ),
