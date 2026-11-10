@@ -15,7 +15,7 @@ import time
 
 import httpx
 
-from app.core.config import settings
+from app.services import llm
 from app.services.research_annual import BLOCK_LABELS, verify_extract
 from app.services.research_facts import fmt
 from app.services.research_score import DIMENSION_LABELS
@@ -128,7 +128,7 @@ def find_meta(md: str) -> list[str]:
 
 
 def llm_enabled() -> bool:
-    return bool(settings.deepseek_api_key) and settings.ai_provider in ("auto", "deepseek")
+    return llm.enabled()
 
 
 def _chat_json(messages: list[dict], max_tokens: int = 1500) -> tuple[dict, int]:
@@ -141,34 +141,18 @@ def _chat_json(messages: list[dict], max_tokens: int = 1500) -> tuple[dict, int]
         except httpx.TransportError as exc:
             if attempt == 2:
                 raise
-            logger.info("DeepSeek transport error (%s), retrying", exc)
+            logger.info("LLM transport error (%s), retrying", exc)
             time.sleep(2 * (attempt + 1))
         except json.JSONDecodeError as exc:
             bad_json += 1
             if bad_json > 1 or attempt == 2:
                 raise
-            logger.info("DeepSeek returned invalid JSON (%s), retrying", exc)
+            logger.info("LLM returned invalid JSON (%s), retrying", exc)
     raise AssertionError("unreachable")
 
 
 def _chat_json_once(messages: list[dict], max_tokens: int = 1500) -> tuple[dict, int]:
-    r = httpx.post(
-        f"{settings.deepseek_base_url}/chat/completions",
-        headers={"Authorization": f"Bearer {settings.deepseek_api_key}"},
-        json={
-            "model": settings.deepseek_model,
-            "thinking": {"type": "disabled"},  # deepseek-flash 默认开思考：输出暴涨且 temperature 失效
-            "messages": messages,
-            "response_format": {"type": "json_object"},
-            "max_tokens": max_tokens,
-            "temperature": 0.2,
-        },
-        timeout=90,
-    )
-    r.raise_for_status()
-    body = r.json()
-    tokens = int((body.get("usage") or {}).get("total_tokens") or 0)
-    return json.loads(body["choices"][0]["message"]["content"]), tokens
+    return llm.chat_json(messages, max_tokens=max_tokens, temperature=0.2, timeout=90)
 
 
 def _write_validated(user_prompt: str, key: str, allowed: set[float]) -> tuple[dict, int, str | None]:

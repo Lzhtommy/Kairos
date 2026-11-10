@@ -1,10 +1,10 @@
 """Natural-language → strategy DSL.
 
-Two backends, selected by settings.ai_provider ("auto" | "rule" | "deepseek"):
-- rule: deterministic keyword parser — no network / API key needed (MVP default).
-- deepseek: DeepSeek chat API (mainland-reachable) with the factor whitelist +
-  JSON output mode. Chosen over Anthropic because the production ECS sits in
-  mainland China, where the Anthropic API is geo-blocked.
+Two backends:
+- LLM (app/services/llm.py, provider chosen by settings.ai_provider) with the
+  factor whitelist + JSON output.
+- rule: deterministic keyword parser — no network / API key needed; also the
+  fallback whenever the LLM is unconfigured or fails.
 
 Both return {"dsl", "explanation", "code"}. The DSL is always validated before use.
 """
@@ -15,9 +15,7 @@ import json
 import re
 from typing import Any
 
-import httpx
-
-from app.core.config import settings
+from app.services import llm
 from app.services.dsl import BOARDS, FACTORS, validate_dsl
 
 # ---- factor / operator lexicons (Chinese) -------------------------------------------------
@@ -514,8 +512,8 @@ def _build_dsl(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def _deepseek(text: str, industries: list[str] | None = None) -> dict[str, Any] | None:
-    if not settings.deepseek_api_key:
+def _llm(text: str, industries: list[str] | None = None) -> dict[str, Any] | None:
+    if not llm.enabled():
         return None
     try:
         prompt = (
@@ -525,21 +523,7 @@ def _deepseek(text: str, industries: list[str] | None = None) -> dict[str, Any] 
             + _spec_doc(industries)
             + f"用户需求：{text}"
         )
-        r = httpx.post(
-            f"{settings.deepseek_base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {settings.deepseek_api_key}"},
-            json={
-                "model": settings.deepseek_model,
-                "thinking": {"type": "disabled"},  # deepseek-flash 默认开思考：输出暴涨且 temperature 失效
-                "messages": [{"role": "user", "content": prompt}],
-                "response_format": {"type": "json_object"},
-                "max_tokens": 1024,
-                "temperature": 0,
-            },
-            timeout=30,
-        )
-        r.raise_for_status()
-        payload = json.loads(r.json()["choices"][0]["message"]["content"])
+        payload, _tokens = llm.chat_json([{"role": "user", "content": prompt}], max_tokens=1024, timeout=30)
         dsl = _build_dsl(payload)
         return {"dsl": dsl, "explanation": payload.get("explanation", "")}
     except Exception:  # noqa: BLE001 — any failure → fall back to rule-based
@@ -593,44 +577,21 @@ async def chat_stream(
 
     pending = ""  # 已收到但还没透传的文本（留尾巴防止 <DSL> 标记被切成两半）
     dsl_raw: str | None = None  # 进入 <DSL> 块后累积的 JSON 原文
-    async with httpx.AsyncClient(timeout=httpx.Timeout(60, connect=10)) as client:
-        async with client.stream(
-            "POST",
-            f"{settings.deepseek_base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {settings.deepseek_api_key}"},
-            json={
-                "model": settings.deepseek_model,
-                "thinking": {"type": "disabled"},  # deepseek-flash 默认开思考：输出暴涨且 temperature 失效
-                "messages": messages,
-                "max_tokens": 1200,
-                "temperature": 0.3,
-                "stream": True,
-            },
-        ) as resp:
-            resp.raise_for_status()
-            async for line in resp.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    break
-                delta = json.loads(data)["choices"][0]["delta"].get("content") or ""
-                if not delta:
-                    continue
-                if dsl_raw is not None:
-                    dsl_raw += delta
-                    continue
-                pending += delta
-                idx = pending.find(_MARK_START)
-                if idx != -1:
-                    head = pending[:idx].rstrip()
-                    if head:
-                        yield {"type": "text", "delta": head}
-                    dsl_raw = pending[idx + len(_MARK_START):]
-                    pending = ""
-                elif len(pending) > len(_MARK_START):
-                    flush, pending = pending[: -len(_MARK_START)], pending[-len(_MARK_START):]
-                    yield {"type": "text", "delta": flush}
+    async for delta in llm.stream_text(messages, max_tokens=1200, temperature=0.3, timeout=60):
+        if dsl_raw is not None:
+            dsl_raw += delta
+            continue
+        pending += delta
+        idx = pending.find(_MARK_START)
+        if idx != -1:
+            head = pending[:idx].rstrip()
+            if head:
+                yield {"type": "text", "delta": head}
+            dsl_raw = pending[idx + len(_MARK_START):]
+            pending = ""
+        elif len(pending) > len(_MARK_START):
+            flush, pending = pending[: -len(_MARK_START)], pending[-len(_MARK_START):]
+            yield {"type": "text", "delta": flush}
 
     if pending:
         yield {"type": "text", "delta": pending}
@@ -652,10 +613,7 @@ async def chat_stream(
 
 def generate(text: str, industries: list[str] | None = None) -> dict[str, Any]:
     """NL → {dsl, explanation, code}. Always returns a valid, validated DSL."""
-    use = settings.ai_provider.lower()
-    result = None
-    if use in ("auto", "deepseek"):
-        result = _deepseek(text, industries)
+    result = _llm(text, industries)
 
     if result is None:
         dsl = validate_dsl(rule_based(text))

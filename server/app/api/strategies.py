@@ -7,13 +7,12 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.core.db import get_db
 from app.core.security import get_current_user
 from app.models.strategy import ChatMessage, Strategy, StrategyRun
 from app.models.user import User
 from app.schemas import ChatHistoryIn, ChatIn, StrategyIn
-from app.services import strategy_ai
+from app.services import llm, strategy_ai
 from app.services.dsl import validate_dsl
 from app.services.market import stock_dicts
 from app.services.strategy_exec import run_dsl
@@ -232,7 +231,7 @@ async def chat(
         return f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
 
     async def event_stream():
-        if settings.ai_provider.lower() in ("auto", "deepseek") and settings.deepseek_api_key:
+        if llm.enabled():
             emitted = False
             try:
                 async for ev in strategy_ai.chat_stream(

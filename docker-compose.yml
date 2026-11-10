@@ -15,9 +15,15 @@ services:
       DATABASE_URL: ${DATABASE_URL:-sqlite:///./data/kairos.db}
       # 迁移目标库（scripts.migrate_sqlite_to_mysql 默认读它），切换完成后可删
       RDS_DATABASE_URL: ${RDS_DATABASE_URL:-}
-      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      # 留空时首次启动随机生成，存在数据卷 data/jwt_secret
+      JWT_SECRET: ${JWT_SECRET:-}
       PROVIDER: ${PROVIDER:-auto}
+      # auto | rule | deepseek | openai | anthropic，详见 server/.env.example
       AI_PROVIDER: ${AI_PROVIDER:-auto}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_EXTRA_BODY: ${LLM_EXTRA_BODY:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-https://kairos.ren,https://www.kairos.ren}
     volumes:

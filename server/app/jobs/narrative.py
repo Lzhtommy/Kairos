@@ -12,16 +12,16 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 
-from app.core.config import settings
 from app.core.db import SessionLocal
 from app.models.sector import SectorInfo, SectorNarrative
+from app.services import llm
 from app.services.narrative import fetch_headlines, score_narrative
 
 logger = logging.getLogger("kairos.narrative")
 
 
 def update_narrative() -> None:
-    if not settings.deepseek_api_key or settings.ai_provider not in ("auto", "deepseek"):
+    if not llm.enabled():
         return
     db = SessionLocal()
     try:
@@ -46,11 +46,12 @@ def update_narrative() -> None:
         if result is None:
             return
 
+        model = llm.model_name()
         m = result["market"]
         db.add(
             SectorNarrative(
                 date=day, code="_market", direction=m["direction"], strength=m["strength"],
-                summary=m["summary"], evidence=[], model=settings.deepseek_model,
+                summary=m["summary"], evidence=[], model=model,
             )
         )
         for s in result["sectors"]:
@@ -58,7 +59,7 @@ def update_narrative() -> None:
                 SectorNarrative(
                     date=day, code=name_to_code[s["name"]], direction=s["direction"],
                     strength=s["strength"], summary=s["summary"], evidence=s["evidence"],
-                    model=settings.deepseek_model,
+                    model=model,
                 )
             )
         db.commit()

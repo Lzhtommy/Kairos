@@ -1,5 +1,10 @@
+import json
+import logging
+import secrets
 from functools import lru_cache
+from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,16 +14,22 @@ class Settings(BaseSettings):
     # Database — SQLite for MVP, swap to mysql+pymysql://... to migrate.
     database_url: str = "sqlite:///./kairos.db"
 
-    # Auth
-    jwt_secret: str = "dev-secret-change-me"
+    # Auth。留空或仍是模板占位值时，首次启动随机生成并存到 jwt_secret_file（见 _resolve_jwt_secret）
+    jwt_secret: str = ""
+    jwt_secret_file: str = "./data/jwt_secret"
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 60 * 24 * 7
 
     # Data provider: "auto" | "seed" | "akshare" | "tencent"
     provider: str = "auto"
 
-    # AI provider: "auto" | "rule" | "deepseek"
+    # AI provider: "auto" | "rule" | "deepseek" | "openai" | "anthropic"（见 app/services/llm.py）
     ai_provider: str = "auto"
+    llm_api_key: str = ""
+    llm_base_url: str = ""  # 留空用各 provider 官方地址
+    llm_model: str = ""  # 留空用各 provider 默认模型（openai 必填）
+    llm_extra_body: str = ""  # JSON，浅合并进请求体，null 值删除字段
+    # 旧配置，LLM_* 留空时 deepseek / auto 回落读取
     deepseek_api_key: str = ""
     # deepseek-chat 已过官方停用日（2026-07-24）；flash 默认开思考，各调用处显式关闭
     deepseek_model: str = "deepseek-flash"
@@ -56,10 +67,41 @@ class Settings(BaseSettings):
     backup_dir: str = "./data/backups"
     backup_keep: int = 3
 
+    @field_validator("llm_extra_body")
+    @classmethod
+    def _extra_body_is_json_object(cls, v: str) -> str:
+        if v and not isinstance(json.loads(v), dict):
+            raise ValueError("LLM_EXTRA_BODY 必须是 JSON 对象")
+        return v
+
+
+# 历史模板 / compose 里出现过的占位值：照抄就等于公开了签名密钥，任何人都能伪造 token
+_PLACEHOLDER_SECRETS = {"", "dev-secret-change-me", "change-me-in-production", "change-me"}
+
+
+def _resolve_jwt_secret(s: Settings) -> None:
+    if s.jwt_secret not in _PLACEHOLDER_SECRETS:
+        return
+    path = Path(s.jwt_secret_file)
+    try:
+        if path.is_file() and path.read_text().strip():
+            s.jwt_secret = path.read_text().strip()
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        s.jwt_secret = secrets.token_urlsafe(48)
+        path.write_text(s.jwt_secret)
+        path.chmod(0o600)
+        logging.getLogger("kairos").warning("JWT_SECRET 未设置，已随机生成并保存到 %s", path)
+    except OSError as exc:  # 只读文件系统等：退化为进程内随机密钥，重启后需重新登录
+        s.jwt_secret = secrets.token_urlsafe(48)
+        logging.getLogger("kairos").warning("JWT_SECRET 未设置且无法写入 %s（%s），本次使用临时密钥", path, exc)
+
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    s = Settings()
+    _resolve_jwt_secret(s)
+    return s
 
 
 settings = get_settings()

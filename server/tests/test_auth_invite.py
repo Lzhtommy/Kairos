@@ -184,3 +184,21 @@ def test_token_without_ver_claim_still_valid(client, db):
         algorithm=settings.jwt_algorithm,
     )
     assert client.get("/auth/me", headers={"Authorization": f"Bearer {legacy}"}).status_code == 200
+
+
+def test_placeholder_jwt_secret_is_replaced_and_persisted(tmp_path):
+    from app.core.config import Settings, _resolve_jwt_secret
+
+    path = tmp_path / "sub" / "jwt_secret"
+    s = Settings(jwt_secret="change-me-in-production", jwt_secret_file=str(path))
+    _resolve_jwt_secret(s)
+    assert s.jwt_secret != "change-me-in-production" and len(s.jwt_secret) >= 32
+    assert path.read_text() == s.jwt_secret
+
+    again = Settings(jwt_secret="", jwt_secret_file=str(path))
+    _resolve_jwt_secret(again)
+    assert again.jwt_secret == s.jwt_secret  # 重启后沿用，已登录会话不失效
+
+    explicit = Settings(jwt_secret="a-real-secret", jwt_secret_file=str(path))
+    _resolve_jwt_secret(explicit)
+    assert explicit.jwt_secret == "a-real-secret"

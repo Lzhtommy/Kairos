@@ -13,12 +13,9 @@
 
 from __future__ import annotations
 
-import json
 import logging
 
-import httpx
-
-from app.core.config import settings
+from app.services import llm
 
 logger = logging.getLogger("kairos.narrative")
 
@@ -67,11 +64,9 @@ def fetch_headlines() -> list[str]:
 
 
 def score_narrative(headlines: list[str], sector_names: list[str]) -> dict | None:
-    """DeepSeek 批量打分。返回 {"market": {...}, "sectors": [{name, direction,
+    """LLM 批量打分。返回 {"market": {...}, "sectors": [{name, direction,
     strength, summary, evidence:[标题…]}]}；任何失败返回 None（当日跳过）。"""
-    if not settings.deepseek_api_key or settings.ai_provider not in ("auto", "deepseek"):
-        return None
-    if not headlines:
+    if not llm.enabled() or not headlines:
         return None
     numbered = "\n".join(f"{i}. {t}" for i, t in enumerate(headlines))
     prompt = (
@@ -87,21 +82,7 @@ def score_narrative(headlines: list[str], sector_names: list[str]) -> dict | Non
         f"今日快讯标题：\n{numbered}"
     )
     try:
-        r = httpx.post(
-            f"{settings.deepseek_base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {settings.deepseek_api_key}"},
-            json={
-                "model": settings.deepseek_model,
-                "thinking": {"type": "disabled"},  # deepseek-flash 默认开思考：输出暴涨且 temperature 失效
-                "messages": [{"role": "user", "content": prompt}],
-                "response_format": {"type": "json_object"},
-                "max_tokens": 2048,
-                "temperature": 0,
-            },
-            timeout=60,
-        )
-        r.raise_for_status()
-        payload = json.loads(r.json()["choices"][0]["message"]["content"])
+        payload, _tokens = llm.chat_json([{"role": "user", "content": prompt}], max_tokens=2048, timeout=60)
     except Exception as exc:  # noqa: BLE001 — 打分失败当日跳过，不写猜测值
         logger.warning("Narrative scoring failed: %s", exc)
         return None

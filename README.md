@@ -38,7 +38,7 @@
 | 能力 | 生产实现 | 内置回退（默认） |
 |---|---|---|
 | 行情数据 | AkShare（东财）/ Tencent（腾讯 + 新浪，零额外依赖） | `SeedProvider` 确定性合成数据 |
-| AI 生成策略 | DeepSeek API（JSON 输出，国内直连） | 规则解析器（中文关键词 → DSL） |
+| AI 生成策略 | DeepSeek / 任意 OpenAI 兼容接口（通义、Kimi、Ollama…）/ Claude | 规则解析器（中文关键词 → DSL） |
 | 数据中心（财报 / 股东 / 宏观等） | 东财数据中心 + BaoStock + 中证官网（[`kairos_data`](./server/kairos_data/README.md)） | 表为空，数据页显示暂无数据 |
 | 数据库 | MySQL（只改 `DATABASE_URL`） | SQLite |
 
@@ -74,7 +74,7 @@ MVP 刻意采用「单库 + 分钟级采集 + 前端轮询」的低频形态，R
 | 后端 | Python 3.11 · FastAPI · SQLAlchemy 2 · Alembic · APScheduler |
 | 数据库 | SQLite（默认）→ MySQL（改一行 `DATABASE_URL` 即迁移） |
 | 数据源 | 腾讯·新浪行情 / AkShare / 东财数据中心 / BaoStock / 中证官网 / 内置合成数据；采集层独立为 `kairos_data` 包 |
-| AI | DeepSeek API / 内置规则解析器（无 Key 也能用） |
+| AI | DeepSeek / OpenAI 兼容接口 / Claude，统一走 `app/services/llm.py`；内置规则解析器（无 Key 也能用） |
 | 部署 | Docker Compose · Nginx · GitHub Actions 自动部署 |
 
 ## 🚀 快速开始
@@ -140,10 +140,12 @@ python -m kairos_data basic --db "$DATABASE_URL"       # 每日指标（历史 S
 | 变量 | 默认值 | 说明 |
 |---|---|---|
 | `DATABASE_URL` | `sqlite:///./data/kairos.db` | 改为 `mysql+pymysql://...` 即迁移 MySQL |
-| `JWT_SECRET` | `change-me-in-production` | 生产环境必须修改 |
+| `JWT_SECRET` | 空 | 留空则首次启动随机生成并存到 `data/jwt_secret`；多实例部署需显式设置同一值 |
 | `PROVIDER` | `auto` | `auto` / `seed` / `akshare` / `tencent` / `eastmoney`；auto 按 腾讯 → akshare → 东财延时 依次探测并自动回退 |
-| `AI_PROVIDER` | `auto` | `auto` / `rule` / `deepseek`；有 Key 用 DeepSeek，否则规则解析器 |
-| `DEEPSEEK_API_KEY` | 空 | 配置后启用 AI 策略生成与叙事因子 |
+| `AI_PROVIDER` | `auto` | `auto` / `rule` / `deepseek` / `openai` / `anthropic`；`auto` 等同 `deepseek`，没 Key 时用规则解析器 |
+| `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | 空 | 留空用各 provider 默认值（`openai` 须填模型）；本地 Ollama 只需 `LLM_BASE_URL` + `LLM_MODEL` |
+| `LLM_EXTRA_BODY` | 空 | JSON，合并进请求体，`null` 删除字段，用于厂商专有参数 |
+| `DEEPSEEK_API_KEY` | 空 | 旧配置，`LLM_API_KEY` 留空时 `deepseek` / `auto` 读取 |
 | `ENABLE_COLLECTOR` | `true` | 是否启动行情采集 |
 | `COLLECT_INTERVAL_SECONDS` | `60` | 采集间隔 |
 | `CORS_ORIGINS` | `*` | 生产环境建议收紧到本域 |

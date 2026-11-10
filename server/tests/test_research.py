@@ -636,6 +636,8 @@ def test_tracking_flags_slow_forecast_progress():
 def test_chat_json_retries_once_on_invalid_json(monkeypatch):
     from app.services import research_writer
 
+    monkeypatch.setattr(settings, "ai_provider", "deepseek")
+    monkeypatch.setattr(settings, "deepseek_api_key", "test-key")
     replies = iter(['{"ok":<|endoftext|>true}', '{"ok": true}'])
 
     class Resp:

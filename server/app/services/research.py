@@ -8,9 +8,9 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.models.market import FactorSnapshot, Fundamental, Quote, StockInfo
 from app.models.research import ResearchRawCache, ResearchReport
+from app.services import llm
 from app.services.research_annual import REPORT_KINDS, choose_reports, merge_extracts, report_blocks
 from app.services.research_data import fetch_all, fetch_report_text, latest_report_meta, report_source
 from app.services.research_facts import build_facts, is_financial
@@ -181,7 +181,7 @@ def run_report(db: Session, report: ResearchReport) -> None:
     report.facts = dataset["facts"]
     report.sections = sections
     report.sources = sources
-    report.llm_model = settings.deepseek_model if any(s.get("ai") for s in sections) else None
+    report.llm_model = llm.model_name() if any(s.get("ai") for s in sections) else None
     report.llm_tokens = tokens
     report.content_md = render_markdown({
         "name": name, "code": report.code, "industry": industry, "data_as_of": report.data_as_of,
