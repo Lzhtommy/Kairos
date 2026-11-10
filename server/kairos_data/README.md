@@ -10,6 +10,7 @@
 |---|---|---|
 | `stock_info` | 沪深 A 股股票池，含已退市股票与上市 / 退市日期 | BaoStock |
 | `kline` | 日 K（前复权，成交量单位手），在市股票补到上市日，退市股全历史 | 腾讯，限流时 BaoStock |
+| `daily_basic` | 每日指标：ST 标记、停牌、换手率、成交额、PE(TTM) / PB(MRQ) / PS(TTM) / 市现率、总市值、不复权收盘与前收（沪深，补到上市日） | BaoStock |
 | `fin_report` | 定期报告主要指标，按报告期，带公告日（1988 年起） | 东方财富数据中心 |
 | `fin_statement` | 资产负债表 / 利润表 / 现金流量表主要科目（各 13~15 项） | 东方财富数据中心 |
 | `dividend` | 分红送转：预案 / 登记 / 除权日，每 10 股派现、送股、转增 | 东方财富数据中心 |
@@ -32,7 +33,7 @@
 ```bash
 pip install "kairos-data[baostock,csindex]"
 
-kairos-data all          # 建表 + 股票池 + 财报 / 分红 / 宏观 / 指数成分全量 + 全部日 K
+kairos-data all          # 建表 + 股票池 + 财报 / 分红 / 宏观 / 指数成分全量 + 全部日 K + 每日指标
 kairos-data daily        # 之后每个交易日跑一次增量
 kairos-data announcements
 ```
@@ -44,7 +45,7 @@ pip install "kairos-data[all]"
 kairos-data all --db "mysql+pymysql://user:pass@host:3306/stock?charset=utf8mb4"
 ```
 
-全量回补需要几个小时（十大股东、两融、日 K 最慢）。所有命令都是幂等的；`backfill` 会跳过已有的报告期 / 交易日，中断后重跑即可续上。
+全量回补需要几个小时（十大股东、两融、日 K、每日指标最慢）。所有命令都是幂等的；`backfill` 会跳过已有的报告期 / 交易日，中断后重跑即可续上。
 在 Python 里使用：
 
 ```python

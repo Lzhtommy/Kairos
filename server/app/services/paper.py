@@ -201,7 +201,8 @@ def _settle_day(db: Session, acct: PaperAccount, day: datetime) -> None:
         if pos.signal_date >= day:
             continue  # 今日新信号明天才入场
         bar = bars.get(pos.code)
-        if bar is None or _one_word(bar, pos.last_price, _limit_pct(pos.code, pos.name), +1):
+        entry_pct = _limit_pct(pos.code, "ST" in pos.name, day.date())
+        if bar is None or _one_word(bar, pos.last_price, entry_pct, +1):
             pos.defer_days += 1
             if bar is not None:
                 pos.last_price = bar[3]
@@ -237,7 +238,7 @@ def _settle_day(db: Session, acct: PaperAccount, day: datetime) -> None:
         prev = pos.entry_px if is_entry_day else pos.last_price
         if not is_entry_day:
             pos.hold_days += 1
-        pct = _limit_pct(pos.code, pos.name)
+        pct = _limit_pct(pos.code, "ST" in pos.name, day.date())
 
         exit_px: float | None = None
         reason = ""

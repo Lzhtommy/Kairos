@@ -278,7 +278,8 @@ def apply_universe(dsl: dict[str, Any], rows: list[dict[str, Any]]) -> list[dict
         allowed = set(boards)
         rows = [r for r in rows if board_of(r["code"]) in allowed]
     if any("ST" in e for e in dsl["universe"]["exclude"]):
-        rows = [r for r in rows if "ST" not in r.get("name", "")]
+        # 回测的历史因子行带当天的 is_st；实时行按当前名称判断
+        rows = [r for r in rows if not r.get("is_st", "ST" in r.get("name", ""))]
     return rows
 
 

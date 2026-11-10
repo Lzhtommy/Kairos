@@ -7,6 +7,7 @@
 手动执行（在 server/ 下）：
     .venv/bin/python -m app.jobs.warehouse daily
     .venv/bin/python -m app.jobs.warehouse backfill [--parts fin,div,macro,index]
+    .venv/bin/python -m app.jobs.warehouse basic    # 每日指标补到上市日（数小时，可断点续跑）
 """
 
 from __future__ import annotations
@@ -32,6 +33,14 @@ def backfill(parts: tuple[str, ...] = sync.PARTS) -> None:
     db = SessionLocal()
     try:
         sync.backfill(db, parts)
+    finally:
+        db.close()
+
+
+def backfill_daily_basic() -> None:
+    db = SessionLocal()
+    try:
+        sync.backfill_daily_basic(db)
     finally:
         db.close()
 
@@ -64,11 +73,13 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["daily", "backfill", "announcements"])
+    ap.add_argument("mode", choices=["daily", "backfill", "basic", "announcements"])
     ap.add_argument("--parts", default=",".join(sync.PARTS))
     args = ap.parse_args()
     if args.mode == "daily":
         refresh_warehouse()
+    elif args.mode == "basic":
+        backfill_daily_basic()
     elif args.mode == "announcements":
         refresh_announcements()
     else:

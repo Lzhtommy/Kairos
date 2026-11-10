@@ -32,7 +32,7 @@ export type BacktestMetrics = {
   benchmarkReturn?: number | null
   excessReturn?: number | null
   rebalances?: number
-  pitPeriods?: number // 用真实快照重选的期数（随每日归档积累增长）
+  pitPeriods?: number // 用真实历史因子（每日快照或每日指标）重选的期数
   // event
   eventCount?: number
   avgReturn?: number

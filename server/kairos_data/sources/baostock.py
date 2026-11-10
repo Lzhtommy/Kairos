@@ -57,6 +57,17 @@ def fetch_daily_qfq(bs, symbol: str, start: str = "1990-01-01", end: str = "2100
     ))
 
 
+def fetch_daily_basic(bs, symbol: str, start: str = "1990-01-01", end: str = "2100-01-01") -> list[dict[str, str]]:  # noqa: ANN001
+    """不复权日线附带的每日指标：ST 标记、停牌、换手率、成交额、PE(TTM) / PB(MRQ) / PS(TTM) / PCF(TTM)。
+
+    停牌日也返回一行（tradestatus=0，成交额和换手为空）；volume 单位股，amount 单位元。
+    """
+    return _rows(bs.query_history_k_data_plus(
+        symbol, "date,close,preclose,volume,amount,turn,tradestatus,isST,peTTM,pbMRQ,psTTM,pcfNcfTTM",
+        start_date=start, end_date=end, frequency="d", adjustflag="3",
+    ))
+
+
 def fetch_index_members(bs, index_code: str, day: str) -> list[dict[str, str]]:  # noqa: ANN001
     """day 当天生效的指数成分，字段 updateDate（成分调整日）、code、code_name。"""
     return _rows(getattr(bs, INDEX_QUERIES[index_code])(date=day))

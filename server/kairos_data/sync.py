@@ -1,4 +1,4 @@
-"""采集与写库：股票池、日 K（在市补到上市日 / 退市股全历史）、财报、分红、股本股东、宏观利率、指数成分、公告。
+"""采集与写库：股票池、日 K（在市补到上市日 / 退市股全历史）、每日指标、财报、分红、股本股东、宏观利率、指数成分、公告。
 
 每个函数接收 SQLAlchemy 会话，拉取数据源后批量 upsert 并提交；重复执行幂等。
 不依赖 Kairos，命令行入口见 kairos_data.cli。
@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import logging
 import time
+from bisect import bisect_right
 from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import delete, func, insert, select
 
-from kairos_data.schema import (STATEMENT_ITEMS, announcement, billboard, block_trade, dividend,
+from kairos_data.schema import (STATEMENT_ITEMS, announcement, billboard, block_trade, daily_basic, dividend,
                                 fin_report, fin_statement, holder_count, index_bar, index_constituent,
                                 kline, lockup, macro_series, margin_trading, security_bar, security_info,
                                 share_capital, stock_info, sync_state, top_holder)
@@ -898,6 +899,134 @@ def backfill_history(db, tencent=None, throttle: float = 0.15) -> tuple[int, int
     return replaced, skipped, failed
 
 
+# ---------------------------------------------------------------- 每日指标（ST / 停牌 / 换手 / 估值）
+
+_BS_EPOCH = date(1990, 12, 19)  # BaoStock 日线最早一天
+
+
+def _bs_retry(bs, fn, *args):  # noqa: ANN001, ANN202
+    """BaoStock 匿名会话服务端共享：别的进程 logout 后这里也会掉线，重登一次。"""
+    try:
+        return fn(bs, *args)
+    except RuntimeError as exc:
+        if "未登录" not in str(exc):
+            raise
+        bs.login()
+        return fn(bs, *args)
+
+
+def share_history(db) -> dict[str, list[tuple[date, int]]]:
+    """每只股票的 (变动日, 总股本) 升序序列，用于按日期取当时的总股本。"""
+    out: dict[str, list[tuple[date, int]]] = {}
+    for code, day, total in db.execute(
+        select(share_capital.c.code, share_capital.c.change_date, share_capital.c.total_shares)
+        .where(share_capital.c.total_shares.is_not(None))
+        .order_by(share_capital.c.code, share_capital.c.change_date)
+    ).tuples():
+        out.setdefault(code, []).append((day, total))
+    return out
+
+
+def daily_basic_rows(code: str, raw: list[dict[str, str]], shares: list[tuple[date, int]]) -> list[dict]:
+    """BaoStock 每日指标行 → daily_basic 行；总市值按当日适用的总股本算，早于第一条股本记录时为空。"""
+    days = [d for d, _ in shares]
+    out = []
+    for r in raw:
+        day = _d(r["date"])
+        close = _f(r["close"])
+        i = bisect_right(days, day)
+        total = shares[i - 1][1] if i else None
+        out.append({
+            "code": code, "trade_date": day, "close": close, "preclose": _f(r["preclose"]),
+            "volume": _f(r["volume"]), "amount": _f(r["amount"]), "turn": _f(r["turn"]),
+            "suspended": r["tradestatus"] == "0", "is_st": r["isST"] == "1",
+            "pe_ttm": _f(r["peTTM"]), "pb_mrq": _f(r["pbMRQ"]), "ps_ttm": _f(r["psTTM"]),
+            "pcf_ttm": _f(r["pcfNcfTTM"]),
+            "total_mv": close * total if close and total else None,
+        })
+    return out
+
+
+def _sync_daily_basic(db, bs, code: str, market: str, start: date, end: date,  # noqa: ANN001
+                      shares: dict[str, list[tuple[date, int]]]) -> int:
+    raw = _bs_retry(bs, baostock.fetch_daily_basic, f"{market.lower()}.{code}",
+                    start.isoformat(), end.isoformat())
+    rows = daily_basic_rows(code, raw, shares.get(code, []))
+    upsert_rows(db, daily_basic, rows)
+    db.commit()
+    return len(rows)
+
+
+def daily_basic_gaps(db) -> list[tuple[str, str, date]]:
+    """沪深股票（含退市）里每日指标没补到上市日的 (code, market, 起始日)。"""
+    first = (select(daily_basic.c.code, func.min(daily_basic.c.trade_date).label("first"))
+             .group_by(daily_basic.c.code).subquery())
+    out = []
+    for code, market, listed, first_day in db.execute(
+        select(stock_info.c.code, stock_info.c.market, stock_info.c.list_date, first.c.first)
+        .outerjoin(first, first.c.code == stock_info.c.code)
+        .where(stock_info.c.market.in_(("SH", "SZ")))
+        .order_by(stock_info.c.code)
+    ).tuples():
+        start = max(listed or _BS_EPOCH, _BS_EPOCH)
+        if first_day is None or first_day > start + _LISTING_SLACK:
+            out.append((code, market, start))
+    return out
+
+
+def backfill_daily_basic(db, throttle: float = 0.05) -> tuple[int, int]:
+    """每日指标补到上市日（BaoStock 单只全历史 2~15 秒，全市场数小时）。返回 (完成, 失败)。
+
+    每只股票一次提交，已补齐的不在候选里，中断后重跑即可续上。
+    """
+    todo = daily_basic_gaps(db)
+    logger.info("每日指标待补到上市日：%d 只", len(todo))
+    shares = share_history(db)
+    end = _today_cst()
+    done = failed = 0
+    with baostock.session() as bs:
+        for i, (code, market, start) in enumerate(todo, 1):
+            try:
+                _sync_daily_basic(db, bs, code, market, start, end, shares)
+                done += 1
+            except Exception as exc:  # noqa: BLE001
+                db.rollback()
+                failed += 1
+                logger.warning("%s 每日指标拉取失败：%s", code, exc)
+            if i % 100 == 0:
+                logger.info("每日指标补历史 %d/%d：完成 %d，失败 %d", i, len(todo), done, failed)
+            time.sleep(throttle)
+    logger.info("每日指标补历史完成：完成 %d，失败 %d（共 %d 只）", done, failed, len(todo))
+    return done, failed
+
+
+def refresh_daily_basic(db, lookback: int = 10) -> int:
+    """增量：在市沪深股票从库里最后一天的次日拉到今天；库里没有的只拉最近 lookback 天
+    （全历史交给 backfill_daily_basic）。BaoStock 当日数据 17:30 后才入库，需在此之后跑。"""
+    today = _today_cst()
+    last = dict(db.execute(
+        select(daily_basic.c.code, func.max(daily_basic.c.trade_date)).group_by(daily_basic.c.code)
+    ).all())
+    shares = share_history(db)
+    total = 0
+    with baostock.session() as bs:
+        for code, market, listed in db.execute(
+            select(stock_info.c.code, stock_info.c.market, stock_info.c.list_date)
+            .where(stock_info.c.delist_date.is_(None), stock_info.c.market.in_(("SH", "SZ")))
+            .order_by(stock_info.c.code)
+        ).tuples():
+            have = last.get(code)
+            start = have + timedelta(days=1) if have else max(listed or today, today - timedelta(days=lookback))
+            if start > today:
+                continue
+            try:
+                total += _sync_daily_basic(db, bs, code, market, start, today, shares)
+            except Exception as exc:  # noqa: BLE001 — 单只失败下次增量会补上
+                db.rollback()
+                logger.warning("%s 每日指标增量失败：%s", code, exc)
+    return total
+
+
 # ---------------------------------------------------------------- 组合入口
 
 PARTS = ("fin", "stmt", "div", "macro", "index", "indexbar", "capital", "holdernum", "holders",
@@ -917,7 +1046,8 @@ def _run(db, label: str, fn) -> bool:  # noqa: ANN001
 def daily(db) -> None:
     """日更：财报与三大报表最近 2 个报告期、分红最近 4 个报告期、宏观各序列最新一页、指数成分当日名单、
     近 40 天的股本变动和股东户数、最近 2 期十大股东、近 30 天起的解禁（含未来计划）、
-    近 7 天的两融 / 龙虎榜 / 大宗交易、主要指数日线与中证成分权重、ETF 与可转债清单和当日快照。
+    近 7 天的两融 / 龙虎榜 / 大宗交易、主要指数日线与中证成分权重、ETF 与可转债清单和当日快照、
+    每日指标（ST / 停牌 / 换手 / 估值）。
     需在收盘后（建议 18:00 后）跑，快照才是当日收盘。"""
     _run(db, "fin", lambda: refresh_financials(db, quarter_ends(2)))
     _run(db, "stmt", lambda: refresh_statements(db, quarter_ends(2)))
@@ -937,6 +1067,7 @@ def daily(db) -> None:
     _run(db, "block", lambda: refresh_block_trade(db, month_ranges(today - timedelta(days=7), today)))
     _run(db, "securities", lambda: refresh_securities(db))
     _run(db, "security snapshot", lambda: refresh_security_snapshot(db))
+    _run(db, "daily basic", lambda: refresh_daily_basic(db))
 
 
 def backfill(db, parts: tuple[str, ...] = PARTS) -> None:

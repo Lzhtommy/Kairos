@@ -1,4 +1,4 @@
-"""数据库表结构（SQLAlchemy Core）：股票池、日 K、财报与三大报表、分红、股本股东、交易类数据、指数、ETF 与可转债、宏观、公告。
+"""数据库表结构（SQLAlchemy Core）：股票池、日 K、财报与三大报表、分红、股本股东、交易类数据、每日指标（ST / 停牌 / 换手 / 估值）、指数、ETF 与可转债、宏观、公告。
 
 单独使用时 `metadata.create_all(engine)` 建表；嵌入 Kairos 时由 app.models 把这些表
 复制进业务库的 metadata 并映射 ORM 类，两边共用同一份定义。
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import (BigInteger, Column, Date, DateTime, Float, Index, Integer, MetaData, String,
+from sqlalchemy import (BigInteger, Boolean, Column, Date, DateTime, Float, Index, Integer, MetaData, String,
                         Table, Text)
 
 metadata = MetaData()
@@ -308,6 +308,27 @@ security_bar = Table(
 )
 
 # 同步状态：已完成全量回补的部分（kairos_data.sync.PARTS），回补中断后重启只补没完成的
+# 每日指标（BaoStock 日线附带字段），每股每交易日一行，停牌日也有一行。
+# 价格不复权；估值按当日收盘价计；总市值 = 收盘价 × 当日适用的总股本（share_capital），无股本数据时为空。
+# 北交所 BaoStock 没有，不收录
+daily_basic = Table(
+    "daily_basic", metadata,
+    Column("code", String(16), primary_key=True),
+    Column("trade_date", Date, primary_key=True, index=True),
+    Column("close", Float, nullable=True),  # 不复权收盘价
+    Column("preclose", Float, nullable=True),  # 交易所口径前收（除权日已调整）
+    Column("volume", Float, nullable=True),  # 股
+    Column("amount", Float, nullable=True),  # 元
+    Column("turn", Float, nullable=True),  # 换手率 %（成交量 / 流通股本）
+    Column("suspended", Boolean, nullable=False, default=False),
+    Column("is_st", Boolean, nullable=False, default=False),  # ST / *ST
+    Column("pe_ttm", Float, nullable=True),
+    Column("pb_mrq", Float, nullable=True),
+    Column("ps_ttm", Float, nullable=True),
+    Column("pcf_ttm", Float, nullable=True),  # 市现率（经营现金流 TTM）
+    Column("total_mv", Float, nullable=True),  # 总市值（元）
+)
+
 sync_state = Table(
     "sync_state", metadata,
     Column("key", String(64), primary_key=True),

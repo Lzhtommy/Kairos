@@ -7,15 +7,18 @@
 组合模式（纯标量策略）：等权或市值加权持有，按调仓频率扣双边成本，
 输出年化 / 回撤 / 夏普 / 胜率与基准对比曲线。
 
-已知简化（前端明示）：成分/因子取自当前快照（存在前视偏差——因子历史
-落库后可消除）；组合模式不做逐期重选。所有参数服务端夹紧。
+涨跌停幅度按当日板块规则与当日 ST 状态（daily_basic）判定。组合模式逐期重选，
+时点因子优先取 factor_history 快照，其次 daily_basic 每日指标，都没有时按价格重构近似。
+已知简化（前端明示）：事件模式的标量条件按今日快照预筛，股票池不含已退市股票。
+所有参数服务端夹紧。
 """
 
 from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
+from collections.abc import Callable
+from datetime import date, datetime
 from statistics import mean, median, pstdev
 from typing import Any
 
@@ -24,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.market import FactorSnapshot, Kline, StockInfo
+from app.models.warehouse import DailyBasic
 from app.services import hot_rank, technical
 from app.services.dsl import CROSS_OPS, apply_universe, execute, match_filter, validate_dsl
 from app.services.market import factor_rows, recent_cutoff
@@ -98,13 +102,43 @@ def _bars_by_code(
 # ---- 可交易性（一字板）-----------------------------------------------------------
 
 
-def _limit_pct(code: str, name: str) -> float:
-    """涨跌停幅度：主板 10%，创业板/科创板 20%，ST 5%。"""
-    if "ST" in name:
-        return 0.05
-    if code.startswith(("30", "68")):
+_CHINEXT_REFORM = date(2020, 8, 24)  # 创业板注册制：涨跌幅 10% → 20%（ST 同为 20%）
+_MAIN_ST_REFORM = date(2026, 7, 6)  # 沪深主板风险警示股涨跌幅 5% → 10%
+
+
+def _limit_pct(code: str, is_st: bool, day: date) -> float:
+    """day 当天的涨跌停幅度：北交所 30%；科创板 20%；创业板注册制后 20%、此前 10%（ST 5%）；
+    主板 10%，ST 在 2026-07-06 前为 5%。"""
+    if code.startswith(("4", "8", "92")):
+        return 0.30
+    if code.startswith("68") or (code.startswith("30") and day >= _CHINEXT_REFORM):
         return 0.20
+    if is_st and (code.startswith("30") or day < _MAIN_ST_REFORM):
+        return 0.05
     return 0.10
+
+
+def _st_lookup(db: Session, codes: list[str], since: datetime | None) -> dict[str, tuple[date, set[date]]]:
+    """daily_basic 里每只股票的 (首个有记录日, ST 日集合)；没有记录的股票不在结果里。"""
+    first = select(DailyBasic.code, func.min(DailyBasic.trade_date)).where(
+        DailyBasic.code.in_(codes)
+    ).group_by(DailyBasic.code)
+    out: dict[str, tuple[date, set[date]]] = {c: (d, set()) for c, d in db.execute(first)}
+    st = select(DailyBasic.code, DailyBasic.trade_date).where(
+        DailyBasic.code.in_(codes), DailyBasic.is_st.is_(True)
+    )
+    if since is not None:
+        st = st.where(DailyBasic.trade_date >= since.date())
+    for code, day in db.execute(st):
+        out[code][1].add(day)
+    return out
+
+
+def _st_on(code: str, name: str, lookup: dict[str, tuple[date, set[date]]]):  # noqa: ANN202
+    """day → 当天是否 ST：有每日指标的日期查表，更早的（或没有数据的股票）按当前名称近似。"""
+    first, st_days = lookup.get(code, (None, set()))
+    now_st = "ST" in name
+    return lambda day: (day in st_days) if first is not None and day >= first else now_st
 
 
 def _one_word(
@@ -281,6 +315,7 @@ def _candidates_for_stock(
     code: str,
     name: str,
     series: list[tuple],
+    st_on: Callable[[date], bool],
     p: dict[str, Any],
     tech: list[dict[str, Any]],
     rev: list[dict[str, Any]] | None,
@@ -298,7 +333,11 @@ def _candidates_for_stock(
     n = len(series)
     if n < need + 2:
         return [], 0
-    pct = _limit_pct(code, name)
+
+    def pct(j: int) -> float:
+        day = series[j][0].date()
+        return _limit_pct(code, st_on(day), day)
+
     sig = technical.signal_series(tech, bars)
     rev_sig = technical.signal_series(rev, bars) if rev else None
 
@@ -320,7 +359,7 @@ def _candidates_for_stock(
         start = i if p["entry"] == "signal_close" else i + 1
         e_idx = None
         for e in range(start, min(start + 3, n)):
-            if not _one_word(series, e, pct, +1):
+            if not _one_word(series, e, pct(e), +1):
                 e_idx = e
                 break
         if e_idx is None:
@@ -351,7 +390,7 @@ def _candidates_for_stock(
         # 出场：一字跌停卖不出则顺延，最多 5 日后按当日收盘强平；
         # 被顺延的止盈/止损单拿不到触发价，按实际卖出日收盘计
         moves = 0
-        while exit_idx < n - 1 and moves < 5 and _one_word(series, exit_idx, pct, -1):
+        while exit_idx < n - 1 and moves < 5 and _one_word(series, exit_idx, pct(exit_idx), -1):
             exit_idx += 1
             moves += 1
 
@@ -410,9 +449,13 @@ def _run_event(
     candidates: list[dict[str, Any]] = []
     skipped_limit = 0
     for chunk in _chunks(codes, _CHUNK):
-        for code, series in _bars_by_code(db, chunk, depth).items():
+        bars = _bars_by_code(db, chunk, depth)
+        since = min((s[0][0] for s in bars.values() if s), default=None)
+        st = _st_lookup(db, list(bars), since)
+        for code, series in bars.items():
+            name = names.get(code, code)
             cands, skipped = _candidates_for_stock(
-                code, names.get(code, code), series, p, tech, rev, need, day_filters
+                code, name, series, _st_on(code, name, st), p, tech, rev, need, day_filters
             )
             candidates.extend(cands)
             skipped_limit += skipped
@@ -688,6 +731,63 @@ def _reconstructed_rows(
     return out
 
 
+def _basic_rows(
+    db: Session,
+    ts: datetime,
+    rows_today: list[dict[str, Any]],
+    ref_bars: dict[str, _Bar],
+    day_bars: dict[str, _Bar],
+    prev_bars: dict[str, _Bar],
+    hot: tuple[dict[str, int], dict[str, int]],
+) -> list[dict[str, Any]] | None:
+    """daily_basic 某日的真实因子行：ST、停牌、换手、成交额、PE(TTM)、PB(MRQ)、总市值、不复权价
+    都是当天值；当天没有记录时返回 None。
+
+    停牌股不入选；之后退市的股票也在内（名称行业取 stock_info，ROE / 股息率缺值）。ROE / 股息率 /
+    行业仍取当前值，某项当天缺值时用 _reconstructed_rows 的近似值；北交所等没有每日指标的股票
+    整行按近似补齐。
+    """
+    basics = db.execute(select(DailyBasic).where(DailyBasic.trade_date == ts.date())).scalars().all()
+    if not basics:
+        return None
+    recon = {
+        r["code"]: r for r in _reconstructed_rows(rows_today, ref_bars, day_bars, prev_bars, hot)
+    }
+    info = {s.code: s for s in db.execute(select(StockInfo)).scalars().all()}
+    out = []
+    for b in basics:
+        if b.suspended or not b.close:
+            continue
+        base = recon.get(b.code)
+        if base is None:
+            meta = info.get(b.code)
+            if meta is None:
+                continue
+            hi, lo, opn, intra = _hlo_change_pct(b.code, day_bars, prev_bars)
+            base = {
+                "code": b.code, "name": meta.name, "market": meta.market,
+                "industry": meta.industry, "roe": None, "dividend_yield": None,
+                "high_change_pct": hi, "low_change_pct": lo, "open_change_pct": opn,
+                "intraday_change_pct": intra,
+                "hot_rank": hot[0].get(b.code), "hot_rank_prev": hot[1].get(b.code),
+            }
+        row = {**base, "is_st": b.is_st, "price": b.close}
+        for key, v in (
+            ("pe", b.pe_ttm),
+            ("pb", b.pb_mrq),
+            ("turnover_rate", b.turn),
+            ("turnover", round(b.amount / 1e8, 2) if b.amount is not None else None),
+            ("market_cap", round(b.total_mv / 1e8, 2) if b.total_mv else None),
+            ("change_pct", round((b.close / b.preclose - 1) * 100, 2) if b.preclose else None),
+        ):
+            if v is not None:
+                row[key] = v
+        out.append(row)
+    covered = {b.code for b in basics}
+    out.extend(r for c, r in recon.items() if c not in covered)
+    return out
+
+
 def _run_portfolio(
     db: Session, dsl: dict[str, Any], p: dict[str, Any], rows_today: list[dict[str, Any]]
 ) -> dict[str, Any]:
@@ -742,15 +842,16 @@ def _run_portfolio(
                 hot_rank.ranks_on(db, d.date().isoformat()),
                 hot_rank.ranks_on(db, prev_of[d].date().isoformat()) if d in prev_of else {},
             )
+        day_bars, prev_bars = bar_lookup.get(d, {}), bar_lookup.get(prev_of.get(d), {})
         if d in snap_days:
-            rows_d = _snapshot_rows(
-                db, d, bar_lookup.get(d, {}), bar_lookup.get(prev_of.get(d), {}), hot
-            )
+            rows_d = _snapshot_rows(db, d, day_bars, prev_bars, hot)
+            pit_periods += 1
+        elif (
+            rows_d := _basic_rows(db, d, rows_today, ref_bars, day_bars, prev_bars, hot)
+        ) is not None:
             pit_periods += 1
         else:
-            rows_d = _reconstructed_rows(
-                rows_today, ref_bars, bar_lookup.get(d, {}), bar_lookup.get(prev_of.get(d), {}), hot
-            )
+            rows_d = _reconstructed_rows(rows_today, ref_bars, day_bars, prev_bars, hot)
         picked = execute(scalar_dsl, rows_d) if has_scalar else apply_universe(dsl, rows_d)
         if p["max_pos"]:
             if dsl.get("score"):
@@ -885,7 +986,7 @@ def _run_portfolio(
             ),
             "benchmarkName": _BENCHMARKS[p["benchmark"]],
             "rebalances": len(period_sel),
-            "pitPeriods": pit_periods,  # 用真实快照重选的期数（随归档积累增长）
+            "pitPeriods": pit_periods,  # 用真实历史因子（快照或每日指标）重选的期数
             # AI 诊断用的归因摘要：亏得最狠的 3 个调仓期
             "worstPeriods": [
                 {"date": rec["date"], "ret": rec["periodReturn"], "holdings": rec["holdings"]}
