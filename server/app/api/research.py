@@ -17,7 +17,7 @@ from app.models.market import StockInfo
 from app.models.research import ResearchReport
 from app.models.user import User
 from app.services.research_facts import is_financial
-from app.services.research_score import SCORING_VERSION
+from app.services.research_score import ITEM_LABELS, SCORING_VERSION
 
 router = APIRouter(prefix="/research", tags=["research"], dependencies=[Depends(get_current_user)])
 admin_router = APIRouter(prefix="/admin/research", tags=["admin"], dependencies=[Depends(require_admin)])
@@ -101,6 +101,17 @@ def stock_history(code: str, db: Session = Depends(get_db)):
     ]
 
 
+def _labeled(sub_scores: dict | None) -> dict | None:
+    """早期报告里缺数据的计分项 label 存的是英文 key，读取时换成中文名。"""
+    if not sub_scores:
+        return sub_scores
+    return {k: {**d, "items": [
+        {**it, "label": ITEM_LABELS[it["key"]]}
+        if it.get("key") in ITEM_LABELS and it.get("label") == it["key"] else it
+        for it in d.get("items") or []
+    ]} for k, d in sub_scores.items()}
+
+
 @router.get("/{report_id}")
 def get_report(report_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     r = _get_visible(db, report_id, user)
@@ -112,7 +123,7 @@ def get_report(report_id: int, db: Session = Depends(get_db), user: User = Depen
     return _summary(r) | {
         "status": r.status,
         "updating": bool(updating),
-        "sub_scores": r.sub_scores,
+        "sub_scores": _labeled(r.sub_scores),
         "red_flags": r.red_flags,
         "sections": r.sections,
         "facts": r.facts,

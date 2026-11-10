@@ -47,6 +47,20 @@ DIMENSIONS: list[tuple[str, str, float, list[tuple[str, float, float, float]]]] 
     ]),
 ]
 
+# 计分项缺数据时（亏损股不算市盈率分位、历史不足等）没有 fact，用这里的中文名展示
+ITEM_LABELS = {
+    "roe": "最近年报 ROE", "gross_margin": "销售毛利率", "net_margin": "销售净利率",
+    "roe_std_5y": "近 5 年 ROE 标准差",
+    "revenue_cagr_3y": "近 3 年营收复合增速", "deducted_np_cagr_3y": "近 3 年扣非净利润复合增速",
+    "deducted_np_yoy": "最新累计期扣非净利润同比", "rev_q_yoy_change": "单季营收同比变化",
+    "debt_ratio": "资产负债率", "current_ratio": "流动比率", "interest_debt_to_cash": "有息负债 / 货币资金",
+    "ocf_to_np_3y": "近 3 年经营现金流 / 净利润", "fcf_to_np_3y": "近 3 年累计自由现金流 / 净利润",
+    "ar_minus_rev_growth": "应收增速 − 营收增速",
+    "pe_pct_self": "市盈率自身历史分位", "pb_pct_self": "市净率自身历史分位",
+    "pe_pct_industry": "市盈率同行业分位",
+    "dividend_yield": "股息率", "payout_3y": "近 3 年平均分红率",
+}
+
 EVENTS_MAX = 10.0
 EVENTS_BASE = 5.0
 EVENT_POINTS = {
@@ -133,7 +147,7 @@ def score(dataset: dict) -> dict:
             f = facts.get(fid)
             rows.append({
                 "key": fid,
-                "label": f["label"] if f else fid,
+                "label": f["label"] if f else ITEM_LABELS.get(fid, fid),
                 "value": f["value"] if f else None,
                 "display": fmt(f),
                 "unit": f["unit"] if f else None,
