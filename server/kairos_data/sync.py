@@ -1001,12 +1001,13 @@ def daily_basic_gaps(db) -> list[tuple[str, str, date]]:
     return out
 
 
-def backfill_daily_basic(db, throttle: float = 0.05) -> tuple[int, int]:
+def backfill_daily_basic(db, throttle: float = 0.05, shard: int = 0, shards: int = 1) -> tuple[int, int]:
     """每日指标补到上市日（BaoStock 单只全历史 2~15 秒，全市场数小时）。返回 (完成, 失败)。
 
-    每只股票一次提交，已补齐的不在候选里，中断后重跑即可续上。
+    每只股票一次提交，已补齐的不在候选里，中断后重跑即可续上。shards > 1 时只补代码数值对 shards
+    取模为 shard 的那份（与启动先后无关，各份不重叠），可开多个进程并行，各有独立的 BaoStock 会话。
     """
-    todo = daily_basic_gaps(db)
+    todo = [g for g in daily_basic_gaps(db) if int(g[0]) % shards == shard]
     logger.info("每日指标待补到上市日：%d 只", len(todo))
     shares = share_history(db)
     end = _today_cst()

@@ -242,3 +242,19 @@ def test_insert_bars_upserts_on_natural_key(db):
     _insert_bars(db, "600519", [Candle(datetime(2026, 11, 9), 2, 2, 2, 2, 20)])
     db.commit()
     assert db.execute(select(Kline.close, Kline.volume)).all() == [(2.0, 20)]
+
+
+def test_backfill_shards_split_by_code(db, monkeypatch):
+    db.add_all(StockInfo(code=c, name=c, market="SH", industry="—", list_date=date(2010, 1, 4))
+               for c in ("600000", "600001", "600002", "600003"))
+    db.commit()
+
+    @contextmanager
+    def fake_session():
+        yield object()
+
+    seen = []
+    monkeypatch.setattr(sync.baostock, "session", fake_session)
+    monkeypatch.setattr(sync.baostock, "fetch_daily_basic", lambda _bs, sym, s, e: seen.append(sym) or [])
+    sync.backfill_daily_basic(db, throttle=0, shard=1, shards=2)
+    assert seen == ["sh.600001", "sh.600003"]
