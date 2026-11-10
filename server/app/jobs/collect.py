@@ -195,11 +195,10 @@ def _upsert_today_bars(db, quotes) -> None:
 
 
 def _insert_bars(db, code: str, candles) -> None:
-    """日 K 批量插入。不走 db.add：kline 主键自增，MySQL 没有 RETURNING，
-    ORM 会逐行 INSERT 取回主键（RDS 上一根一次往返）。"""
+    """日 K 批量 upsert（主键 code, period, ts）：数据源偶尔回重复日期，冲突时以新值为准。"""
     if not candles:
         return
-    db.execute(insert(Kline), [
+    upsert_rows(db, Kline, [
         {"code": code, "period": "1d", "ts": c.ts, "open": c.open, "high": c.high,
          "low": c.low, "close": c.close, "volume": c.volume}
         for c in candles

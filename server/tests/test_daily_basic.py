@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from datetime import date
 
 import pytest
+from sqlalchemy import select
 
 from app.models.market import Kline, StockInfo
 from app.models.warehouse import DailyBasic
@@ -168,3 +169,76 @@ class TestSync:
         db.commit()
         assert [(c, s) for c, _m, s in sync.daily_basic_gaps(db)] == [
             ("600001", date(2010, 1, 4)), ("600002", date(1990, 12, 19))]
+
+
+class TestPitFundamentals:
+    def _reports(self, db):
+        from app.models.warehouse import Dividend, FinReport
+
+        for period, notice, roe in [
+            (date(2024, 12, 31), date(2025, 3, 20), 20.0),
+            (date(2025, 9, 30), date(2025, 10, 28), 15.0),
+            (date(2025, 12, 31), date(2026, 3, 25), 22.0),
+            (date(2026, 3, 31), date(2026, 4, 25), 6.0),
+            (date(2026, 9, 30), date(2026, 10, 30), 18.0),
+        ]:
+            db.add(FinReport(code="600519", report_date=period, notice_date=notice, roe=roe))
+        db.add(Dividend(code="600519", report_date=date(2025, 12, 31), ex_date=date(2026, 6, 20),
+                        cash_per10=30.0, progress="实施分配", plan=""))
+        db.add(Dividend(code="600519", report_date=date(2024, 12, 31), ex_date=date(2025, 6, 20),
+                        cash_per10=99.0, progress="实施分配", plan=""))
+        db.commit()
+
+    def test_roe_uses_only_announced_reports(self, db):
+        self._reports(db)
+        pit = backtest._PitFundamentals(db, date(2026, 1, 1), date(2026, 11, 10))
+        assert pit.roe("600519", date(2026, 3, 1)) == 15.0 * 12 / 9  # 年报未出，上年同期缺 → 年化
+        assert pit.roe("600519", date(2026, 4, 1)) == 22.0  # 年报
+        assert pit.roe("600519", date(2026, 5, 1)) == 6.0 * 12 / 3  # Q1 缺上年同期 → 年化
+        assert pit.roe("600519", date(2026, 11, 1)) == 22.0 + 18.0 - 15.0  # TTM
+        assert pit.roe("000001", date(2026, 11, 1)) is None and not pit.covers("000001")
+
+    def test_dividend_yield_trailing_year(self, db):
+        self._reports(db)
+        pit = backtest._PitFundamentals(db, date(2026, 1, 1), date(2026, 11, 10))
+        assert pit.dividend_yield("600519", date(2026, 6, 19), 100.0) == 0.099  # 只有 2025-06 那次
+        assert pit.dividend_yield("600519", date(2026, 7, 1), 100.0) == 0.03
+        assert pit.dividend_yield("000001", date(2026, 7, 1), 10.0) == 0.0
+
+
+def test_fin_revisions_archive_changed_values():
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 11, 10, tzinfo=timezone.utc)
+    base = {"notice_date": date(2026, 4, 25), "eps": 1.0, "deduct_eps": 0.9, "revenue": 100.0,
+            "net_profit": 10.0, "roe": 5.0, "bps": 20.0}
+    have = {"600519": base, "000001": {**base, "roe": None}, "000002": base}
+    rows = [
+        {"code": "600519", "report_date": date(2026, 3, 31), **base, "net_profit": 9.0},  # 更正
+        {"code": "000001", "report_date": date(2026, 3, 31), **base},  # 补上缺值，不算
+        {"code": "000002", "report_date": date(2026, 3, 31), **base, "roe": 5.0000001},  # 浮点噪声
+        {"code": "300750", "report_date": date(2026, 3, 31), **base},  # 新股票
+    ]
+    out = sync.fin_revisions(have, rows, now)
+    assert [(r["code"], r["net_profit"], r["revised_at"]) for r in out] == [("600519", 10.0, now)]
+
+
+def test_hot_rank_date_round_trips_as_string(db):
+    from app.models.market import HotRankDaily
+    from app.services import hot_rank
+
+    db.add(HotRankDaily(code="600519", date="2026-10-30", rank=3))
+    db.commit()
+    assert hot_rank.ranks_on(db, "2026-10-30") == {"600519": 3}
+    assert db.execute(select(HotRankDaily.date)).scalar() == "2026-10-30"
+
+
+def test_insert_bars_upserts_on_natural_key(db):
+    from app.jobs.collect import _insert_bars
+    from kairos_data.sources.base import Candle
+    from datetime import datetime
+
+    _insert_bars(db, "600519", [Candle(datetime(2026, 11, 9), 1, 1, 1, 1, 10)])
+    _insert_bars(db, "600519", [Candle(datetime(2026, 11, 9), 2, 2, 2, 2, 20)])
+    db.commit()
+    assert db.execute(select(Kline.close, Kline.volume)).all() == [(2.0, 20)]

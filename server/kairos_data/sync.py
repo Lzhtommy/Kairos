@@ -14,7 +14,7 @@ from datetime import date, datetime, timedelta, timezone
 from sqlalchemy import delete, func, insert, select
 
 from kairos_data.schema import (STATEMENT_ITEMS, announcement, billboard, block_trade, daily_basic, dividend,
-                                fin_report, fin_statement, holder_count, index_bar, index_constituent,
+                                fin_report, fin_report_revision, fin_statement, holder_count, index_bar, index_constituent,
                                 kline, lockup, macro_series, margin_trading, security_bar, security_info,
                                 share_capital, stock_info, sync_state, top_holder)
 from kairos_data.sources import baostock, csindex, eastmoney_dc
@@ -116,11 +116,38 @@ def fin_rows(raw: list[dict]) -> list[dict]:
     return list(rows.values())
 
 
+_REVISED_FIELDS = ("eps", "deduct_eps", "revenue", "net_profit", "roe", "bps")
+
+
+def _changed(old: float | None, new: float | None) -> bool:
+    if old is None or new is None:
+        return old is not None  # 原有值被清空算更正；补上缺值不算
+    return abs(old - new) > max(abs(old), abs(new)) * 1e-6
+
+
+def fin_revisions(have: dict[str, dict], rows: list[dict], now: datetime) -> list[dict]:
+    """新抓的行与库里同期旧行比，核心数值变了的返回旧版本（写进 fin_report_revision）。"""
+    out = []
+    for r in rows:
+        old = have.get(r["code"])
+        if old and any(_changed(old[f], r[f]) for f in _REVISED_FIELDS):
+            out.append({"code": r["code"], "report_date": r["report_date"], "revised_at": now,
+                        "notice_date": old["notice_date"], **{f: old[f] for f in _REVISED_FIELDS}})
+    return out
+
+
 def refresh_financials(db, periods: list[date]) -> int:
     n = 0
     for p in periods:
         rows = fin_rows(eastmoney_dc.fetch_report(
             "RPT_LICO_FN_CPD", _period_filter("REPORTDATE", p) + _A_SHARE, sort="SECURITY_CODE"))
+        have = {r["code"]: r for r in db.execute(
+            select(fin_report.c.code, fin_report.c.notice_date,
+                   *(fin_report.c[f] for f in _REVISED_FIELDS)).where(fin_report.c.report_date == p)
+        ).mappings()}
+        if revised := fin_revisions(have, rows, datetime.now(timezone.utc)):
+            logger.info("fin %s: %d 只财报数值有更正，旧版本已留档", p, len(revised))
+            upsert_rows(db, fin_report_revision, revised)
         upsert_rows(db, fin_report, rows)
         db.commit()
         n += len(rows)
@@ -829,7 +856,7 @@ def replace_kline(db, code: str, rows: list[dict]) -> int:
         logger.warning("%s 只拿到 %d 根（库里 %d 根），跳过不覆盖", code, len(rows), len(have))
         return 0
     last = max(r["ts"] for r in rows)
-    newer = [{k: v for k, v in h.items() if k not in ("id", "code")} for h in have if h["ts"] > last]
+    newer = [{k: v for k, v in h.items() if k != "code"} for h in have if h["ts"] > last]
     db.execute(delete(kline).where(kline.c.code == code, kline.c.period == "1d"))
     db.execute(insert(kline), [{"code": code, **r} for r in rows + newer])
     db.commit()
@@ -1072,7 +1099,7 @@ def daily(db) -> None:
 
 def backfill(db, parts: tuple[str, ...] = PARTS) -> None:
     """全量回补：财报与三大报表 1988 年起、分红 1990 年起、宏观全历史、指数成分 2005 年起逐月、
-    股本变动 1990 年起、股东户数 2010 年起、十大股东 1990 年起、解禁全部、两融 2010 年起（约 4000
+    股本变动 1990 年起、股东户数 2010 年起（东财实际从 2013 年才有）、十大股东 1990 年起、解禁全部、两融 2010 年起（约 4000
     个交易日，最慢，约 2 小时）、龙虎榜 2004 年起、大宗交易 2000 年起、主要指数全历史、
     ETF 与可转债清单及全历史日线（约 2700 只，每只一次请求）。"""
     today = _today_cst()

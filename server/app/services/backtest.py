@@ -8,7 +8,8 @@
 输出年化 / 回撤 / 夏普 / 胜率与基准对比曲线。
 
 涨跌停幅度按当日板块规则与当日 ST 状态（daily_basic）判定。组合模式逐期重选，
-时点因子优先取 factor_history 快照，其次 daily_basic 每日指标，都没有时按价格重构近似。
+时点因子优先取 factor_history 快照，其次 daily_basic 每日指标，都没有时按价格重构近似；
+后两种情况的 ROE / 股息率按当时已公告的财报与分红算。
 已知简化（前端明示）：事件模式的标量条件按今日快照预筛，股票池不含已退市股票。
 所有参数服务端夹紧。
 """
@@ -18,7 +19,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Callable
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from statistics import mean, median, pstdev
 from typing import Any
 
@@ -27,7 +28,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.market import FactorSnapshot, Kline, StockInfo
-from app.models.warehouse import DailyBasic
+from app.models.warehouse import DailyBasic, Dividend, FinReport
 from app.services import hot_rank, technical
 from app.services.dsl import CROSS_OPS, apply_universe, execute, match_filter, validate_dsl
 from app.services.market import factor_rows, recent_cutoff
@@ -731,6 +732,58 @@ def _reconstructed_rows(
     return out
 
 
+class _PitFundamentals:
+    """调仓日当时已公告的 ROE(TTM) 与近 12 个月股息（与实时行情同口径）。
+
+    ROE：取公告日 ≤ 当天的最新一期；年报直接用，季报按"上年年报 + 本期累计 − 上年同期累计"
+    滚成 TTM（加权 ROE 近似可加），缺上年数据时按累计值年化。股息率 = 除权日在近 365 天内的
+    每股现金分红 / 当天不复权收盘价（小数，0.03 = 3%）。
+    """
+
+    def __init__(self, db: Session, start: date, end: date) -> None:
+        self.reports: dict[str, list[tuple[date, date, float | None]]] = {}
+        for code, notice, period, roe in db.execute(
+            select(FinReport.code, FinReport.notice_date, FinReport.report_date, FinReport.roe)
+            .where(FinReport.notice_date.is_not(None), FinReport.notice_date <= end,
+                   FinReport.report_date >= date(start.year - 2, 1, 1))
+        ):
+            self.reports.setdefault(code, []).append((notice, period, roe))
+        self.cash: dict[str, list[tuple[date, float]]] = {}
+        for code, ex, per10 in db.execute(
+            select(Dividend.code, Dividend.ex_date, Dividend.cash_per10)
+            .where(Dividend.ex_date.is_not(None), Dividend.ex_date <= end,
+                   Dividend.ex_date > start - timedelta(days=366), Dividend.cash_per10 > 0)
+        ):
+            self.cash.setdefault(code, []).append((ex, per10 / 10))
+
+    def covers(self, code: str) -> bool:
+        return code in self.reports
+
+    def roe(self, code: str, day: date) -> float | None:
+        known = {period: roe for notice, period, roe in self.reports.get(code, ()) if notice <= day}
+        if not known:
+            return None
+        latest = max(known)
+        cur = known[latest]
+        if cur is None or latest.month == 12:
+            return cur
+        annual = known.get(date(latest.year - 1, 12, 31))
+        same = known.get(latest.replace(year=latest.year - 1))
+        if annual is not None and same is not None:
+            return round(annual + cur - same, 2)
+        return round(cur * 12 / latest.month, 2)
+
+    def dividend_yield(self, code: str, day: date, price: float) -> float:
+        cash = sum(c for ex, c in self.cash.get(code, ()) if day - timedelta(days=365) < ex <= day)
+        return round(cash / price, 4) if price > 0 else 0.0
+
+    def apply_roe(self, rows: list[dict[str, Any]], day: date) -> None:
+        """有财报数据的股票换成当时的 ROE（当时尚无公告则缺值，不拿今天的冒充）。"""
+        for r in rows:
+            if self.covers(r["code"]):
+                r["roe"] = self.roe(r["code"], day)
+
+
 def _basic_rows(
     db: Session,
     ts: datetime,
@@ -739,13 +792,13 @@ def _basic_rows(
     day_bars: dict[str, _Bar],
     prev_bars: dict[str, _Bar],
     hot: tuple[dict[str, int], dict[str, int]],
+    pit: _PitFundamentals,
 ) -> list[dict[str, Any]] | None:
     """daily_basic 某日的真实因子行：ST、停牌、换手、成交额、PE(TTM)、PB(MRQ)、总市值、不复权价
-    都是当天值；当天没有记录时返回 None。
+    都是当天值，ROE / 股息率按当时已公告的财报与分红算；当天没有记录时返回 None。
 
-    停牌股不入选；之后退市的股票也在内（名称行业取 stock_info，ROE / 股息率缺值）。ROE / 股息率 /
-    行业仍取当前值，某项当天缺值时用 _reconstructed_rows 的近似值；北交所等没有每日指标的股票
-    整行按近似补齐。
+    停牌股不入选；之后退市的股票也在内（名称行业取 stock_info）。行业仍取当前值，某项当天缺值时
+    用 _reconstructed_rows 的近似值；北交所等没有每日指标的股票整行按近似补齐。
     """
     basics = db.execute(select(DailyBasic).where(DailyBasic.trade_date == ts.date())).scalars().all()
     if not basics:
@@ -771,7 +824,8 @@ def _basic_rows(
                 "intraday_change_pct": intra,
                 "hot_rank": hot[0].get(b.code), "hot_rank_prev": hot[1].get(b.code),
             }
-        row = {**base, "is_st": b.is_st, "price": b.close}
+        row = {**base, "is_st": b.is_st, "price": b.close,
+               "dividend_yield": pit.dividend_yield(b.code, b.trade_date, b.close)}
         for key, v in (
             ("pe", b.pe_ttm),
             ("pb", b.pb_mrq),
@@ -785,6 +839,7 @@ def _basic_rows(
         out.append(row)
     covered = {b.code for b in basics}
     out.extend(r for c, r in recon.items() if c not in covered)
+    pit.apply_roe(out, ts.date())
     return out
 
 
@@ -834,6 +889,11 @@ def _run_portfolio(
     period_sel: list[dict[str, float]] = []  # 每期 code → weight
     period_names: list[dict[str, str]] = []
     pit_periods = 0
+    pit = (
+        _PitFundamentals(db, sel_dates[0].date(), sel_dates[-1].date())
+        if any(d not in snap_days for d in sel_dates)
+        else None
+    )
     for d in sel_dates:
         # 调仓日当天 / 前一交易日的落库人气（hot_rank / hot_rank_prev）
         hot: tuple[dict[str, int], dict[str, int]] = ({}, {})
@@ -847,11 +907,12 @@ def _run_portfolio(
             rows_d = _snapshot_rows(db, d, day_bars, prev_bars, hot)
             pit_periods += 1
         elif (
-            rows_d := _basic_rows(db, d, rows_today, ref_bars, day_bars, prev_bars, hot)
+            rows_d := _basic_rows(db, d, rows_today, ref_bars, day_bars, prev_bars, hot, pit)
         ) is not None:
             pit_periods += 1
         else:
             rows_d = _reconstructed_rows(rows_today, ref_bars, day_bars, prev_bars, hot)
+            pit.apply_roe(rows_d, d.date())
         picked = execute(scalar_dsl, rows_d) if has_scalar else apply_universe(dsl, rows_d)
         if p["max_pos"]:
             if dsl.get("score"):

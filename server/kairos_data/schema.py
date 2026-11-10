@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import (BigInteger, Boolean, Column, Date, DateTime, Float, Index, Integer, MetaData, String,
+from sqlalchemy import (BigInteger, Boolean, Column, Date, DateTime, Float, Integer, MetaData, String,
                         Table, Text)
 
 metadata = MetaData()
@@ -30,20 +30,18 @@ stock_info = Table(
     Column("delist_date", Date, nullable=True),
 )
 
-# 日 K（前复权，成交量单位：手）
+# 日 K（前复权，成交量单位：手）。主键 (code, period, ts) 让 InnoDB 按股连续存放，
+# 按股取最近 N 根是主键范围扫描；按日取全市场走 ts 索引
 kline = Table(
     "kline", metadata,
-    Column("id", Integer, primary_key=True),
-    Column("code", String(16), nullable=False, index=True),
-    Column("period", String(8), nullable=False, default="1d"),
-    Column("ts", DateTime(timezone=True), nullable=False, index=True),
+    Column("code", String(16), primary_key=True),
+    Column("period", String(8), primary_key=True, default="1d"),
+    Column("ts", DateTime(timezone=True), primary_key=True, index=True),
     Column("open", Float, nullable=False),
     Column("high", Float, nullable=False),
     Column("low", Float, nullable=False),
     Column("close", Float, nullable=False),
     Column("volume", BigInteger, nullable=False),
-    # 按股取最近 N 根的复合索引
-    Index("ix_kline_code_period_ts", "code", "period", "ts"),
 )
 
 # 定期报告主要指标（东财业绩报表），每股每报告期一行，保留最新披露版本
@@ -64,6 +62,22 @@ fin_report = Table(
     Column("gross_margin", Float, nullable=True),  # 销售毛利率 %
     Column("dividend_plan", String(128), nullable=True),
     Column("updated_at", DateTime(timezone=True), nullable=False, default=_now),
+)
+
+# 财报更正留档：同步时发现某报告期的核心数值变了，把被覆盖的旧版本存在这里
+# （东财只给最新版本，留档从上线起积累），用于还原"当时披露的数字"
+fin_report_revision = Table(
+    "fin_report_revision", metadata,
+    Column("code", String(16), primary_key=True),
+    Column("report_date", Date, primary_key=True),
+    Column("revised_at", DateTime(timezone=True), primary_key=True),  # 发现更正的时间
+    Column("notice_date", Date, nullable=True),  # 旧版本的公告日
+    Column("eps", Float, nullable=True),
+    Column("deduct_eps", Float, nullable=True),
+    Column("revenue", Float, nullable=True),
+    Column("net_profit", Float, nullable=True),
+    Column("roe", Float, nullable=True),
+    Column("bps", Float, nullable=True),
 )
 
 # 三大报表主要科目（东财年报季报），每股每报告期一行，金额单位元。

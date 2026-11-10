@@ -80,3 +80,7 @@ class SyncState(Base):
 
 class DailyBasic(Base):
     __table__ = schema.daily_basic.to_metadata(Base.metadata)
+
+
+class FinReportRevision(Base):
+    __table__ = schema.fin_report_revision.to_metadata(Base.metadata)

@@ -21,14 +21,11 @@ _scheduler: BackgroundScheduler | None = None
 async def lifespan(_app: FastAPI):
     # Create tables (Alembic manages migrations in prod; create_all is a safe no-op if current).
     Base.metadata.create_all(bind=engine)
-    # K 线到 4M+ 行后，_sparks / 回测的按股取数没有复合索引会全表扫
+    # 老库补索引 / 补列（MySQL 生产库走 Alembic，这里兜底 SQLite 老部署）
     from sqlalchemy import inspect, text
 
     with engine.connect() as conn:
         # MySQL 不支持 CREATE INDEX IF NOT EXISTS，先查再建
-        kline_idx = {i["name"] for i in inspect(engine).get_indexes("kline")}
-        if "ix_kline_code_period_ts" not in kline_idx:
-            conn.execute(text("CREATE INDEX ix_kline_code_period_ts ON kline (code, period, ts)"))
         # 选股 / 回测按日期取全市场人气（主键是 code,date，按 date 查用不上）
         hot_idx = {i["name"] for i in inspect(engine).get_indexes("hot_rank_daily")}
         if "ix_hot_rank_daily_date" not in hot_idx:

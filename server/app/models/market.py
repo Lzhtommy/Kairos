@@ -1,6 +1,7 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-from sqlalchemy import BigInteger, DateTime, Float, Integer, String
+from sqlalchemy import BigInteger, Date, DateTime, Float, Integer, String
+from sqlalchemy.types import TypeDecorator
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -112,6 +113,19 @@ class Fundamental(Base):
     dividend_yield: Mapped[float] = mapped_column(Float, default=0.0)
 
 
+class IsoDate(TypeDecorator):
+    """库里存 DATE，Python 侧仍是 'YYYY-MM-DD' 字符串（人气榜的接口、缓存、比较都按字符串）。"""
+
+    impl = Date
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):  # noqa: ANN001, ANN201
+        return date.fromisoformat(value) if isinstance(value, str) else value
+
+    def process_result_value(self, value, dialect):  # noqa: ANN001, ANN201
+        return value.isoformat() if value is not None else None
+
+
 class HotRankDaily(Base):
     """东财人气榜每日排名（getHisList 的日粒度数据）。只存已结束的自然日，
     当天的排名还在变，走实时接口。"""
@@ -119,5 +133,5 @@ class HotRankDaily(Base):
     __tablename__ = "hot_rank_daily"
 
     code: Mapped[str] = mapped_column(String(16), primary_key=True)
-    date: Mapped[str] = mapped_column(String(10), primary_key=True, index=True)  # YYYY-MM-DD
+    date: Mapped[str] = mapped_column(IsoDate, primary_key=True, index=True)  # YYYY-MM-DD
     rank: Mapped[int] = mapped_column(Integer)
