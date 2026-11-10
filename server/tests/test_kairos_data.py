@@ -172,6 +172,7 @@ def test_block_trade_replaces_range_and_filters(db, monkeypatch):
     sync.refresh_block_trade(db, month)  # 重跑整段替换，不累加
     rows = db.execute(select(schema.block_trade.c.premium_pct)).scalars().all()
     assert len(rows) == 2 and round(rows[0], 2) == -5.0
+    assert db.execute(select(schema.block_trade.c.seq).order_by(schema.block_trade.c.seq)).scalars().all() == [1, 2]
 
 
 def test_margin_and_billboard_rows():

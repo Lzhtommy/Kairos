@@ -406,8 +406,12 @@ def billboard_rows(raw: list[dict]) -> list[dict]:
     return list(rows.values())
 
 
+def _seq_key(r: dict) -> tuple:
+    return (r["price"] is None, r["price"] or 0, r["volume"] or 0, r["amount"] or 0, r["buyer"], r["seller"])
+
+
 def block_trade_rows(raw: list[dict]) -> list[dict]:
-    return [
+    rows = [
         {"code": r["SECURITY_CODE"], "trade_date": _d(r["TRADE_DATE"]), "price": _f(r.get("DEAL_PRICE")),
          "premium_pct": None if _f(r.get("PREMIUM_RATIO")) is None else _f(r["PREMIUM_RATIO"]) * 100,
          "volume": _i(r.get("DEAL_VOLUME")),
@@ -416,6 +420,13 @@ def block_trade_rows(raw: list[dict]) -> list[dict]:
         for r in raw
         if r.get("SECURITY_TYPE") == "EQA" and _is_a(r) and r.get("TRADE_DATE")  # 去掉基金、债券
     ]
+    # 同股同日的序号（主键的一部分），与数据源返回顺序无关
+    rows.sort(key=lambda r: (r["code"], r["trade_date"], *_seq_key(r)))
+    seq: dict[tuple, int] = {}
+    for r in rows:
+        k = (r["code"], r["trade_date"])
+        r["seq"] = seq[k] = seq.get(k, 0) + 1
+    return rows
 
 
 def refresh_margin(db, days: list[date]) -> int:

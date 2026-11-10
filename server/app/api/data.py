@@ -147,7 +147,7 @@ def _trading(db: Session, code: str) -> dict:
     ).scalars().all()
     blocks = db.execute(
         select(BlockTrade).where(BlockTrade.code == code)
-        .order_by(BlockTrade.trade_date.desc(), BlockTrade.id).limit(30)
+        .order_by(BlockTrade.trade_date.desc(), BlockTrade.seq).limit(30)
     ).scalars().all()
     return {
         "margin": [{"date": _iso(m.trade_date), "rzye": m.rzye, "rqye": m.rqye, "rzmre": m.rzmre}

@@ -278,11 +278,13 @@ billboard = Table(
 )
 
 # 大宗交易：没有天然唯一键（同买卖方会拆成多笔完全相同的成交），按日期整段替换
+# 主键 (code, trade_date, seq)：同一对买卖方常把大单拆成价量完全相同的多笔，没有天然唯一键；
+# seq 是同股同日按 (价格, 数量, 金额, 买方, 卖方) 排序后的序号，同步按日期段整段替换，序号稳定
 block_trade = Table(
     "block_trade", metadata,
-    Column("id", Integer, primary_key=True),
-    Column("code", String(16), nullable=False, index=True),
-    Column("trade_date", Date, nullable=False, index=True),
+    Column("code", String(16), primary_key=True),
+    Column("trade_date", Date, primary_key=True, index=True),
+    Column("seq", Integer, primary_key=True, autoincrement=False),
     Column("price", Float, nullable=True),
     Column("premium_pct", Float, nullable=True),  # 相对收盘价溢价 %
     Column("volume", BigInteger, nullable=True),  # 股
