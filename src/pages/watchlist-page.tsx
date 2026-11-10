@@ -93,6 +93,8 @@ export function WatchlistPage() {
   const [board, setBoard] = useState<"all" | Board>("all")
   const [openMin, setOpenMin] = useState("")
   const [openMax, setOpenMax] = useState("")
+  const [hotMin, setHotMin] = useState("")
+  const [hotMax, setHotMax] = useState("")
 
   const importsQ = useQuery({ queryKey: ["watchlistImports"], queryFn: fetchWatchlistImports })
   const imports = importsQ.data ?? []
@@ -162,6 +164,9 @@ export function WatchlistPage() {
 
   const lo = parseBound(openMin)
   const hi = parseBound(openMax)
+  const hotLo = parseBound(hotMin)
+  const hotHi = parseBound(hotMax)
+  const hotActive = hotLo != null || hotHi != null
   const rangeActive = lo != null || hi != null
   const all = itemsQ.data?.items ?? []
   const rows = all.filter((s) => {
@@ -171,6 +176,12 @@ export function WatchlistPage() {
       if (s.openPct == null) return false
       if (lo != null && s.openPct < lo) return false
       if (hi != null && s.openPct > hi) return false
+    }
+    if (hotActive) {
+      // 昨日没有人气排名的（新股 / 未落库）同样无从比较
+      if (s.hotRankPrev == null) return false
+      if (hotLo != null && s.hotRankPrev < hotLo) return false
+      if (hotHi != null && s.hotRankPrev > hotHi) return false
     }
     return true
   })
@@ -304,12 +315,42 @@ export function WatchlistPage() {
                 />
               </div>
             </div>
-            {(board !== "all" || rangeActive) && (
+            <div className="space-y-1.5">
+              <Label className="text-xs text-muted-foreground">昨日人气排名</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  type="number"
+                  step="1"
+                  min="1"
+                  inputMode="numeric"
+                  placeholder="不限"
+                  value={hotMin}
+                  onChange={(e) => setHotMin(e.target.value)}
+                  className="w-24 font-mono"
+                  aria-label="昨日人气排名下限"
+                />
+                <span className="text-muted-foreground">~</span>
+                <Input
+                  type="number"
+                  step="1"
+                  min="1"
+                  inputMode="numeric"
+                  placeholder="不限"
+                  value={hotMax}
+                  onChange={(e) => setHotMax(e.target.value)}
+                  className="w-24 font-mono"
+                  aria-label="昨日人气排名上限"
+                />
+              </div>
+            </div>
+            {(board !== "all" || rangeActive || hotActive) && (
               <button
                 onClick={() => {
                   setBoard("all")
                   setOpenMin("")
                   setOpenMax("")
+                  setHotMin("")
+                  setHotMax("")
                 }}
                 className="flex h-8 items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
               >
