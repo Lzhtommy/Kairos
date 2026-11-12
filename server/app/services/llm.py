@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -143,7 +143,6 @@ def _anthropic_request(cfg: _Config, messages, max_tokens, *, json_mode, stream)
             turns[-1] = {"role": m["role"], "content": turns[-1]["content"] + "\n\n" + m["content"]}
         elif turns or m["role"] == "user":  # 首条必须是 user
             turns.append({"role": m["role"], "content": m["content"]})
-    headers = {"x-api-key": cfg.api_key, "anthropic-version": "2023-06-01"}
     body: dict[str, Any] = {
         "model": cfg.model,
         "messages": turns,
@@ -154,6 +153,11 @@ def _anthropic_request(cfg: _Config, messages, max_tokens, *, json_mode, stream)
         body["system"] = system
     if stream:
         body["stream"] = True
+    return _anthropic_envelope(cfg, body)
+
+
+def _anthropic_envelope(cfg: _Config, body: dict[str, Any]) -> dict:
+    headers = {"x-api-key": cfg.api_key, "anthropic-version": "2023-06-01"}
     if cfg.base_url == _ANTHROPIC_OFFICIAL:  # 安全分类器拒答时服务端自动换模型重跑；第三方代理未必认这个 beta
         headers["anthropic-beta"] = "server-side-fallback-2026-07-01"
         body["fallbacks"] = "default"
@@ -221,3 +225,107 @@ async def stream_text(
                     delta = (choices[0].get("delta") or {}).get("content") if choices else None
                     if delta:
                         yield delta
+
+
+# ---------------------------------------------------------------- 工具调用循环
+
+_FINAL_NOTICE = "工具调用次数已用完，不要再调用工具，直接基于已有信息给出最终结论。"
+
+
+def run_tools(
+    system: str,
+    user: str,
+    tools: list[dict[str, Any]],
+    call: Callable[[str, dict[str, Any]], str],
+    *,
+    max_steps: int = 30,
+    max_tokens: int = 4096,
+    timeout: float = 180,
+    wrap_up: tuple[int, str] | None = None,
+) -> tuple[str, int]:
+    """让模型自主多轮调用工具，直到它给出不带工具调用的最终回答。
+
+    tools 为 [{"name", "description", "parameters": JSON Schema}]，两种协议各自转换；
+    call(name, args) 执行工具并返回文本（工具内部异常应自行转成错误文本，循环不兜底）。
+    max_steps 是轮数（一轮可并行多个工具调用）；wrap_up=(剩余轮数, 提示) 在只剩这么多轮时
+    插入提示（工具仍可用，用于让模型从调研转入执行）；最后一轮之后要求直接作答。
+    历史只追加不改写——Claude 的 thinking 块要求原样回传。
+    返回 (最终回答, 消耗 token 数)；网络 / HTTP 错误原样抛出。
+    """
+    cfg = _require()
+    notices = {max_steps - 1: _FINAL_NOTICE}
+    if wrap_up and 0 < wrap_up[0] < max_steps:
+        notices.setdefault(max_steps - 1 - wrap_up[0], wrap_up[1])
+    if cfg.kind == "anthropic":
+        return _anthropic_tools(cfg, system, user, tools, call, max_steps, max_tokens, timeout, notices)
+    return _openai_tools(cfg, system, user, tools, call, max_steps, max_tokens, timeout, notices)
+
+
+def _openai_tools(cfg, system, user, tools, call, max_steps, max_tokens, timeout, notices) -> tuple[str, int]:
+    headers = {"Authorization": f"Bearer {cfg.api_key}"} if cfg.api_key else {}
+    specs = [{"type": "function", "function": t} for t in tools]
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    tokens = 0
+    text = ""
+    for step in range(max_steps + 1):
+        body = _merge(
+            {"model": cfg.model, "messages": messages, "max_tokens": max_tokens, "temperature": 0.3,
+             "tools": specs, "tool_choice": "auto"},
+            cfg.extra,
+        )
+        r = httpx.post(f"{cfg.base_url}/chat/completions", headers=headers, json=body, timeout=timeout)
+        r.raise_for_status()
+        data = r.json()
+        tokens += int((data.get("usage") or {}).get("total_tokens") or 0)
+        msg = data["choices"][0]["message"]
+        text = msg.get("content") or text
+        calls = msg.get("tool_calls") or []
+        if not calls or step == max_steps:
+            return text, tokens
+        messages.append({"role": "assistant", "content": msg.get("content"), "tool_calls": calls})
+        for c in calls:
+            fn = c.get("function") or {}
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+                result = call(fn.get("name", ""), args if isinstance(args, dict) else {})
+            except json.JSONDecodeError:
+                result = "错误：参数不是合法 JSON"
+            messages.append({"role": "tool", "tool_call_id": c["id"], "content": result})
+        if step in notices:
+            messages.append({"role": "user", "content": notices[step]})
+    return text, tokens
+
+
+def _anthropic_tools(cfg, system, user, tools, call, max_steps, max_tokens, timeout, notices) -> tuple[str, int]:
+    specs = [{"name": t["name"], "description": t["description"], "input_schema": t["parameters"]} for t in tools]
+    messages: list[dict[str, Any]] = [{"role": "user", "content": user}]
+    tokens = 0
+    text = ""
+    for step in range(max_steps + 1):
+        body = {
+            "model": cfg.model,
+            "system": system,
+            "messages": messages,
+            "tools": specs,
+            "max_tokens": max_tokens + _ANTHROPIC_THINKING_HEADROOM,
+            "output_config": {"effort": "medium"},  # 多步工具决策，比抽取类任务多给一档
+        }
+        r = httpx.post(**_anthropic_envelope(cfg, body), timeout=max(timeout, 180))
+        r.raise_for_status()
+        data = r.json()
+        usage = data.get("usage") or {}
+        tokens += int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0)
+        content = data.get("content") or []
+        text = _anthropic_text(data) or text
+        uses = [b for b in content if b.get("type") == "tool_use"]
+        if data.get("stop_reason") != "tool_use" or not uses or step == max_steps:
+            return text, tokens
+        messages.append({"role": "assistant", "content": content})  # 原样回传（含 thinking 块）
+        results: list[dict[str, Any]] = [
+            {"type": "tool_result", "tool_use_id": b["id"], "content": call(b["name"], b.get("input") or {})}
+            for b in uses
+        ]
+        if step in notices:
+            results.append({"type": "text", "text": notices[step]})
+        messages.append({"role": "user", "content": results})
+    return text, tokens

@@ -1,3 +1,5 @@
+from app.models.agent import (AgentAccount, AgentEquity, AgentMemory, AgentOrder, AgentPlaybook,
+                              AgentPosition, AgentSession)
 from app.models.market import Fundamental, HotRankDaily, IndexQuote, Kline, Quote, StockInfo
 from app.models.research import ResearchRawCache, ResearchReport
 from app.models.sector import (SectorBar, SectorInfo, SectorMetric, SectorNarrative, SectorTilt,
@@ -11,6 +13,13 @@ from app.models.warehouse import (Announcement, Billboard, BlockTrade, Dividend,
 from app.models.watchlist import Watchlist, WatchlistImport, WatchlistImportItem, WatchlistItem
 
 __all__ = [
+    "AgentAccount",
+    "AgentPosition",
+    "AgentOrder",
+    "AgentEquity",
+    "AgentSession",
+    "AgentMemory",
+    "AgentPlaybook",
     "FinReport",
     "FinStatement",
     "Dividend",

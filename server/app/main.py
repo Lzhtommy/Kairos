@@ -39,6 +39,7 @@ async def lifespan(_app: FastAPI):
             conn.execute(text("ALTER TABLE users ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT 0"))
         conn.commit()
 
+    from app.jobs.agent import agent_postclose, agent_premarket, agent_weekly_review, mark_interrupted
     from app.jobs.backup import backup_database
     from app.jobs.collect import (
         collect_once,
@@ -56,6 +57,7 @@ async def lifespan(_app: FastAPI):
 
     run_bootstrap_and_first_collect()
     requeue_interrupted()
+    mark_interrupted()
 
     global _scheduler
     if settings.enable_collector:
@@ -224,6 +226,39 @@ async def lifespan(_app: FastAPI):
             max_instances=1,
             coalesce=True,
             next_run_time=datetime.now(timezone.utc),
+        )
+        # AI 操盘手：盘前 08:50 CST（00:50 UTC）分析并下当日单；盘后 15:45 CST（07:45 UTC）
+        # 结算撮合 + 复盘（启动时补跑，内部闸门保证只在当日收盘后复盘）；周六 10:00 CST 周度反思
+        _scheduler.add_job(
+            agent_premarket,
+            "cron",
+            day_of_week="mon-fri",
+            hour=0,
+            minute=50,
+            id="agent_premarket",
+            max_instances=1,
+            coalesce=True,
+        )
+        _scheduler.add_job(
+            agent_postclose,
+            "cron",
+            day_of_week="mon-fri",
+            hour=7,
+            minute=45,
+            id="agent_postclose",
+            max_instances=1,
+            coalesce=True,
+            next_run_time=datetime.now(timezone.utc),
+        )
+        _scheduler.add_job(
+            agent_weekly_review,
+            "cron",
+            day_of_week="sat",
+            hour=2,
+            minute=0,
+            id="agent_review",
+            max_instances=1,
+            coalesce=True,
         )
         # 凌晨 03:00 CST（19:00 UTC）SQLite 备份，避开盘中采集与盘后任务
         _scheduler.add_job(

@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api import (
     admin,
+    agent,
     admin_users,
     auth,
     backtests,
@@ -33,3 +34,5 @@ api_router.include_router(research.router)
 api_router.include_router(research.admin_router)
 api_router.include_router(watchlist.router)
 api_router.include_router(data.router)
+api_router.include_router(agent.router)
+api_router.include_router(agent.admin_router)

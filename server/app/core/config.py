@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     # 模拟盘盘后结算，暂停中（前端入口已隐藏）。恢复时设 ENABLE_PAPER=true，
     # settle_all 会按交易日历自动补结算暂停期间的日子
     enable_paper: bool = False
+    # AI 操盘手（app/services/agent.py）：管理员建账户后盘前 / 盘后自动运行，需配好 LLM
+    enable_agent: bool = True
+    # 联网搜索（Tavily）。留空时 agent 只有站内数据 + 东财快讯，没有自由搜索工具
+    tavily_api_key: str = ""
 
     # 行业轮动模块的板块数据源："auto" | "sw" | "eastmoney" | "off"
     # （auto 先试申万研究口径，再回落东财行业板块；首次落库后按库内口径锁定）

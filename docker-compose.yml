@@ -25,6 +25,8 @@ services:
       LLM_MODEL: ${LLM_MODEL:-}
       LLM_EXTRA_BODY: ${LLM_EXTRA_BODY:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      # AI 操盘手的联网搜索，留空则无搜索工具
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-https://kairos.ren,https://www.kairos.ren}
     volumes:
       - kairos-data:/app/data

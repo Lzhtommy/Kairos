@@ -10,6 +10,7 @@ import { ResearchPage } from "@/pages/research-page"
 import { ResearchDetailPage } from "@/pages/research-detail-page"
 import { StrategyBuilderPage } from "@/pages/strategy-builder-page"
 import { BacktestPage } from "@/pages/backtest-page"
+import { AgentPage } from "@/pages/agent-page"
 import { SettingsPage } from "@/pages/settings-page"
 import { AdminInvitesPage } from "@/pages/admin-invites-page"
 import { AdminUsersPage } from "@/pages/admin-users-page"
@@ -53,6 +54,7 @@ function App() {
       <Route path="/app/research/:id" element={<RequireAuth><ResearchDetailPage /></RequireAuth>} />
       <Route path="/app/strategy" element={<RequireAuth><StrategyBuilderPage /></RequireAuth>} />
       <Route path="/app/backtest" element={<RequireAuth><BacktestPage /></RequireAuth>} />
+      <Route path="/app/agent" element={<RequireAuth><AgentPage /></RequireAuth>} />
       {/* 模拟盘暂时隐藏（页面与后端结算保留），旧链接回落到选股 */}
       <Route path="/app/paper" element={<Navigate to="/app/screener" replace />} />
       <Route path="/app/settings" element={<RequireAuth><SettingsPage /></RequireAuth>} />
