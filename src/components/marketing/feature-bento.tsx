@@ -5,6 +5,7 @@ import { CodeBlock } from "@/components/strategy/code-block"
 import {
   BellRinging,
   ChartPieSlice,
+  Database,
   FunnelSimple,
   Sparkle,
   Stethoscope,
@@ -22,7 +23,17 @@ const SNIPPET = `def screen(stock):
 
 const FILTER_CHIPS = ["PE 低于行业中位", "ROE ≥ 12%", "股息率 ≥ 3%", "行业内 PB 后 20%"]
 
-const SECTOR_METRICS = ["PE 分位", "PB 分位", "股息率分位"]
+const SECTOR_METRICS = ["RRG 轮动图", "估值分位", "拥挤度", "每日叙事"]
+
+// 与「数据」页的个股资料 / 指数 / 宏观利率三个分栏一致，增删数据集后记得同步
+const DATA_GROUPS = [
+  { label: "行情与指标", items: "上市以来日 K · 每日 PE/PB、市值、换手 · 历史 ST 与停牌" },
+  { label: "财务", items: "资产负债表、利润表、现金流量表 · 历年分红" },
+  { label: "股本与股东", items: "股本变动 · 股东户数 · 十大股东 · 限售解禁" },
+  { label: "交易", items: "融资融券 · 龙虎榜 · 大宗交易" },
+  { label: "公告", items: "标题直达原文与 PDF · 按需生成 AI 摘要" },
+  { label: "市场", items: "11 个主要指数与成分 · ETF、可转债 · 宏观与利率" },
+]
 
 const CHECKUP_DIMENSIONS = ["盈利", "成长", "财务健康", "现金流", "估值", "股东回报", "公告事件"]
 
@@ -110,7 +121,7 @@ export function FeatureBento() {
         <Cell index={1} className="bg-primary/[0.06] md:col-span-2">
           <CellTitle icon={<ChartPieSlice className="size-4 text-primary" />}>行业轮动</CellTitle>
           <p className="mt-1.5 text-sm text-muted-foreground">
-            申万 31 个一级行业，对照自身近 5 年历史分位看贵贱，过热先预警。
+            申万 31 个一级行业：轮动图看强弱切换，估值对照自身近 5 年分位看贵贱，拥挤过热先预警。
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
             {SECTOR_METRICS.map((m) => (
@@ -164,6 +175,26 @@ export function FeatureBento() {
             </p>
             <figcaption className="mt-3 text-[11px] text-muted-foreground">通知示例</figcaption>
           </figure>
+        </Cell>
+
+        {/* 数据中心 */}
+        <Cell index={5} className="bg-card md:col-span-6">
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,2.2fr)] lg:gap-10">
+            <div>
+              <CellTitle icon={<Database className="size-4 text-primary" />}>数据中心</CellTitle>
+              <p className="mt-1.5 text-sm text-muted-foreground">
+                一只股票的资料一页看全，已退市的也查得到。全部来自公开数据源，盘后自动更新。
+              </p>
+            </div>
+            <dl className="grid grid-cols-1 gap-x-8 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">
+              {DATA_GROUPS.map((g) => (
+                <div key={g.label} className="border-t border-border/60 pt-3">
+                  <dt className="text-xs font-medium text-foreground">{g.label}</dt>
+                  <dd className="mt-1 text-xs leading-relaxed text-muted-foreground">{g.items}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
         </Cell>
       </div>
     </section>

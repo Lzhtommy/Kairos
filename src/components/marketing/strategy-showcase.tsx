@@ -43,7 +43,7 @@ export function StrategyShowcase() {
           </p>
           <ul className="mt-6 space-y-3 text-sm text-foreground">
             {[
-              "估值、财务、量价与均线、MACD、RSI 等技术形态自由组合",
+              "估值、财务、量价、东财人气排名，与均线、MACD、RSI 等技术形态自由组合",
               "支持全市场或行业内排名，以及多因子综合打分",
               "保存后一键回测，盘后自动运行并推送命中变化",
             ].map((item) => (

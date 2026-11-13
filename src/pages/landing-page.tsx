@@ -4,6 +4,7 @@ import { DataCoverage } from "@/components/marketing/data-coverage"
 import { FeatureBento } from "@/components/marketing/feature-bento"
 import { HowItWorks } from "@/components/marketing/how-it-works"
 import { StrategyShowcase } from "@/components/marketing/strategy-showcase"
+import { AiTraderShowcase } from "@/components/marketing/ai-trader-showcase"
 import { StatsStrip } from "@/components/marketing/stats-strip"
 import { FinalCta } from "@/components/marketing/final-cta"
 import { MarketingFooter } from "@/components/marketing/footer"
@@ -17,6 +18,7 @@ export function LandingPage() {
         <DataCoverage />
         <FeatureBento />
         <StrategyShowcase />
+        <AiTraderShowcase />
         <HowItWorks />
         <StatsStrip />
         <FinalCta />

@@ -11,6 +11,7 @@ import { PrimaryCta } from "@/components/marketing/primary-cta"
 const LINKS = [
   { href: "#features", label: "功能" },
   { href: "#strategy", label: "策略工坊" },
+  { href: "#agent", label: "AI 操盘" },
   { href: "#workflow", label: "工作流" },
 ]
 
