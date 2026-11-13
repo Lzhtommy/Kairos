@@ -24,7 +24,8 @@ function fmtTime(iso: string | null): string {
   ).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`
 }
 
-export function AdminInvitesPage() {
+/** 用户管理页的「邀请码」分栏：生成、筛选、复制、删除 */
+export function InvitesPanel() {
   const [invites, setInvites] = useState<Invite[] | null>(null)
   const [count, setCount] = useState(5)
   const [busy, setBusy] = useState(false)
@@ -72,17 +73,14 @@ export function AdminInvitesPage() {
   const { pageRows, pager } = usePagedRows(shown, status)
 
   if (!invites) {
-    return <div className="p-6 text-sm text-muted-foreground">加载中…</div>
+    return <div className="py-6 text-sm text-muted-foreground">加载中…</div>
   }
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6 px-4 py-6 lg:px-6">
-      <div>
-        <h1 className="text-lg font-semibold text-foreground">邀请码管理</h1>
-        <p className="mt-0.5 text-sm text-muted-foreground">
-          注册需要邀请码，一码一用 · 未使用 {unused.length} / 共 {invites.length}
-        </p>
-      </div>
+    <div className="space-y-5">
+      <p className="text-sm text-muted-foreground">
+        注册需要邀请码，一码一用 · 未使用 {unused.length} / 共 {invites.length}
+      </p>
 
       <section className="space-y-4 rounded-lg border border-border p-5">
         <div className="flex items-center gap-2">

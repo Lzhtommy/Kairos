@@ -13,7 +13,6 @@ import {
   Bell,
   List,
   Robot,
-  Ticket,
   UsersThree,
   X,
 } from "@phosphor-icons/react"
@@ -31,16 +30,15 @@ import {
 
 const NAV_ITEMS = [
   { to: "/app/screener", label: "选股", icon: FunnelSimple },
-  { to: "/app/watchlist", label: "自选股", icon: Star, adminOnly: true },
+  { to: "/app/strategy", label: "策略工坊", icon: Sparkle },
+  { to: "/app/watchlist", label: "每日精选", icon: Star, adminOnly: true },
   { to: "/app/sector", label: "行业", icon: CirclesFour },
   { to: "/app/data", label: "数据", icon: Database },
   { to: "/app/research", label: "研报", icon: FileText },
-  { to: "/app/strategy", label: "策略工坊", icon: Sparkle },
   { to: "/app/backtest", label: "回测", icon: ChartBar },
   { to: "/app/agent", label: "AI 操盘", icon: Robot },
   { to: "/app/settings", label: "设置", icon: GearSix },
-  { to: "/app/invites", label: "邀请码", icon: Ticket, adminOnly: true },
-  { to: "/app/users", label: "用户", icon: UsersThree, adminOnly: true },
+  { to: "/app/users", label: "用户管理", icon: UsersThree, adminOnly: true },
 ]
 
 function QuickActions() {

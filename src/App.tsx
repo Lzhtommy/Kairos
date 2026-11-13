@@ -12,7 +12,6 @@ import { StrategyBuilderPage } from "@/pages/strategy-builder-page"
 import { BacktestPage } from "@/pages/backtest-page"
 import { AgentPage } from "@/pages/agent-page"
 import { SettingsPage } from "@/pages/settings-page"
-import { AdminInvitesPage } from "@/pages/admin-invites-page"
 import { AdminUsersPage } from "@/pages/admin-users-page"
 import { LoginPage } from "@/pages/login-page"
 import { useAuth } from "@/lib/auth"
@@ -58,10 +57,8 @@ function App() {
       {/* 模拟盘暂时隐藏（页面与后端结算保留），旧链接回落到选股 */}
       <Route path="/app/paper" element={<Navigate to="/app/screener" replace />} />
       <Route path="/app/settings" element={<RequireAuth><SettingsPage /></RequireAuth>} />
-      <Route
-        path="/app/invites"
-        element={<RequireAuth><RequireAdmin><AdminInvitesPage /></RequireAdmin></RequireAuth>}
-      />
+      {/* 邀请码已并入用户管理页的分栏，旧链接跳过去 */}
+      <Route path="/app/invites" element={<Navigate to="/app/users?tab=invites" replace />} />
       <Route
         path="/app/users"
         element={<RequireAuth><RequireAdmin><AdminUsersPage /></RequireAdmin></RequireAuth>}

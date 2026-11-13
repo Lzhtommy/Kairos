@@ -193,7 +193,7 @@ export function WatchlistPage() {
     <div className="mx-auto max-w-[1600px] space-y-5 px-4 py-6 lg:px-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-lg font-semibold text-foreground">自选股</h1>
+          <h1 className="text-lg font-semibold text-foreground">每日精选</h1>
           <p className="mt-0.5 text-sm text-muted-foreground">
             导入下单文件里标记为买入的股票，跟踪开盘表现与东财人气排名
           </p>
