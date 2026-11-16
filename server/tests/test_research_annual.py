@@ -337,3 +337,17 @@ def test_extract_quarterly_change_reasons():
     assert "同业存款" in text and "销售情况" in text and "经销商情况" in text
     assert "贵州茅台酒股份有限公司2026 年第一季度报告" not in text
     assert extract_quarterly(["随便一页", "二、股东信息"]) is None
+
+
+def test_extract_quarterly_szse_heading():
+    # 深市季报标题是「…和财务指标发生变动的情况及原因」（顺络电子 / 帝欧水华 2026 三季报原文，带行尾空格）
+    pages = [
+        "一、主要财务数据 \n（一） 主要会计数据和财务指标 \n",
+        "（三） 主要会计数据和财务指标发生变动的情况及原因 \n"
+        "项目 年初至报告期末 上年同期 同比变动 变动原因\n营业收入 增长 25.87% 主要系订单增加所致。\n"
+        "二、股东信息\n（一） 普通股股东总数",
+    ]
+    sec = extract_quarterly(pages)
+    assert sec is not None and sec[0][0] == 2
+    text = "\n".join(t for _, t in sec)
+    assert "订单增加" in text and "普通股股东总数" not in text
