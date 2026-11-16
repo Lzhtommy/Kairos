@@ -62,8 +62,10 @@ def _apply_adjustments(db, quotes, day_start: datetime) -> int:
     把该股全部历史 bar 按比例缩放（假跌恰好被抵消，任意两日比价关系
     保持正确），并同步缩放模拟盘持仓的成本价/最新价。读路径零改动。
 
-    已知边界：停机跨过 ex-date 时，比例里会混入当日真实涨跌（误差一次
-    性、幅度小），季度 kline-full 重刷兜底修正。
+    已知边界：停机跨过 ex-date 时，比例里会混入当日真实涨跌（误差一次性、幅度小）；
+    低于 0.1% 的小额分红不触发。两者都会累积成与数据源当前前复权价的小幅偏差
+    （2026-11 抽查 14 只，两年前的价格最多差 2.1%）。目前没有定期整段重刷来兜底，
+    需要时用 kairos-data kline / scripts/backfill_kline 重拉。
     """
     todays = {
         q.code: q for q in quotes if q.exchange_ts and q.exchange_ts.date() == day_start.date()
@@ -278,6 +280,10 @@ def refresh_reference() -> None:
         db.flush()  # 新增的 StockInfo 先落库，和下面的核心语句同一事务
         upsert_rows(db, Fundamental, list(funds.values()))
         db.commit()
+        pruned, renamed, delisted = _prune_stale(db, {m.code for m in metas})
+        if pruned or renamed or delisted:
+            logger.info("Stale cleanup: %d quotes removed, %d renumbered BJ codes dropped, "
+                        "%d BJ stocks marked delisted", pruned, renamed, delisted)
 
         # 给 bootstrap 之后新上市的股票回补日 K（没有 K 线的股票会让回测缺数据）。
         # 每轮最多补 300 只，既覆盖日常新增，又不至于在数据大面积缺失时打爆限流。
@@ -308,6 +314,60 @@ def refresh_reference() -> None:
         logger.warning("Reference refresh failed: %s", exc)
     finally:
         db.close()
+
+
+# 股票池少于这个数视为数据源没给全（限流截断），不据此清理任何东西
+_PRUNE_MIN_UNIVERSE = 4000
+# 一次要清掉的行情超过现有的这个比例，同样视为股票池不可信
+_PRUNE_MAX_SHARE = 0.1
+# 北交所股票从行情源消失、且最后一根日 K 早于这么多天，才记为退市
+_BJ_DELIST_AFTER = timedelta(days=30)
+
+
+def _prune_stale(db, live: set[str]) -> tuple[int, int, int]:
+    """清掉行情源股票池里已经没有的代码留下的残行。返回 (删行情数, 删北交所旧代码数, 标退市数)。
+
+    行情表只 upsert 不删：退市、改代码之后旧行永远留着，价格冻结在最后一天，
+    还会出现在选股结果和「全市场」的计数里（北交所 2025 年统一改 920 代码后，
+    244 个旧代码一直留到 2026-11）。这里：
+    - 不在股票池里的代码，删掉行情和基本面快照（个股资料与历史 K 线不动）；
+    - 北交所没有上市 / 退市日期的数据源（BaoStock 不含北交所）：不在股票池里、且没有任何日 K
+      的是改号前的旧代码，连资料行一起删（数据都在新代码下）；有日 K 且已停更超过 30 天的记为退市，
+      退市日取最后一根日 K 的次日。
+    """
+    if len(live) < _PRUNE_MIN_UNIVERSE:
+        return 0, 0, 0
+    quoted = set(db.execute(select(Quote.code)).scalars())
+    stale = quoted - live
+    if len(stale) > len(quoted) * _PRUNE_MAX_SHARE:
+        logger.warning("Stale cleanup skipped: %d of %d quoted codes missing from the universe",
+                       len(stale), len(quoted))
+        return 0, 0, 0
+    if stale:
+        db.execute(delete(Quote).where(Quote.code.in_(stale)))
+        db.execute(delete(Fundamental).where(Fundamental.code.in_(stale)))
+
+    gone_bj = [code for code in db.execute(
+        select(StockInfo.code).where(StockInfo.market == "BJ", StockInfo.delist_date.is_(None))
+    ).scalars() if code not in live]
+    renamed = delisted = 0
+    if gone_bj:
+        last_bar = dict(db.execute(
+            select(Kline.code, func.max(Kline.ts))
+            .where(Kline.period == "1d", Kline.code.in_(gone_bj)).group_by(Kline.code)
+        ).all())
+        no_bars = [code for code in gone_bj if code not in last_bar]
+        if no_bars:
+            db.execute(delete(StockInfo).where(StockInfo.code.in_(no_bars)))
+            renamed = len(no_bars)
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - _BJ_DELIST_AFTER
+        for code, last in last_bar.items():
+            if last < cutoff:
+                db.execute(update(StockInfo).where(StockInfo.code == code)
+                           .values(delist_date=(last + timedelta(days=1)).date()))
+                delisted += 1
+    db.commit()
+    return len(stale), renamed, delisted
 
 
 def _repair_kline_gaps(db, provider, window: int = 40, cap: int = 6000) -> int:

@@ -21,7 +21,7 @@ def _rows(start: int, n: int) -> list[dict]:
 def _provider(monkeypatch, pages: list[list[list[dict]]]) -> TencentProvider:
     """pages[k] = 第 k 次拉全集时依次返回的分页。"""
     p = TencentProvider()
-    monkeypatch.setattr(p, "_industry_map", lambda: {})
+    monkeypatch.setattr(p, "_industry_map", lambda **kw: {})
     monkeypatch.setattr(tencent_provider, "_UNIVERSE_MIN", 250)
     calls = iter(page for sweep in pages for page in sweep)
     monkeypatch.setattr(p, "_get", lambda *a, **k: _Resp(next(calls)))

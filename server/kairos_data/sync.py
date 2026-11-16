@@ -38,7 +38,7 @@ MACRO: dict[str, tuple[str, str, str, str, str, str, str]] = {
     "fai_yoy": ("固定资产投资当月同比", "%", "M", "RPT_ECONOMY_ASSET_INVEST", "REPORT_DATE", "BASE_SAME", ""),
     "export_yoy": ("出口同比", "%", "M", "RPT_ECONOMY_CUSTOMS", "REPORT_DATE", "EXIT_BASE_SAME", ""),
     "import_yoy": ("进口同比", "%", "M", "RPT_ECONOMY_CUSTOMS", "REPORT_DATE", "IMPORT_BASE_SAME", ""),
-    "new_loan": ("新增人民币贷款", "亿元", "M", "RPT_ECONOMY_RMB_LOAN", "REPORT_DATE", "RMB_LOAN", ""),
+    "new_loan": ("新增人民币贷款（社融口径）", "亿元", "M", "RPT_ECONOMY_RMB_LOAN", "REPORT_DATE", "RMB_LOAN", ""),
     "fx_reserve": ("外汇储备", "亿美元", "M", "RPT_ECONOMY_GOLD_CURRENCY", "REPORT_DATE", "FOREX", ""),
     # 按公告日记，值为调整后的大型金融机构存准率
     "rrr_large": ("存款准备金率（大型机构）", "%", "D", "RPT_ECONOMY_DEPOSIT_RESERVE", "REPORT_DATE",
@@ -89,6 +89,36 @@ def quarter_ends(n: int, today: date | None = None) -> list[date]:
         out.append(date(y, m, 31 if m in (3, 12) else 30))
         y, m = (y, m - 3) if m > 3 else (y - 1, 12)
     return out
+
+
+def _each(label: str, items, fn, db=None, pause: float = 5.0) -> int:  # noqa: ANN001
+    """对 items 逐个执行 fn(item) -> 行数并求和。单个失败不拖累其余，失败的在末尾重试一次；
+    仍失败的记日志，全部失败才抛出（让外层把整项记为失败）。
+
+    东财 push2his / 中证官网偶发断连：原先循环里一个指数抛错，排在后面的指数当天都不更新，
+    线上出现过 11 个指数只更新了前 4 个。"""
+    def attempt(pending: list) -> tuple[int, list]:
+        n, failed = 0, []
+        for item in pending:
+            try:
+                n += fn(item)
+            except Exception as exc:  # noqa: BLE001
+                if db is not None:
+                    db.rollback()
+                failed.append((item, exc))
+        return n, failed
+
+    items = list(items)
+    total, failed = attempt(items)
+    if failed:
+        time.sleep(pause)
+        more, failed = attempt([item for item, _ in failed])
+        total += more
+    for item, exc in failed:
+        logger.warning("%s %s 失败：%s", label, item, exc)
+    if items and len(failed) == len(items):
+        raise RuntimeError(f"{label} 全部 {len(items)} 项失败：{failed[0][1]}")
+    return total
 
 
 def _period_filter(col: str, day: date) -> str:
@@ -568,13 +598,14 @@ def snapshot_security_rows(raw: list[dict], today: date) -> list[dict]:
 
 def refresh_security_snapshot(db) -> int:
     today = _today_cst()
-    n = 0
-    for fs in eastmoney_dc.SNAPSHOT_FS.values():
-        rows = snapshot_security_rows(eastmoney_dc.fetch_snapshot(fs), today)
+
+    def one(kind: str) -> int:
+        rows = snapshot_security_rows(eastmoney_dc.fetch_snapshot(eastmoney_dc.SNAPSHOT_FS[kind]), today)
         upsert_rows(db, security_bar, rows)
         db.commit()
-        n += len(rows)
-    return n
+        return len(rows)
+
+    return _each("security snapshot", eastmoney_dc.SNAPSHOT_FS, one, db)
 
 
 # ---------------------------------------------------------------- 宏观
@@ -655,27 +686,25 @@ def index_bar_rows(index_code: str, raw: list[dict]) -> list[dict]:
 
 def refresh_index_bars(db) -> int:
     """主要指数日线，每次取全历史整段 upsert（每个指数一次请求）。"""
-    n = 0
-    for code, (_name, secid, _csi) in INDEXES.items():
-        rows = index_bar_rows(code, eastmoney_dc.fetch_his_kline(secid))
+    def one(code: str) -> int:
+        rows = index_bar_rows(code, eastmoney_dc.fetch_his_kline(INDEXES[code][1]))
         upsert_rows(db, index_bar, rows)
         db.commit()
-        n += len(rows)
-    return n
+        return len(rows)
+
+    return _each("index bar", INDEXES, one, db)
 
 
 def refresh_index_weights(db) -> int:
     """中证官网当期成分与权重，按其快照日写入 index_constituent。"""
-    n = 0
-    for code, (_name, _secid, csi) in INDEXES.items():
-        if not csi:
-            continue
+    def one(code: str) -> int:
         rows = [{"index_code": code, "snapshot_date": w["date"], "code": w["code"], "weight": w["weight"]}
                 for w in csindex.fetch_weights(code)]
         upsert_rows(db, index_constituent, rows)
         db.commit()
-        n += len(rows)
-    return n
+        return len(rows)
+
+    return _each("index weight", [code for code, (_n, _s, csi) in INDEXES.items() if csi], one, db)
 
 
 def month_starts(since: date, until: date) -> list[date]:
@@ -1066,10 +1095,199 @@ def refresh_daily_basic(db, lookback: int = 10) -> int:
     return total
 
 
+# ---------------------------------------------------------------- 退市股的财报与分红
+
+# 东财按报告期整市场拉的报表（RPT_LICO_FN_CPD / RPT_SHAREBONUS_DET）不含已退市股票；
+# 财报改从 F10 主要指标逐股取（与前者同源，在市股票逐字段相等），分红从 BaoStock 逐年取。
+_SUFFIX = {"SH": "SH", "SZ": "SZ", "BJ": "BJ"}
+
+
+def f10_fin_rows(raw: list[dict]) -> list[dict]:
+    """F10 主要指标（RPT_F10_FINANCE_MAINFINADATA）→ fin_report 行。"""
+    now = datetime.now(timezone.utc)
+    rows = {}
+    for r in raw:
+        day = _d(r.get("REPORT_DATE"))
+        if not day or not r.get("SECURITY_CODE"):
+            continue
+        rows[day] = {
+            "code": r["SECURITY_CODE"], "report_date": day,
+            "notice_date": _d(r.get("NOTICE_DATE")) or _d(r.get("UPDATE_DATE")),
+            "eps": _f(r.get("EPSJB")), "deduct_eps": _f(r.get("EPSKCJB")),
+            "revenue": _f(r.get("TOTALOPERATEREVE")), "net_profit": _f(r.get("PARENTNETPROFIT")),
+            "revenue_yoy": _f(r.get("TOTALOPERATEREVETZ")), "profit_yoy": _f(r.get("PARENTNETPROFITTZ")),
+            "roe": _f(r.get("ROEJQ")), "bps": _f(r.get("BPS")),
+            "ocf_ps": _f(r.get("MGJYXJJE")), "gross_margin": _f(r.get("XSMLL")),
+            "dividend_plan": None, "updated_at": now,
+        }
+    return list(rows.values())
+
+
+def _delisted_without(db, table) -> list[tuple[str, str, date | None, date]]:  # noqa: ANN001
+    """已退市、且 table 里一行都没有的 (code, market, 上市日, 退市日)。"""
+    have = set(db.execute(select(table.c.code).distinct()).scalars())
+    return [(code, market, listed, out) for code, market, listed, out in db.execute(
+        select(stock_info.c.code, stock_info.c.market, stock_info.c.list_date, stock_info.c.delist_date)
+        .where(stock_info.c.delist_date.is_not(None)).order_by(stock_info.c.code)
+    ).tuples() if code not in have and market in _SUFFIX]
+
+
+def backfill_delisted_financials(db, throttle: float = 0.1) -> tuple[int, int]:
+    """退市股的定期报告主要指标，逐股一次请求。只补 fin_report 里一行都没有的，可断点续跑。
+    返回 (写入行数, 失败只数)。退市后在三板继续披露的报告期也会带回来。"""
+    todo = _delisted_without(db, fin_report)
+    logger.info("退市股财报待补：%d 只", len(todo))
+    n = failed = 0
+    for i, (code, market, _listed, _out) in enumerate(todo, 1):
+        try:
+            rows = f10_fin_rows(eastmoney_dc.fetch_report(
+                "RPT_F10_FINANCE_MAINFINADATA", f'(SECUCODE="{code}.{_SUFFIX[market]}")', sort="REPORT_DATE"))
+            upsert_rows(db, fin_report, rows)
+            db.commit()
+            n += len(rows)
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            failed += 1
+            logger.warning("%s 退市股财报拉取失败：%s", code, exc)
+        if i % 50 == 0:
+            logger.info("退市股财报 %d/%d：%d 行，失败 %d", i, len(todo), n, failed)
+        time.sleep(throttle)
+    logger.info("退市股财报完成：%d 行，失败 %d（共 %d 只）", n, failed, len(todo))
+    return n, failed
+
+
+def delisted_dividend_rows(code: str, raw: list[dict[str, str]]) -> list[dict]:
+    """BaoStock 分红行 → dividend 行（已实施的分配）。
+
+    BaoStock 不给报告期：预案在上半年公告的记上年年报（12-31），下半年公告的记当年中报（06-30）；
+    同一报告期撞上时后一笔顺延到下一个季末，保证 (code, report_date) 不重复。每股口径 ×10 成每 10 股。
+    """
+    def per10(x: str | None) -> float | None:
+        v = _f(x)
+        return None if v is None else round(v * 10, 6)
+
+    rows: dict[date, dict] = {}
+    for r in sorted(raw, key=lambda x: x.get("dividOperateDate") or ""):
+        ex = _d(r.get("dividOperateDate"))
+        if not ex:
+            continue
+        plan = _d(r.get("dividPlanAnnounceDate")) or _d(r.get("dividPreNoticeDate")) or ex
+        period = date(plan.year - 1, 12, 31) if plan.month <= 6 else date(plan.year, 6, 30)
+        while period in rows:
+            period = (date(period.year, 9, 30) if period.month == 6 else date(period.year, 12, 31)
+                      if period.month == 9 else date(period.year + 1, 3, 31) if period.month == 12
+                      else date(period.year, 6, 30))
+        rows[period] = {
+            "code": code, "report_date": period, "plan_notice_date": _d(r.get("dividPlanAnnounceDate")),
+            "notice_date": _d(r.get("dividPlanDate")), "record_date": _d(r.get("dividRegistDate")),
+            "ex_date": ex, "cash_per10": per10(r.get("dividCashPsBeforeTax")),
+            "bonus_per10": per10(r.get("dividStocksPs")), "transfer_per10": per10(r.get("dividReserveToStockPs")),
+            "progress": "实施分配", "plan": (r.get("dividCashStock") or "")[:128],
+        }
+    return list(rows.values())
+
+
+def backfill_delisted_dividends(db, throttle: float = 0.02) -> tuple[int, int]:
+    """退市股的历年分红（BaoStock，按除权年份逐年查，上市年到退市年）。只补 dividend 里一行都没有的
+    沪深退市股。返回 (写入行数, 失败只数)。"""
+    todo = [t for t in _delisted_without(db, dividend) if t[1] in ("SH", "SZ")]
+    logger.info("退市股分红待补：%d 只", len(todo))
+    n = failed = 0
+    with baostock.session() as bs:
+        for i, (code, market, listed, out) in enumerate(todo, 1):
+            symbol = f"{market.lower()}.{code}"
+            try:
+                raw = []
+                for year in range((listed or _BS_EPOCH).year, out.year + 1):
+                    raw += _bs_retry(bs, baostock.fetch_dividends, symbol, year)
+                    time.sleep(throttle)
+                rows = delisted_dividend_rows(code, raw)
+                upsert_rows(db, dividend, rows)
+                db.commit()
+                n += len(rows)
+            except Exception as exc:  # noqa: BLE001
+                db.rollback()
+                failed += 1
+                logger.warning("%s 退市股分红拉取失败：%s", code, exc)
+            if i % 50 == 0:
+                logger.info("退市股分红 %d/%d：%d 行，失败 %d", i, len(todo), n, failed)
+    logger.info("退市股分红完成：%d 行，失败 %d（共 %d 只）", n, failed, len(todo))
+    return n, failed
+
+
+# ---------------------------------------------------------------- 科创板成交量订正
+
+def star_volume_fixes(bars: list[dict], truth: dict[date, float]) -> list[dict]:
+    """科创板日 K 里成交量被放大 100 倍的行 → 订正后的整行（只返回要改的）。
+
+    腾讯对科创板给的成交量是股，采集时又按"手"×100 入库（2026-11-16 修复数据源前写入的都可能中招：
+    有的股票只错最近几天，有的走腾讯回补的全历史都错）。bars 为升序的 kline 行，truth 为
+    {交易日: 真实成交量(股)}（每日指标来自 BaoStock，不受影响）。
+    有对照值的日子：库 / 对照 在 50~200 倍之间判错；没有对照值的日子（每日指标还没更新到）：
+    超过此前 20 根正确成交量中位数的 30 倍、且除以 100 后回到 10 倍以内判错。
+    """
+    out, good = [], []
+    for b in bars:
+        day = b["ts"].date() if isinstance(b["ts"], datetime) else b["ts"]
+        v, t = b["volume"], truth.get(day)
+        if t:
+            wrong = 50 <= v / t <= 200
+        else:
+            ref = sorted(good[-20:])
+            med = ref[len(ref) // 2] if len(ref) >= 5 else 0
+            wrong = med > 0 and v > 30 * med and v / 100 <= 10 * med
+        if wrong:
+            v = v // 100
+            out.append({**b, "volume": v})
+        if v > 0:
+            good.append(v)
+    return out
+
+
+def repair_star_volume(db, fetch_truth=None) -> tuple[int, int]:  # noqa: ANN001
+    """订正库里科创板（68xxxx）日 K 被放大 100 倍的成交量，幂等。返回 (订正行数, 涉及只数)。
+
+    fetch_truth(code) -> {交易日: 股数}：某只股票没有任何每日指标时的后备对照（默认取腾讯日 K，
+    数据源已按股换算）；取不到就跳过这只。
+    """
+    if fetch_truth is None:
+        def fetch_truth(code: str) -> dict[date, float]:
+            from kairos_data.sources.tencent import TencentProvider
+
+            return {c.ts.date(): c.volume * 100 for c in TencentProvider().get_kline_history(code, _HISTORY_BARS)}
+
+    codes = list(db.execute(
+        select(kline.c.code).where(kline.c.period == "1d", kline.c.code.like("68%")).distinct()
+        .order_by(kline.c.code)
+    ).scalars())
+    fixed = touched = 0
+    for code in codes:
+        bars = [dict(r) for r in db.execute(
+            select(kline).where(kline.c.code == code, kline.c.period == "1d").order_by(kline.c.ts)
+        ).mappings()]
+        truth = {d: v for d, v in db.execute(
+            select(daily_basic.c.trade_date, daily_basic.c.volume).where(daily_basic.c.code == code)
+        ).tuples() if v}
+        if not truth:
+            try:
+                truth = fetch_truth(code)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("%s 没有每日指标、后备对照也取不到（%s），跳过", code, exc)
+                continue
+        rows = star_volume_fixes(bars, truth)
+        if rows:
+            upsert_rows(db, kline, rows)
+            db.commit()
+            fixed += len(rows)
+            touched += 1
+    logger.info("科创板成交量订正：%d 行，涉及 %d / %d 只", fixed, touched, len(codes))
+    return fixed, touched
+
+
 # ---------------------------------------------------------------- 组合入口
 
 PARTS = ("fin", "stmt", "div", "macro", "index", "indexbar", "capital", "holdernum", "holders",
-         "lockup", "margin", "billboard", "block", "securities")
+         "lockup", "margin", "billboard", "block", "securities", "delistfin", "delistdiv", "starvol")
 
 
 def _run(db, label: str, fn) -> bool:  # noqa: ANN001
@@ -1113,7 +1331,8 @@ def backfill(db, parts: tuple[str, ...] = PARTS) -> None:
     """全量回补：财报与三大报表 1988 年起、分红 1990 年起、宏观全历史、指数成分 2005 年起逐月、
     股本变动 1990 年起、股东户数 2010 年起（东财实际从 2013 年才有）、十大股东 1990 年起、解禁全部、两融 2010 年起（约 4000
     个交易日，最慢，约 2 小时）、龙虎榜 2004 年起、大宗交易 2000 年起、主要指数全历史、
-    ETF 与可转债清单及全历史日线（约 2700 只，每只一次请求）。"""
+    ETF 与可转债清单及全历史日线（约 2700 只，每只一次请求）、退市股的财报主要指标与分红
+    （整市场报表不含退市股，逐股补）。starvol 是一次性数据订正：科创板日 K 成交量曾被放大 100 倍。"""
     today = _today_cst()
     if "fin" in parts:
         periods = quarter_ends((today.year - 1988) * 4 + 4)
@@ -1174,6 +1393,20 @@ def backfill(db, parts: tuple[str, ...] = PARTS) -> None:
         _run(db, "securities", lambda: refresh_securities(db))
         if _run(db, "security bar backfill", lambda: backfill_security_bars(db)[0]):
             _mark_done(db, "securities")
+    # 有失败的只数就不打完成标记，下次启动接着补（两个函数都只处理还没有数据的股票）
+    if "delistfin" in parts:
+        res: list[tuple[int, int]] = []
+        if _run(db, "delisted fin", lambda: res.append(backfill_delisted_financials(db)) or res[0][0]) \
+                and not res[0][1]:
+            _mark_done(db, "delistfin")
+    if "delistdiv" in parts:
+        res = []
+        if _run(db, "delisted dividend", lambda: res.append(backfill_delisted_dividends(db)) or res[0][0]) \
+                and not res[0][1]:
+            _mark_done(db, "delistdiv")
+    if "starvol" in parts:
+        if _run(db, "star volume repair", lambda: repair_star_volume(db)[0]):
+            _mark_done(db, "starvol")
 
 
 def _mark_done(db, part: str) -> None:
@@ -1190,7 +1423,8 @@ def missing_parts(db) -> tuple[str, ...]:
               "index": index_constituent, "indexbar": index_bar,
               "capital": share_capital, "holdernum": holder_count, "holders": top_holder,
               "lockup": lockup, "margin": margin_trading, "billboard": billboard,
-              "block": block_trade, "securities": security_bar}
+              "block": block_trade, "securities": security_bar,
+              "delistfin": fin_report, "delistdiv": dividend, "starvol": kline}
     return tuple(k for k, t in tables.items()
                  if k not in done and (k not in LEGACY_DONE
                                        or not db.execute(select(func.count()).select_from(t)).scalar()))

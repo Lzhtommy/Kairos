@@ -31,9 +31,20 @@ _KLINE_PERIOD = {"1d": "day", "1w": "week", "1M": "month"}
 _KLINE_PAGE = 640  # ifzq 单次日 K 上限（约 800，留余量）
 
 
-def _parse_kline_rows(rows: list) -> list[Candle]:
+def _is_star(code: str) -> bool:
+    """科创板（688xxx，含 689xxx 存托凭证）。symbol 带不带 sh 前缀都行。"""
+    return code.removeprefix("sh").startswith("68")
+
+
+def _lots(code: str, volume: float) -> int:
+    """腾讯成交量 → 手。腾讯对科创板给的是股（2026-11-16 实测：行情 f[36] 与日 K 都是，
+    与新浪的股数逐日相等），其余板块是手；不统一的话下游 ×100 换算成股会把科创板放大 100 倍。"""
+    return round(volume / 100) if _is_star(code) else int(volume)
+
+
+def _parse_kline_rows(rows: list, symbol: str = "") -> list[Candle]:
     out: list[Candle] = []
-    for row in rows:  # [date, open, close, high, low, volume(手), ...]
+    for row in rows:  # [date, open, close, high, low, volume(手；科创板为股), ...]
         out.append(
             Candle(
                 ts=datetime.fromisoformat(str(row[0])),
@@ -41,7 +52,7 @@ def _parse_kline_rows(rows: list) -> list[Candle]:
                 high=float(row[3]),
                 low=float(row[4]),
                 close=float(row[2]),
-                volume=int(float(row[5])),
+                volume=_lots(symbol, float(row[5])),
             )
         )
     return out
@@ -99,7 +110,8 @@ class TencentProvider:
     def get_universe(self, refresh: bool = False) -> list[StockMeta]:
         if self._universe_cache and not refresh:
             return self._universe_cache
-        industry = self._industry_map()
+        # 申万官网补缺只在显式刷新时做（每日一次的 refresh_reference），启动后的首轮采集不等它
+        industry = self._industry_map(supplement=refresh)
         out: list[StockMeta] = []
         page = 1
         while True:
@@ -130,12 +142,15 @@ class TencentProvider:
         self._universe_cache = out
         return out
 
-    def _industry_map(self) -> dict[str, str]:
+    def _industry_map(self, supplement: bool = False) -> dict[str, str]:
         """code → 申万二级行业名，via tencent 板块接口（约 124 个板块，一次全量遍历）。
 
+        腾讯的板块成分不含科创板和北交所（2026-11-16 实测 4586 只里一只 688 都没有），
+        supplement=True 时再按同一批申万二级代码去申万官网取成分，只补腾讯没给的股票。
         行业分类失败不致命 —— 缺失的股票保持 "—"，下次 refresh 再补。
         """
         out: dict[str, str] = {}
+        sw_boards: dict[str, str] = {}  # 申万指数代码（801081）→ 行业名
         try:
             boards = self._get(
                 "https://web.ifzq.gtimg.cn/appstock/app/mktHs/rank",
@@ -146,6 +161,7 @@ class TencentProvider:
         for b in boards:
             name = str(b["bd_name"]).rstrip("Ⅱ")  # 申万二级的 Ⅱ 后缀对用户是噪音
             board_code = str(b["bd_code"]).removeprefix("pt")
+            sw_boards[board_code[-6:]] = name  # pt01801081 → 801081
             offset = 0
             try:
                 while True:
@@ -169,6 +185,40 @@ class TencentProvider:
                     time.sleep(0.05)
             except Exception:  # noqa: BLE001 — one bad board must not kill the sweep
                 continue
+        if supplement:
+            for code, name in self._sw_members(sw_boards).items():
+                out.setdefault(code, name)
+        return out
+
+    def _sw_members(self, boards: dict[str, str]) -> dict[str, str]:
+        """申万官网的指数成分：{股票代码: 行业名}。boards 为 {申万指数代码: 行业名}。
+
+        官网证书链不完整（缺中间证书），与行业估值接口一样关掉校验；连续失败 5 个板块就放弃，
+        已拿到的照常返回。
+        """
+        out: dict[str, str] = {}
+        misses = 0
+        with httpx.Client(timeout=20, headers={"User-Agent": "Mozilla/5.0"}, trust_env=False,
+                          verify=False) as client:  # noqa: S501
+            for sw_code, name in boards.items():
+                try:
+                    r = client.get(
+                        "https://www.swsresearch.com/institute-sw/api/index_publish/details/component_stocks/",
+                        params={"swindexcode": sw_code, "page": 1, "page_size": 10000},
+                    )
+                    r.raise_for_status()
+                    rows = (r.json().get("data") or {}).get("results") or []
+                    misses = 0
+                except Exception:  # noqa: BLE001
+                    misses += 1
+                    if misses >= 5:
+                        break
+                    continue
+                for row in rows:
+                    code = str(row.get("stockcode") or "")[:6]
+                    if len(code) == 6 and code.isdigit():
+                        out[code] = name
+                time.sleep(0.05)
         return out
 
     def _fetch_quote_fields(self, symbols: list[str]) -> dict[str, list[str]]:
@@ -192,7 +242,7 @@ class TencentProvider:
         out: list[QuoteData] = []
         for f in fields.values():
             # Full-quote layout: 3 price, 4 prev_close, 5 open, 30 quote time
-            # (yyyymmddHHMMSS), 33 high, 34 low, 36 volume(手), 37 turnover(万元),
+            # (yyyymmddHHMMSS), 33 high, 34 low, 36 volume(手；科创板为股), 37 turnover(万元),
             # 38 turnover_rate, 39 PE(TTM), 45 total market cap(亿), 46 PB,
             # 64 dividend yield(%), 65 ROE(%).
             try:
@@ -211,7 +261,7 @@ class TencentProvider:
                         open=_f(f[5], price),
                         high=_f(f[33], price),
                         low=_f(f[34], price),
-                        volume=int(_f(f[36])),
+                        volume=_lots(str(f[2]), _f(f[36])),
                         turnover=round(_f(f[37]) / 1e4, 2),
                         turnover_rate=_f(f[38]),
                         pe=_f(f[39]) or None,
@@ -260,7 +310,7 @@ class TencentProvider:
                 params={"param": f"{symbol},day,,{end},{count},qfq"},
             )
             data = r.json()["data"][symbol]
-            chunk = _parse_kline_rows(data.get("qfqday") or data.get("day") or [])
+            chunk = _parse_kline_rows(data.get("qfqday") or data.get("day") or [], symbol)
             if out:
                 chunk = [c for c in chunk if c.ts < out[0].ts]
             if not chunk:
@@ -290,7 +340,7 @@ class TencentProvider:
             self._ifzq_down_until = time.monotonic() + 600
             return self._kline_sina(symbol, limit)
         data = r.json()["data"][symbol]
-        return _parse_kline_rows(data.get(f"qfq{freq}") or data.get(freq) or [])
+        return _parse_kline_rows(data.get(f"qfq{freq}") or data.get(freq) or [], symbol)
 
     def _kline_sina(self, symbol: str, limit: int) -> list[Candle]:
         """Daily kline via Sina. Unadjusted (no qfq) — close enough for the MVP screener."""

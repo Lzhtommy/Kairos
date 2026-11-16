@@ -283,6 +283,13 @@ def apply_universe(dsl: dict[str, Any], rows: list[dict[str, Any]]) -> list[dict
     return rows
 
 
+def _industry_of(row: dict[str, Any]) -> str | None:
+    """行业内比较用的分组键。没有行业分类的股票（占位符 "—"，如北交所）返回 None：
+    它们彼此不是同行，不能凑成一个"行业"互相比中位数或排名，行业内条件一律不通过。"""
+    ind = row.get("industry")
+    return ind if ind and ind != "—" else None
+
+
 def _cross_pass_codes(f: dict[str, Any], rows: list[dict[str, Any]]) -> set[str]:
     """截面算子的通过集合：在 universe 全体（而非其他条件的交集）上排名/分位。"""
     groups: dict[str, list[tuple[float, str]]] = {}
@@ -290,7 +297,9 @@ def _cross_pass_codes(f: dict[str, Any], rows: list[dict[str, Any]]) -> set[str]
         v = r.get(f["factor"])
         if not _is_num(v):
             continue  # 缺值不参与排名也不通过
-        key = r.get("industry", "—") if f["scope"] == "industry" else "_"
+        key = _industry_of(r) if f["scope"] == "industry" else "_"
+        if key is None:
+            continue  # 没有行业分类：不参与行业内排名也不通过
         groups.setdefault(key, []).append((v, r["code"]))
 
     passed: set[str] = set()
@@ -345,8 +354,8 @@ def execute(dsl: dict[str, Any], rows: list[dict[str, Any]]) -> list[dict[str, A
             by_ind: dict[str, list[float]] = {}
             for r in rows:
                 v = r.get(f["factor"])
-                if _is_num(v):
-                    by_ind.setdefault(r.get("industry", "—"), []).append(v)
+                if _is_num(v) and (ind := _industry_of(r)):
+                    by_ind.setdefault(ind, []).append(v)
             medians[f["factor"]] = {k: median(v) for k, v in by_ind.items() if v}
 
     # 截面算子先在 universe 全体上算出通过集合，再与普通条件求交
@@ -390,7 +399,7 @@ def _match(f: dict[str, Any], row: dict[str, Any], medians: dict[str, dict[str, 
     if op == "between":
         return f["min"] <= val <= f["max"]
     if "ref" in f:
-        target = medians.get(factor, {}).get(row.get("industry", "—"))
+        target = medians.get(factor, {}).get(_industry_of(row) or "")
         if target is None:
             return False
         return _cmp(val, op, target)

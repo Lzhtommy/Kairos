@@ -368,18 +368,36 @@ def index_detail(code: str, years: int = Query(default=10, ge=1, le=40), db: Ses
         select(func.max(IndexConstituent.snapshot_date)).where(IndexConstituent.index_code == code)
     ).scalar()
     members = []
+    weight_snap = None
     if snap:
         rows = db.execute(
             select(IndexConstituent.code, IndexConstituent.weight, StockInfo.name, StockInfo.industry)
             .outerjoin(StockInfo, StockInfo.code == IndexConstituent.code)
             .where(IndexConstituent.index_code == code, IndexConstituent.snapshot_date == snap)
         ).all()
+        weights = {c: w for c, w, _n, _i in rows if w is not None}
+        if weights:
+            weight_snap = snap
+        else:
+            # 最新名单来自 BaoStock（按调整日，没有权重）时，权重取中证官网最近一份月度快照的；
+            # 两份名单之间调入的股票没有权重
+            weight_snap = db.execute(
+                select(func.max(IndexConstituent.snapshot_date))
+                .where(IndexConstituent.index_code == code, IndexConstituent.weight.is_not(None))
+            ).scalar()
+            if weight_snap:
+                weights = dict(db.execute(
+                    select(IndexConstituent.code, IndexConstituent.weight)
+                    .where(IndexConstituent.index_code == code, IndexConstituent.snapshot_date == weight_snap,
+                           IndexConstituent.weight.is_not(None))
+                ).all())
         members = sorted(
-            ({"code": c, "name": n or c, "industry": ind or "—", "weight": w} for c, w, n, ind in rows),
+            ({"code": c, "name": n or c, "industry": ind or "—", "weight": weights.get(c)}
+             for c, _w, n, ind in rows),
             key=lambda m: (-(m["weight"] or 0), m["code"]),
         )
     return {"code": code, "name": INDEX_NAMES[code], "points": [[_iso(d), c] for d, c in bars],
-            "snapshotDate": _iso(snap), "members": members}
+            "snapshotDate": _iso(snap), "weightDate": _iso(weight_snap), "members": members}
 
 
 @router.get("/security/{code}")

@@ -187,6 +187,8 @@ export type IndexDetail = {
   name: string
   points: [string, number][]
   snapshotDate: string | null
+  /** 权重所属的快照日；名单比权重新时两者不同 */
+  weightDate: string | null
   members: { code: string; name: string; industry: string; weight: number | null }[]
 }
 

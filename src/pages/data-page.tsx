@@ -924,7 +924,11 @@ function IndexView() {
           <Section title={`${data.name} · 走势`} extra={<Segmented value={years} options={MACRO_YEARS} onChange={setYears} />}>
             <LineChart points={data.points} height={260} />
           </Section>
-          <Section title={`成分股${data.snapshotDate ? `（${data.snapshotDate}，${data.members.length} 只）` : ""}`}>
+          <Section
+            title={`成分股${data.snapshotDate ? `（${data.snapshotDate}，${data.members.length} 只${
+              data.weightDate && data.weightDate !== data.snapshotDate ? `，权重为 ${data.weightDate}` : ""
+            }）` : ""}`}
+          >
             {data.members.length ? (
               <div className="max-h-[480px] overflow-auto">
                 <Table>

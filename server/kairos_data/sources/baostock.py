@@ -68,6 +68,13 @@ def fetch_daily_basic(bs, symbol: str, start: str = "1990-01-01", end: str = "21
     ))
 
 
+def fetch_dividends(bs, symbol: str, year: int) -> list[dict[str, str]]:  # noqa: ANN001
+    """year 年除权除息的分红（含已退市股票）。字段：dividPlanAnnounceDate（预案公告日）、dividPlanDate
+    （实施公告日）、dividRegistDate（股权登记日）、dividOperateDate（除权除息日）、
+    dividCashPsBeforeTax / dividStocksPs / dividReserveToStockPs（每股派现税前 / 送股 / 转增）、dividCashStock（方案）。"""
+    return _rows(bs.query_dividend_data(code=symbol, year=str(year), yearType="operate"))
+
+
 def fetch_index_members(bs, index_code: str, day: str) -> list[dict[str, str]]:  # noqa: ANN001
     """day 当天生效的指数成分，字段 updateDate（成分调整日）、code、code_name。"""
     return _rows(getattr(bs, INDEX_QUERIES[index_code])(date=day))

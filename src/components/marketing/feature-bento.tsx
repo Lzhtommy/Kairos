@@ -183,7 +183,7 @@ export function FeatureBento() {
             <div>
               <CellTitle icon={<Database className="size-4 text-primary" />}>数据中心</CellTitle>
               <p className="mt-1.5 text-sm text-muted-foreground">
-                一只股票的资料一页看全，已退市的也查得到。全部来自公开数据源，盘后自动更新。
+                一只股票的资料一页看全，已退市的也能查行情、主要财务指标和分红。全部来自公开数据源，盘后自动更新。
               </p>
             </div>
             <dl className="grid grid-cols-1 gap-x-8 gap-y-4 sm:grid-cols-2 lg:grid-cols-3">

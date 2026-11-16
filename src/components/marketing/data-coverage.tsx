@@ -1,7 +1,7 @@
 import { Bank, ChartPieSlice, FileText, ChartLine, ClockCountdown, Database } from "@phosphor-icons/react"
 
 const ITEMS = [
-  { icon: Bank, label: "沪深北三所全市场" },
+  { icon: Bank, label: "沪深全市场，北交所行情" },
   { icon: ChartPieSlice, label: "申万一级行业估值分位" },
   { icon: FileText, label: "年报、半年报、季报深读" },
   { icon: ChartLine, label: "上市以来的历史日 K 线" },
