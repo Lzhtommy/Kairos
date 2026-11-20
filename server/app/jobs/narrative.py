@@ -1,6 +1,6 @@
 """每日叙事打分任务（research PLAN Step 4，只前向记录）。
 
-盘后 cron 触发。幂等：当日（CST）已有记录即跳过；无 DeepSeek key、
+盘后 15:50 cron 触发，启动时补跑（15:50 前直接跳过）。幂等：当日（CST）已有记录即跳过；无 DeepSeek key、
 无新闻源、打分失败都静默跳过——前向序列宁缺毋滥。
 依赖板块名单（sector_info），行业模块尚未落数据时不跑。
 """
@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 
 from sqlalchemy import func, select
 
@@ -20,12 +20,20 @@ from app.services.narrative import fetch_headlines, score_narrative
 logger = logging.getLogger("kairos.narrative")
 
 
-def update_narrative() -> None:
+# 与 main.py 里的 cron 一致（15:50 CST）。启动补跑也要等到这之后，否则白天部署 / 重启
+# 会用盘中的新闻把当天叙事写死，15:50 那轮又因当日已有记录直接跳过。
+RUN_AFTER_CST = time(15, 50)
+
+
+def update_narrative(now: datetime | None = None) -> None:
     if not llm.enabled():
+        return
+    cst_now = (now or datetime.now(timezone.utc)).astimezone(timezone(timedelta(hours=8)))
+    if cst_now.time() < RUN_AFTER_CST:
         return
     db = SessionLocal()
     try:
-        cst_today = (datetime.now(timezone.utc) + timedelta(hours=8)).date()
+        cst_today = cst_now.date()
         day = datetime(cst_today.year, cst_today.month, cst_today.day)
         exists = db.execute(
             select(func.count()).select_from(SectorNarrative).where(SectorNarrative.date == day)

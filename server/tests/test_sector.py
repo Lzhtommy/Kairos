@@ -366,7 +366,14 @@ def test_update_narrative_writes_and_skips(db, monkeypatch):
         }
 
     monkeypatch.setattr(narrative_job, "score_narrative", fake_score)
-    narrative_job.update_narrative()
+    from datetime import datetime, timezone
+
+    # 15:49 CST（07:49 UTC）还没到点：启动补跑不能提前写死当天叙事
+    narrative_job.update_narrative(datetime(2026, 11, 20, 7, 49, tzinfo=timezone.utc))
+    assert db.query(SectorNarrative).count() == 0
+
+    after_close = datetime(2026, 11, 20, 7, 50, tzinfo=timezone.utc)
+    narrative_job.update_narrative(after_close)
 
     rows = db.query(SectorNarrative).all()
     assert {r.code for r in rows} == {"_market", "801080"}
@@ -374,7 +381,7 @@ def test_update_narrative_writes_and_skips(db, monkeypatch):
     assert elec.direction == 0.8
     assert elec.evidence == ["半导体大基金三期落地"]
 
-    narrative_job.update_narrative()  # 当日已有记录 → 幂等
+    narrative_job.update_narrative(after_close)  # 当日已有记录 → 幂等
     assert db.query(SectorNarrative).count() == len(rows)
 
 

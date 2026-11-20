@@ -155,7 +155,7 @@ async def lifespan(_app: FastAPI):
             coalesce=True,
         )
         # 盘后 15:50 CST（07:50 UTC）行业叙事打分（DeepSeek，只前向记录）；
-        # 周末也跑——政策叙事常发生在非交易日。
+        # 周末也跑——政策叙事常发生在非交易日。启动补跑在 15:50 前会直接跳过（见函数内闸门）。
         _scheduler.add_job(
             update_narrative,
             "cron",
