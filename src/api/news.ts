@@ -11,8 +11,13 @@ export type NewsSourceRef = {
 export type NewsEvent = {
   id: number
   pub_at: string
-  /** 0 普通 / 1 重要（源标记重要或 3 家以上同报）/ 2 特别重要 */
-  level: number
+  /** 要闻：LLM 重要度 ≥ 4；还没打标时按源标记 + 报道家数兜底 */
+  featured: boolean
+  /** LLM 重要度 1-5，未打标为 null */
+  score: number | null
+  category: string | null
+  sectors: string[]
+  stocks: { code: string; name: string }[]
   title: string
   content: string
   sources: NewsSourceRef[]
@@ -28,15 +33,18 @@ export type NewsSourceStatus = {
   failing: boolean
 }
 
+export type NewsView = "featured" | "all"
+
 export function fetchNewsEvents(params: {
   before?: number
-  important?: boolean
+  view: NewsView
+  category?: string
   q?: string
   limit?: number
 }): Promise<NewsPage> {
-  const sp = new URLSearchParams()
+  const sp = new URLSearchParams({ view: params.view })
   if (params.before != null) sp.set("before", String(params.before))
-  if (params.important) sp.set("important", "true")
+  if (params.category) sp.set("category", params.category)
   if (params.q) sp.set("q", params.q)
   if (params.limit) sp.set("limit", String(params.limit))
   const qs = sp.toString()
@@ -45,4 +53,8 @@ export function fetchNewsEvents(params: {
 
 export function fetchNewsSources(): Promise<NewsSourceStatus[]> {
   return api<NewsSourceStatus[]>("/news/sources")
+}
+
+export function fetchNewsCategories(): Promise<string[]> {
+  return api<string[]>("/news/categories")
 }

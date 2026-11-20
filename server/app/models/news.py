@@ -11,6 +11,7 @@ seen_at 是 Kairos **首次抓到**的时刻（UTC），pub_at 是源自己标�
 from datetime import datetime, timezone
 
 from sqlalchemy import DateTime, Integer, SmallInteger, String, Text, UniqueConstraint
+from sqlalchemy.types import JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -35,3 +36,22 @@ class NewsItem(Base):
     # 0 普通 / 1 重要 / 2 特别重要（各源自带标记归一，口径见 services/news.py）
     importance: Mapped[int] = mapped_column(SmallInteger, default=0)
     event_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    # 源自带的关联 A 股（同花顺 / 财联社），[{"code": "600160", "name": "巨化股份"}]
+    stocks: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+
+class NewsEvent(Base):
+    """事件级 LLM 标注（services/news_classify.py）：分类、1-5 重要度、相关申万行业。
+
+    事件第一次出现后一分钟内批量打标；后续加入的报道源不再重打。
+    没有这一行 = 还没打标或 LLM 不可用，前端按源标记规则兜底。
+    """
+
+    __tablename__ = "news_event"
+
+    event_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    category: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
+    score: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    sectors: Mapped[list] = mapped_column(JSON, default=list)
+    model: Mapped[str] = mapped_column(String(32), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

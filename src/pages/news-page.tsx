@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
+import { Link } from "react-router-dom"
 import { ArrowSquareOut, MagnifyingGlass, X } from "@phosphor-icons/react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -7,10 +8,12 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import {
+  fetchNewsCategories,
   fetchNewsEvents,
   fetchNewsSources,
   type NewsEvent,
   type NewsSourceStatus,
+  type NewsView,
 } from "@/api/news"
 import { cn } from "@/lib/utils"
 
@@ -51,22 +54,28 @@ function ago(iso: string | null): string {
 }
 
 export function NewsPage() {
-  const [tab, setTab] = useState<"all" | "important">("all")
+  const [view, setView] = useState<NewsView>("featured")
+  const [category, setCategory] = useState<string | null>(null)
   const [draft, setDraft] = useState("")
   const [q, setQ] = useState("")
-  const important = tab === "important"
-  const filterKey = `${tab}|${q}`
+  const filterKey = `${view}|${category ?? ""}|${q}`
+  const filters = { view, category: category ?? undefined, q }
 
   // 首页每 15 秒整页重拉：既拿到新事件，也拿到旧事件新增的报道源
   const head = useQuery({
-    queryKey: ["news-head", important, q],
-    queryFn: () => fetchNewsEvents({ important, q, limit: PAGE }),
+    queryKey: ["news-head", view, category, q],
+    queryFn: () => fetchNewsEvents({ ...filters, limit: PAGE }),
     refetchInterval: POLL_MS,
   })
   const sources = useQuery({
     queryKey: ["news-sources"],
     queryFn: fetchNewsSources,
     refetchInterval: 60_000,
+  })
+  const categories = useQuery({
+    queryKey: ["news-categories"],
+    queryFn: fetchNewsCategories,
+    staleTime: Infinity,
   })
 
   // 「加载更多」拿到的更早的页，筛选条件变了就清空
@@ -91,7 +100,7 @@ export function NewsPage() {
     if (next == null) return
     setLoadingMore(true)
     try {
-      const page = await fetchNewsEvents({ before: next, important, q, limit: PAGE })
+      const page = await fetchNewsEvents({ ...filters, before: next, limit: PAGE })
       setOlder({ key: filterKey, events: [...olderFresh.events, ...page.events], next: page.next })
     } finally {
       setLoadingMore(false)
@@ -135,17 +144,17 @@ export function NewsPage() {
         <div>
           <h1 className="text-lg font-semibold text-foreground">快讯</h1>
           <p className="mt-0.5 text-sm text-muted-foreground">
-            财联社、金十数据、华尔街见闻、新浪财经、同花顺 7×24 汇总，同一事件多家报道合并为一条
+            {"财联社、金十数据、华尔街见闻、新浪财经、同花顺 7×24 汇总，同一事件多家报道合并为一条；分类和要闻由 AI 按对市场的影响判断"}
           </p>
         </div>
         <SourceStatus sources={sources.data} />
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
-        <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)}>
+        <Tabs value={view} onValueChange={(v) => setView(v as NewsView)}>
           <TabsList>
+            <TabsTrigger value="featured">要闻</TabsTrigger>
             <TabsTrigger value="all">全部</TabsTrigger>
-            <TabsTrigger value="important">重要</TabsTrigger>
           </TabsList>
         </Tabs>
         <form
@@ -183,6 +192,25 @@ export function NewsPage() {
         </span>
       </div>
 
+      {categories.data && (
+        <div className="-mt-2 flex flex-wrap gap-1.5">
+          {[null, ...categories.data].map((c) => (
+            <button
+              key={c ?? "all"}
+              onClick={() => setCategory(c)}
+              className={cn(
+                "rounded-full border px-2.5 py-0.5 text-xs transition-colors",
+                category === c
+                  ? "border-primary bg-primary/10 text-foreground"
+                  : "border-border text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {c ?? "全部分类"}
+            </button>
+          ))}
+        </div>
+      )}
+
       {head.isLoading ? (
         <div className="space-y-4">
           {Array.from({ length: 6 }).map((_, i) => (
@@ -191,7 +219,11 @@ export function NewsPage() {
         </div>
       ) : events.length === 0 ? (
         <div className="rounded-lg border border-dashed py-16 text-center text-sm text-muted-foreground">
-          {q ? `近 30 天没有包含「${q}」的快讯` : "暂无快讯，采集启动后几十秒内会出现"}
+          {q
+            ? `近 30 天没有包含「${q}」的快讯`
+            : category
+              ? `暂无「${category}」类${view === "featured" ? "要闻" : "快讯"}`
+              : "暂无快讯，采集启动后几十秒内会出现"}
         </div>
       ) : (
         <div className="space-y-6">
@@ -258,7 +290,7 @@ function SourceStatus({ sources }: { sources: NewsSourceStatus[] | undefined }) 
 
 function EventRow({ event: e, fresh }: { event: NewsEvent; fresh: boolean }) {
   const [open, setOpen] = useState(false)
-  const important = e.level >= 1
+  const important = e.featured
   const long = e.content.length > 140
   return (
     <li
@@ -293,23 +325,36 @@ function EventRow({ event: e, fresh }: { event: NewsEvent; fresh: boolean }) {
           </p>
         )}
         <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-          {e.sources.map((s) =>
-            s.url ? (
-              <a
-                key={s.source}
-                href={s.url}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-0.5 hover:text-foreground"
-              >
-                {s.name}
-                <ArrowSquareOut className="size-3" />
-              </a>
-            ) : (
-              <span key={s.source}>{s.name}</span>
-            ),
-          )}
-          {e.sources.length >= 2 && <span className="tabular-nums">{e.sources.length} 家报道</span>}
+          {e.category && <span className="rounded bg-muted px-1.5 py-px text-foreground/80">{e.category}</span>}
+          {e.stocks.slice(0, 4).map((st) => (
+            <Link
+              key={st.code}
+              to={`/app/data/${st.code}`}
+              className="font-medium text-foreground/90 underline-offset-2 hover:text-primary hover:underline"
+            >
+              {st.name}
+            </Link>
+          ))}
+          {e.sectors.length > 0 && <span>{e.sectors.join(" · ")}</span>}
+          <span className="ml-auto flex flex-wrap items-center gap-x-2.5 gap-y-1">
+            {e.sources.map((s) =>
+              s.url ? (
+                <a
+                  key={s.source}
+                  href={s.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-0.5 hover:text-foreground"
+                >
+                  {s.name}
+                  <ArrowSquareOut className="size-3" />
+                </a>
+              ) : (
+                <span key={s.source}>{s.name}</span>
+              ),
+            )}
+            {e.sources.length >= 2 && <span className="tabular-nums">{e.sources.length} 家报道</span>}
+          </span>
         </div>
       </div>
     </li>

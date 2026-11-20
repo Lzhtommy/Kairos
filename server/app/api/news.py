@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
 from app.core.security import get_current_user
 from app.services import news
+from app.services.news_classify import CATEGORIES
 
 router = APIRouter(prefix="/news", tags=["news"], dependencies=[Depends(get_current_user)])
 
@@ -16,12 +19,19 @@ router = APIRouter(prefix="/news", tags=["news"], dependencies=[Depends(get_curr
 def events(
     limit: int = Query(50, ge=1, le=200),
     before: int | None = Query(None, description="翻页游标：上一页最后一个事件的 id"),
-    important: bool = False,
+    view: Literal["featured", "all"] = "featured",
+    category: str | None = Query(None, max_length=16),
     q: str | None = Query(None, max_length=50),
     db: Session = Depends(get_db),
 ):
-    items = news.list_events(db, limit=limit, before=before, important=important, q=(q or "").strip() or None)
+    items = news.list_events(db, limit=limit, before=before, view=view, category=category or None,
+                             q=(q or "").strip() or None)
     return {"events": items, "next": items[-1]["id"] if len(items) == limit else None}
+
+
+@router.get("/categories")
+def categories():
+    return CATEGORIES
 
 
 @router.get("/sources")

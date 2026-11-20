@@ -30,10 +30,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 import httpx
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, not_, or_, select
 from sqlalchemy.orm import Session
 
-from app.models.news import NewsItem
+from app.models.news import NewsEvent, NewsItem
 
 logger = logging.getLogger("kairos.news")
 
@@ -52,6 +52,7 @@ class Item:
     content: str
     url: str | None
     importance: int
+    stocks: list[dict] | None = None  # 源自带的关联 A 股
 
 
 # ---------------------------------------------------------------- 文本清洗
@@ -92,11 +93,25 @@ def _from_cst(s: str) -> datetime:
     return datetime.strptime(s.strip(), "%Y-%m-%d %H:%M:%S").replace(tzinfo=CST).astimezone(timezone.utc)
 
 
-def _item(source: str, sid, pub: datetime, title, content, url, imp: int) -> Item | None:  # noqa: ANN001
+def _item(source: str, sid, pub: datetime, title, content, url, imp: int,  # noqa: ANN001
+          stocks: list[dict] | None = None) -> Item | None:
     t, c = split_title(title, content or "")
     if not (t or c):
         return None
-    return Item(source, str(sid)[:40], pub, t, c, (url or None) and str(url)[:512], imp)
+    return Item(source, str(sid)[:40], pub, t, c, (url or None) and str(url)[:512], imp, stocks or None)
+
+
+_A_CODE = re.compile(r"^(?:sh|sz|bj)?(\d{6})$", re.I)
+
+
+def _a_stocks(pairs) -> list[dict]:  # noqa: ANN001
+    """[(代码, 名称)] → 只留 A 股 6 位代码（港美股代码丢掉），去重保序。"""
+    out: dict[str, str] = {}
+    for code, name in pairs:
+        m = _A_CODE.match(str(code or ""))
+        if m and name:
+            out.setdefault(m.group(1), str(name)[:32])
+    return [{"code": c, "name": n} for c, n in out.items()][:10]
 
 
 # ---------------------------------------------------------------- 各源解析（纯函数，便于测试）
@@ -108,8 +123,9 @@ def parse_cls(d: dict) -> list[Item]:
         if x.get("is_ad"):
             continue
         imp = {"A": 2, "B": 1}.get(x.get("level") or "", 0)
+        stocks = _a_stocks((st.get("StockID"), st.get("name")) for st in x.get("stock_list") or [])
         it = _item("cls", x["id"], _from_epoch(x["ctime"]), x.get("title"), x.get("content") or x.get("brief"),
-                   f"https://www.cls.cn/detail/{x['id']}", imp)
+                   f"https://www.cls.cn/detail/{x['id']}", imp, stocks)
         if it:
             out.append(it)
     return out
@@ -163,7 +179,9 @@ def parse_ths(d: dict) -> list[Item]:
             imp = 1 if int(x.get("import") or 0) >= 3 else 0
         except (TypeError, ValueError):
             imp = 0
-        it = _item("ths", x["id"], _from_epoch(x["ctime"]), x.get("title"), x.get("digest"), x.get("url"), imp)
+        stocks = _a_stocks((st.get("stockCode"), st.get("name")) for st in x.get("stock") or [])
+        it = _item("ths", x["id"], _from_epoch(x["ctime"]), x.get("title"), x.get("digest"), x.get("url"), imp,
+                   stocks)
         if it:
             out.append(it)
     return out
@@ -409,7 +427,7 @@ class Collector:
                 ev = self.index.match(it.source, it.pub_at, g)
                 row = NewsItem(
                     source=it.source, source_id=it.source_id, pub_at=it.pub_at, seen_at=now, title=it.title,
-                    content=it.content, url=it.url, importance=it.importance, event_id=ev,
+                    content=it.content, url=it.url, importance=it.importance, event_id=ev, stocks=it.stocks,
                 )
                 db.add(row)
                 if ev is None:
@@ -432,25 +450,46 @@ collector = Collector()
 # ---------------------------------------------------------------- 查询（按事件聚合）
 
 SOURCE_NAMES = {"cls": "财联社", "jin10": "金十数据", "wscn": "华尔街见闻", "sina": "新浪财经", "ths": "同花顺"}
-MULTI_SOURCE = 3  # 3 家及以上同时报道的事件视为重要
+# 「要闻」：LLM 重要度 ≥ 4，或 3 分且 3 家以上同报（报道家数是独立于 LLM 的信号）。
+# 2026-11-20 收盘后实测约 8 条/小时；只看 ≥ 4 分约 2 条/小时，太稀。
+FEATURED_SCORE = 4
+MULTI_SOURCE = 3
+
+
+def llm_featured(score: int, n_sources: int) -> bool:
+    return score >= FEATURED_SCORE or (score >= FEATURED_SCORE - 1 and n_sources >= MULTI_SOURCE)
 
 
 def _iso(dt: datetime) -> str:
     return _utc(dt).isoformat().replace("+00:00", "Z")
 
 
-def _build_event(items: list[NewsItem]) -> dict:
+def fallback_featured(importance: int, n_sources: int) -> bool:
+    """LLM 还没打标（或不可用）时的「要闻」规则：单家自己标的重要不算数，要有第二家佐证。"""
+    return importance >= 2 or n_sources >= MULTI_SOURCE or (n_sources >= 2 and importance >= 1)
+
+
+def _build_event(items: list[NewsItem], ann: NewsEvent | None = None) -> dict:
     items = sorted(items, key=lambda r: _utc(r.pub_at))
     # 正文取信息量最多的一条：重要度高 > 有标题 > 正文长
     main = max(items, key=lambda r: (r.importance, bool(r.title), len(r.content)))
     title = main.title or next((r.title for r in items if r.title), "")
     n_sources = len({r.source for r in items})
     importance = max(r.importance for r in items)
-    level = max(importance, 1 if n_sources >= MULTI_SOURCE else 0)
+    score = ann.score if ann else None
+    featured = llm_featured(score, n_sources) if score is not None else fallback_featured(importance, n_sources)
+    stocks: dict[str, str] = {}
+    for r in items:
+        for st in r.stocks or []:
+            stocks.setdefault(st["code"], st["name"])
     return {
         "id": items[0].event_id,
         "pub_at": _iso(items[0].pub_at),
-        "level": level,
+        "featured": featured,
+        "score": score,
+        "category": ann.category if ann else None,
+        "sectors": list(ann.sectors or []) if ann else [],
+        "stocks": [{"code": c, "name": n} for c, n in stocks.items()],
         "title": title,
         "content": main.content,
         "sources": [
@@ -461,17 +500,29 @@ def _build_event(items: list[NewsItem]) -> dict:
     }
 
 
-def _important_having():  # noqa: ANN202
-    return or_(func.max(NewsItem.importance) >= 1, func.count(func.distinct(NewsItem.source)) >= MULTI_SOURCE)
+def _load(db: Session, ids: list[int]) -> tuple[dict[int, list[NewsItem]], dict[int, NewsEvent]]:
+    groups: dict[int, list[NewsItem]] = {}
+    for r in db.scalars(select(NewsItem).where(NewsItem.event_id.in_(ids))):
+        groups.setdefault(r.event_id, []).append(r)
+    anns = {a.event_id: a for a in db.scalars(select(NewsEvent).where(NewsEvent.event_id.in_(ids)))}
+    return groups, anns
 
 
-def list_events(db: Session, *, limit: int = 50, before: int | None = None, important: bool = False,
-                q: str | None = None, now: datetime | None = None) -> list[dict]:
-    """最新事件，按 event_id 倒序（≈ 首次报道时间倒序），before 为翻页游标。"""
+def list_events(db: Session, *, limit: int = 50, before: int | None = None, view: str = "featured",
+                category: str | None = None, q: str | None = None, now: datetime | None = None) -> list[dict]:
+    """最新事件，按 event_id 倒序（≈ 首次报道时间倒序），before 为翻页游标。
+
+    view="featured" 只要「要闻」；view="all" 去掉只有新浪一家报、没标焦点、LLM 也不认为重要的
+    条目（多是个股公告、会见类，公告在数据页另有）。
+    """
     ev = NewsItem.event_id
-    stmt = select(ev).where(ev.is_not(None))
+    imp, n_src = func.max(NewsItem.importance), func.count(func.distinct(NewsItem.source))
+    score = func.max(NewsEvent.score)
+    stmt = select(ev).select_from(NewsItem).outerjoin(NewsEvent, NewsEvent.event_id == ev).where(ev.is_not(None))
     if before is not None:
         stmt = stmt.where(ev < before)
+    if category:
+        stmt = stmt.where(NewsEvent.category == category)
     if q:
         # 搜索只看近 30 天，避免对全表 LIKE
         since = (now or datetime.now(timezone.utc)) - timedelta(days=30)
@@ -481,31 +532,42 @@ def list_events(db: Session, *, limit: int = 50, before: int | None = None, impo
         )
         stmt = stmt.where(ev.in_(hit))
     stmt = stmt.group_by(ev)
-    if important:
-        stmt = stmt.having(_important_having())
+    if view == "featured":
+        fallback = or_(imp >= 2, n_src >= MULTI_SOURCE, and_(n_src >= 2, imp >= 1))
+        by_llm = or_(score >= FEATURED_SCORE, and_(score >= FEATURED_SCORE - 1, n_src >= MULTI_SOURCE))
+        stmt = stmt.having(or_(by_llm, and_(score.is_(None), fallback)))
+    else:
+        sina_noise = and_(n_src == 1, func.max(NewsItem.source) == "sina", imp == 0,
+                          func.coalesce(score, 0) < FEATURED_SCORE)
+        stmt = stmt.having(not_(sina_noise))
     ids = list(db.scalars(stmt.order_by(ev.desc()).limit(limit)))
     if not ids:
         return []
-    groups: dict[int, list[NewsItem]] = {}
-    for r in db.scalars(select(NewsItem).where(ev.in_(ids))):
-        groups.setdefault(r.event_id, []).append(r)
-    return [_build_event(groups[i]) for i in ids if i in groups]
+    groups, anns = _load(db, ids)
+    return [_build_event(groups[i], anns.get(i)) for i in ids if i in groups]
 
 
 def recent_headlines(db: Session, *, hours: int = 24, limit: int = 120, now: datetime | None = None) -> list[str]:
     """叙事打分用：近 N 小时的事件，每个事件一条标题。
 
-    超过 limit 时优先留重要度高、报道家数多的，再按时间正序排给 LLM。
+    超过 limit 时优先留 LLM 重要度高的（未打标的按源标记规则折算）、报道家数多的，
+    再按时间正序排给 LLM。
     """
     now = now or datetime.now(timezone.utc)
-    rows = db.scalars(
-        select(NewsItem).where(NewsItem.pub_at >= now - timedelta(hours=hours), NewsItem.event_id.is_not(None))
-    ).all()
-    groups: dict[int, list[NewsItem]] = {}
-    for r in rows:
-        groups.setdefault(r.event_id, []).append(r)
-    events = [_build_event(g) for g in groups.values()]
-    events.sort(key=lambda e: (e["level"], len(e["sources"]), e["pub_at"]), reverse=True)
+    ids = list(db.scalars(
+        select(NewsItem.event_id).where(NewsItem.pub_at >= now - timedelta(hours=hours),
+                                        NewsItem.event_id.is_not(None)).distinct()
+    ))
+    if not ids:
+        return []
+    groups, anns = _load(db, ids)
+    events = [_build_event(g, anns.get(i)) for i, g in groups.items()]
+
+    def rank(e: dict) -> tuple:
+        s = e["score"] if e["score"] is not None else (FEATURED_SCORE if e["featured"] else 2)
+        return (s, len(e["sources"]), e["pub_at"])
+
+    events.sort(key=rank, reverse=True)
     picked = sorted(events[:limit], key=lambda e: e["pub_at"])
     out = []
     for e in picked:

@@ -1,7 +1,7 @@
 from app.models.agent import (AgentAccount, AgentEquity, AgentMemory, AgentOrder, AgentPlaybook,
                               AgentPosition, AgentSession)
 from app.models.market import Fundamental, HotRankDaily, IndexQuote, Kline, Quote, StockInfo
-from app.models.news import NewsItem
+from app.models.news import NewsEvent, NewsItem
 from app.models.research import ResearchRawCache, ResearchReport
 from app.models.sector import (SectorBar, SectorInfo, SectorMetric, SectorNarrative, SectorTilt,
                                SectorValuation)
@@ -59,6 +59,7 @@ __all__ = [
     "SectorNarrative",
     "SectorValuation",
     "NewsItem",
+    "NewsEvent",
     "ResearchReport",
     "ResearchRawCache",
 ]

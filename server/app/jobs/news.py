@@ -20,3 +20,16 @@ def collect_news() -> None:
         logger.exception("news collect failed")
     finally:
         db.close()
+
+
+def classify_news() -> None:
+    from app.services.news_classify import classify_pending  # noqa: PLC0415
+
+    db = SessionLocal()
+    try:
+        classify_pending(db)
+    except Exception:  # noqa: BLE001
+        logger.exception("news classify failed")
+        db.rollback()
+    finally:
+        db.close()

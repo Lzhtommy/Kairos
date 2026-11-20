@@ -6,7 +6,7 @@ import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.models.news import NewsItem
 from app.services import news
@@ -194,44 +194,171 @@ def test_collector_treats_empty_parse_as_failure(db):
 
 # ---------------------------------------------------------------- 查询 / API / 叙事
 
+from app.models.news import NewsEvent  # noqa: E402
+from app.models.sector import SectorInfo  # noqa: E402
+from app.services import news_classify  # noqa: E402
+
 
 def _seed(db, t=T0):
-    """事件 1：PPI 三家报道；事件 2：地震一家、重要；事件 3：普通一家。"""
+    """事件 1：PPI 三家报道；事件 2：地震一家、自标重要；事件 3：普通一家；事件 4：新浪独家公告。"""
     feeds = {
         "a": Feed(_item("a", "1", PPI, t), _item("a", "2", QUAKE, t + timedelta(seconds=30), imp=1)),
         "b": Feed(_item("b", "1", "德国10月PPI同比8.1%，预期7.3%，前值6.7%，高于预期。", t + timedelta(seconds=2))),
         "c": Feed(_item("c", "1", PPI, t + timedelta(seconds=40)),
                   _item("c", "2", "斯里兰卡央行行长：尚未对明年的经济增长做出预测。", t + timedelta(minutes=1))),
+        "sina": Feed(_item("sina", "9", "ST联光：聘任牛泽元为公司总裁，任期三年，自董事会审议通过之日起。",
+                           t + timedelta(minutes=1, seconds=30))),
     }
     Collector(feeds).run(db, t + timedelta(minutes=2))
+    return {e["content"][:4]: e["id"] for e in news.list_events(db, view="all", limit=200)} | {
+        "ST联光": db.execute(select(NewsItem.event_id).where(NewsItem.source == "sina")).scalar_one()}
 
 
-def test_list_events_groups_and_paginates(db):
-    _seed(db)
-    evs = news.list_events(db)
-    assert [len(e["sources"]) for e in evs] == [1, 1, 3]  # 新的在前
+def test_list_events_all_view_groups_paginates_and_hides_sina_noise(db):
+    ids = _seed(db)
+    evs = news.list_events(db, view="all")
+    assert [len(e["sources"]) for e in evs] == [1, 1, 3]  # 新的在前，新浪独家公告不出现
     ppi = evs[-1]
-    assert ppi["level"] == 1  # 三家同报算重要
     assert [s["source"] for s in ppi["sources"]] == ["a", "b", "c"]
     assert ppi["pub_at"] == "2026-11-20T06:50:00Z"
 
-    page1 = news.list_events(db, limit=2)
-    page2 = news.list_events(db, limit=2, before=page1[-1]["id"])
+    page1 = news.list_events(db, view="all", limit=2)
+    page2 = news.list_events(db, view="all", limit=2, before=page1[-1]["id"])
     assert [e["id"] for e in page1 + page2] == [e["id"] for e in evs]
 
-    assert {e["content"][:4] for e in news.list_events(db, important=True)} == {"美国地质", "德国10"}
-    (hit,) = news.list_events(db, q="地震", now=T0)
-    assert hit["level"] == 1
+    # LLM 认为重要的新浪独家照样出现
+    db.add(NewsEvent(event_id=ids["ST联光"], category="公司个股", score=4, sectors=[]))
+    db.commit()
+    assert ids["ST联光"] in [e["id"] for e in news.list_events(db, view="all")]
+
+    (hit,) = news.list_events(db, view="all", q="地震", now=T0)
+    assert hit["content"].startswith("美国地质")
 
 
-def test_recent_headlines_prefers_important_then_chronological(db):
-    _seed(db)
+def test_featured_view_uses_llm_score_then_fallback_rule(db):
+    ids = _seed(db)
+    # 未打标：三家同报的 PPI 进要闻；单家自标重要的地震不进
+    assert [e["id"] for e in news.list_events(db)] == [ids["德国10"]]
+
+    db.add_all([
+        NewsEvent(event_id=ids["美国地质"], category="其他", score=4, sectors=[]),
+        NewsEvent(event_id=ids["德国10"], category="宏观数据", score=3, sectors=["电子"]),
+    ])
+    db.commit()
+    # 地震 4 分进；PPI 3 分但三家同报，也进
+    assert [e["id"] for e in news.list_events(db)] == [ids["美国地质"], ids["德国10"]]
+    db.get(NewsEvent, ids["德国10"]).score = 2
+    db.commit()
+    evs = news.list_events(db)
+    assert [e["id"] for e in evs] == [ids["美国地质"]]  # LLM 分数优先于源标记规则
+    assert evs[0]["featured"] and evs[0]["score"] == 4 and evs[0]["category"] == "其他"
+
+    (macro,) = news.list_events(db, view="all", category="宏观数据")
+    assert macro["sectors"] == ["电子"] and not macro["featured"] and macro["score"] == 2
+
+
+def test_llm_featured_rule():
+    assert news.llm_featured(4, 1)
+    assert news.llm_featured(3, 3)
+    assert not news.llm_featured(3, 2)
+    assert not news.llm_featured(2, 5)
+
+
+def test_fallback_featured_rule():
+    assert news.fallback_featured(2, 1)        # 财联社 A 级
+    assert news.fallback_featured(0, 3)        # 三家同报
+    assert news.fallback_featured(1, 2)        # 两家且有一家标重要
+    assert not news.fallback_featured(1, 1)    # 单家自标重要不算
+    assert not news.fallback_featured(0, 2)
+
+
+def test_parse_keeps_only_a_share_stocks():
+    (it,) = news.parse_ths({"data": {"list": [{
+        "id": "1", "ctime": str(int(T0.timestamp())), "title": "t", "digest": "d", "url": "", "import": "0",
+        "stock": [{"name": "周大福", "stockCode": "HK1929"}, {"name": "拓荆科技", "stockCode": "688072"},
+                  {"name": "英伟达", "stockCode": "NVDA"}],
+    }]}})
+    assert it.stocks == [{"code": "688072", "name": "拓荆科技"}]
+    (c,) = news.parse_cls({"data": {"roll_data": [{
+        "id": 1, "ctime": int(T0.timestamp()), "level": "C", "title": "t", "content": "c",
+        "stock_list": [{"StockID": "sh600160", "name": "巨化股份"}, {"StockID": "hk00700", "name": "腾讯"}],
+    }]}})
+    assert c.stocks == [{"code": "600160", "name": "巨化股份"}]
+
+
+def test_recent_headlines_prefers_llm_score(db):
+    ids = _seed(db)
     now = T0 + timedelta(hours=1)
-    all3 = news.recent_headlines(db, now=now)
-    assert len(all3) == 3 and all3[-1].startswith("斯里兰卡")
+    assert len(news.recent_headlines(db, now=now)) == 4
+    # 未打标时三家同报的 PPI 排第一
+    assert news.recent_headlines(db, limit=1, now=now)[0].startswith("德国10")
+    db.add(NewsEvent(event_id=ids["斯里兰卡"], category="海外市场", score=5, sectors=[]))
+    db.commit()
     top2 = news.recent_headlines(db, limit=2, now=now)
-    assert [h[:4] for h in top2] == ["德国10", "美国地质"]
+    assert [h[:3] for h in top2] == ["德国1", "斯里兰"]  # 按时间正序
     assert news.recent_headlines(db, now=T0 + timedelta(days=2)) == []
+
+
+# ---------------------------------------------------------------- LLM 标注
+
+
+def _fake_llm(monkeypatch, reply):
+    calls = []
+
+    def chat_json(messages, **_kw):
+        calls.append(messages[0]["content"])
+        if isinstance(reply, Exception):
+            raise reply
+        return (reply(messages[0]["content"]) if callable(reply) else reply), 100
+
+    monkeypatch.setattr(news_classify.llm, "enabled", lambda: True)
+    monkeypatch.setattr(news_classify.llm, "model_name", lambda: "fake")
+    monkeypatch.setattr(news_classify.llm, "chat_json", chat_json)
+    return calls
+
+
+def test_classify_pending_writes_sanitized_rows_and_skips_done(db, monkeypatch):
+    ids = _seed(db)
+    db.add(SectorInfo(code="801080", name="电子", source="sw"))
+    db.commit()
+    # 编号按事件新→旧：0 新浪公告、1 斯里兰卡、2 地震、3 PPI；故意漏掉 1，给 2 非法分类和分数
+    calls = _fake_llm(monkeypatch, {"items": [
+        {"i": 0, "c": "公司个股", "s": 2, "sec": []},
+        {"i": 2, "c": "瞎编", "s": 9, "sec": ["电子", "不存在"]},
+        {"i": 3, "c": "宏观数据", "s": "4", "sec": ["电子"]},
+        {"i": 99, "c": "其他", "s": 1},
+    ]})
+    now = T0 + timedelta(minutes=3)
+    assert news_classify.classify_pending(db, now) == 4
+    assert "电子" in calls[0] and "德国10月PPI" in calls[0]
+
+    rows = {r.event_id: r for r in db.scalars(select(NewsEvent))}
+    assert (rows[ids["德国10"]].category, rows[ids["德国10"]].score, rows[ids["德国10"]].sectors) == ("宏观数据", 4, ["电子"])
+    assert (rows[ids["美国地质"]].category, rows[ids["美国地质"]].score, rows[ids["美国地质"]].sectors) == (None, 5, ["电子"])
+    assert (rows[ids["斯里兰卡"]].category, rows[ids["斯里兰卡"]].score) == (None, None)  # 漏掉的写空行
+    assert news_classify.classify_pending(db, now) == 0 and len(calls) == 1  # 已标注的不再送
+
+
+def test_classify_failure_writes_nothing_and_retries(db, monkeypatch):
+    _seed(db)
+    _fake_llm(monkeypatch, RuntimeError("timeout"))
+    now = T0 + timedelta(minutes=3)
+    assert news_classify.classify_pending(db, now) == 0
+    assert db.scalar(select(func.count()).select_from(NewsEvent)) == 0
+    _fake_llm(monkeypatch, {"items": []})
+    assert news_classify.classify_pending(db, now) == 4
+
+
+def test_classify_skips_events_older_than_lookback(db, monkeypatch):
+    _seed(db)
+    _fake_llm(monkeypatch, {"items": []})
+    assert news_classify.classify_pending(db, T0 + timedelta(days=2)) == 0
+
+
+def test_classify_disabled_without_llm(db, monkeypatch):
+    _seed(db)
+    monkeypatch.setattr(news_classify.llm, "enabled", lambda: False)
+    assert news_classify.classify_pending(db, T0) == 0
 
 
 def test_narrative_reads_news_item_and_falls_back(db, monkeypatch):
@@ -240,7 +367,7 @@ def test_narrative_reads_news_item_and_falls_back(db, monkeypatch):
     monkeypatch.setattr(narrative, "MIN_DB_HEADLINES", 3)
     monkeypatch.setattr(news, "datetime", type("D", (datetime,), {"now": staticmethod(lambda tz=None: T0 + timedelta(hours=1))}))
     _seed(db)
-    assert len(narrative.fetch_headlines(db)) == 3
+    assert len(narrative.fetch_headlines(db)) == 4
 
     monkeypatch.setattr(narrative, "MIN_DB_HEADLINES", 10)
     import sys
@@ -272,8 +399,11 @@ def test_news_api_requires_login_and_returns_events(db):
 
     app.dependency_overrides[get_current_user] = lambda: object()
     c = TestClient(app)
-    body = c.get("/news/events", params={"limit": 2}).json()
+    assert len(c.get("/news/events").json()["events"]) == 1  # 默认只看要闻
+    body = c.get("/news/events", params={"limit": 2, "view": "all"}).json()
     assert len(body["events"]) == 2 and body["next"] == body["events"][-1]["id"]
-    assert c.get("/news/events", params={"before": body["next"]}).json()["next"] is None
+    assert c.get("/news/events", params={"before": body["next"], "view": "all"}).json()["next"] is None
+    assert c.get("/news/events", params={"view": "bogus"}).status_code == 422
+    assert "宏观数据" in c.get("/news/categories").json()
     srcs = c.get("/news/sources").json()
     assert [s["source"] for s in srcs] == ["cls", "jin10", "wscn", "sina", "ths"]
