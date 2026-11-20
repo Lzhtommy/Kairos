@@ -225,7 +225,6 @@ export function SectorPage() {
               <TableHead className="cursor-pointer" onClick={() => setSort("val")}>
                 估值分位{sort === "val" && " ↑"}
               </TableHead>
-              <TableHead className="hidden md:table-cell">因子 z（反转/季节/残差动量）</TableHead>
               <TableHead className="hidden lg:table-cell">今日叙事</TableHead>
             </TableRow>
           </TableHeader>
@@ -293,20 +292,13 @@ export function SectorPage() {
                     <TableCell>
                       <ValuationCell v={s.valuation} />
                     </TableCell>
-                    <TableCell className="hidden font-mono text-xs tabular-nums text-muted-foreground md:table-cell">
-                      {s.tilt
-                        ? [s.tilt.rev1_z, s.tilt.season_z, s.tilt.resmom_z]
-                            .map((z) => (z == null ? "—" : (z >= 0 ? "+" : "") + z.toFixed(1)))
-                            .join(" / ")
-                        : "—"}
-                    </TableCell>
                     <TableCell className="hidden max-w-72 lg:table-cell">
                       <NarrativeCell item={s.narrative} />
                     </TableCell>
                   </TableRow>
                   {open && (
                     <TableRow className="hover:bg-transparent">
-                      <TableCell colSpan={7} className="whitespace-normal p-4">
+                      <TableCell colSpan={6} className="whitespace-normal p-4">
                         <ValuationDetail code={s.code} />
                       </TableCell>
                     </TableRow>
