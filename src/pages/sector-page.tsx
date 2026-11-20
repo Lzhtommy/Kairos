@@ -86,6 +86,14 @@ function NarrativeCell({ item }: { item: NarrativeItem | null }) {
   )
 }
 
+// 叙事方向 -1~1 只显示定性标签，与 NarrativeCell 的箭头阈值一致
+function DirectionTag({ direction }: { direction: number | null | undefined }) {
+  const d = direction ?? 0
+  if (d > 0.1) return <span className="shrink-0 rounded bg-up-muted px-1.5 text-xs text-up">利好</span>
+  if (d < -0.1) return <span className="shrink-0 rounded bg-down-muted px-1.5 text-xs text-down">利空</span>
+  return <span className="shrink-0 rounded bg-muted px-1.5 text-xs text-muted-foreground">中性</span>
+}
+
 type SortKey = "tilt" | "crowd" | "chg" | "val"
 
 function ValuationDetail({ code }: { code: string }) {
@@ -183,10 +191,8 @@ export function SectorPage() {
             {overview.market_narrative ? (
               <>
                 <p className="mt-2 text-sm">{overview.market_narrative.summary}</p>
-                <p className="mt-1.5 text-xs text-muted-foreground">
-                  方向 {(overview.market_narrative.direction ?? 0) >= 0 ? "+" : ""}
-                  {(overview.market_narrative.direction ?? 0).toFixed(1)} · 强度{" "}
-                  {(overview.market_narrative.strength ?? 0).toFixed(1)} ·{" "}
+                <p className="mt-1.5 flex items-center gap-2 text-xs text-muted-foreground">
+                  <DirectionTag direction={overview.market_narrative.direction} />
                   {overview.market_narrative.date}
                 </p>
               </>
@@ -324,15 +330,7 @@ export function SectorPage() {
                   {day.items.map((item) => (
                     <li key={`${day.date}-${item.code}`} className="flex items-baseline gap-2 text-sm">
                       <span className="w-20 shrink-0 font-medium">{item.name}</span>
-                      <span
-                        className={cn(
-                          "shrink-0 font-mono text-xs tabular-nums",
-                          (item.direction ?? 0) >= 0 ? "text-up" : "text-down",
-                        )}
-                      >
-                        {(item.direction ?? 0) >= 0 ? "+" : ""}
-                        {(item.direction ?? 0).toFixed(1)}
-                      </span>
+                      <DirectionTag direction={item.direction} />
                       <span className="text-muted-foreground" title={item.evidence?.join("\n")}>
                         {item.summary}
                       </span>
