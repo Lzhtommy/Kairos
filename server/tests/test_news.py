@@ -190,3 +190,90 @@ def test_collector_treats_empty_parse_as_failure(db):
     c = Collector({"e": empty})
     c.run(db, T0)
     assert c.health["e"].fails == 1
+
+
+# ---------------------------------------------------------------- 查询 / API / 叙事
+
+
+def _seed(db, t=T0):
+    """事件 1：PPI 三家报道；事件 2：地震一家、重要；事件 3：普通一家。"""
+    feeds = {
+        "a": Feed(_item("a", "1", PPI, t), _item("a", "2", QUAKE, t + timedelta(seconds=30), imp=1)),
+        "b": Feed(_item("b", "1", "德国10月PPI同比8.1%，预期7.3%，前值6.7%，高于预期。", t + timedelta(seconds=2))),
+        "c": Feed(_item("c", "1", PPI, t + timedelta(seconds=40)),
+                  _item("c", "2", "斯里兰卡央行行长：尚未对明年的经济增长做出预测。", t + timedelta(minutes=1))),
+    }
+    Collector(feeds).run(db, t + timedelta(minutes=2))
+
+
+def test_list_events_groups_and_paginates(db):
+    _seed(db)
+    evs = news.list_events(db)
+    assert [len(e["sources"]) for e in evs] == [1, 1, 3]  # 新的在前
+    ppi = evs[-1]
+    assert ppi["level"] == 1  # 三家同报算重要
+    assert [s["source"] for s in ppi["sources"]] == ["a", "b", "c"]
+    assert ppi["pub_at"] == "2026-11-20T06:50:00Z"
+
+    page1 = news.list_events(db, limit=2)
+    page2 = news.list_events(db, limit=2, before=page1[-1]["id"])
+    assert [e["id"] for e in page1 + page2] == [e["id"] for e in evs]
+
+    assert {e["content"][:4] for e in news.list_events(db, important=True)} == {"美国地质", "德国10"}
+    (hit,) = news.list_events(db, q="地震", now=T0)
+    assert hit["level"] == 1
+
+
+def test_recent_headlines_prefers_important_then_chronological(db):
+    _seed(db)
+    now = T0 + timedelta(hours=1)
+    all3 = news.recent_headlines(db, now=now)
+    assert len(all3) == 3 and all3[-1].startswith("斯里兰卡")
+    top2 = news.recent_headlines(db, limit=2, now=now)
+    assert [h[:4] for h in top2] == ["德国10", "美国地质"]
+    assert news.recent_headlines(db, now=T0 + timedelta(days=2)) == []
+
+
+def test_narrative_reads_news_item_and_falls_back(db, monkeypatch):
+    from app.services import narrative
+
+    monkeypatch.setattr(narrative, "MIN_DB_HEADLINES", 3)
+    monkeypatch.setattr(news, "datetime", type("D", (datetime,), {"now": staticmethod(lambda tz=None: T0 + timedelta(hours=1))}))
+    _seed(db)
+    assert len(narrative.fetch_headlines(db)) == 3
+
+    monkeypatch.setattr(narrative, "MIN_DB_HEADLINES", 10)
+    import sys
+    import types
+
+    class DF:
+        columns = ["标题"]
+
+        def __getitem__(self, _k):
+            return types.SimpleNamespace(tolist=lambda: ["东财 A", "东财 A", "东财 B"])
+
+    monkeypatch.setitem(sys.modules, "akshare", types.SimpleNamespace(stock_info_global_em=lambda: DF()))
+    assert narrative.fetch_headlines(db) == ["东财 A", "东财 B"]
+
+
+def test_news_api_requires_login_and_returns_events(db):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.api.news import router
+    from app.core.db import get_db
+    from app.core.security import get_current_user
+
+    _seed(db)
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_db] = lambda: db
+    assert TestClient(app).get("/news/events").status_code == 401
+
+    app.dependency_overrides[get_current_user] = lambda: object()
+    c = TestClient(app)
+    body = c.get("/news/events", params={"limit": 2}).json()
+    assert len(body["events"]) == 2 and body["next"] == body["events"][-1]["id"]
+    assert c.get("/news/events", params={"before": body["next"]}).json()["next"] is None
+    srcs = c.get("/news/sources").json()
+    assert [s["source"] for s in srcs] == ["cls", "jin10", "wscn", "sina", "ths"]

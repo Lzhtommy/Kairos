@@ -38,7 +38,7 @@ def update_narrative() -> None:
             return
         name_to_code = {name: code for code, name in sectors}
 
-        headlines = fetch_headlines()
+        headlines = fetch_headlines(db)
         if not headlines:
             logger.info("No headlines fetched; narrative skipped")
             return

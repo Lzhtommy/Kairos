@@ -6,16 +6,18 @@
 此前仅作展示层信息（读法与拥挤度配对：叙事升温 × 不拥挤 = 机会；
 叙事沸腾 × 高拥挤 = 出口）。
 
-新闻源经 akshare（生产镜像 WITH_DATA=true 自带）：财联社电报 + 东财全球
-快讯，任一可用即可；打分走 DeepSeek JSON mode（与 strategy_ai 同配置），
-失败静默跳过当日（前向序列缺一天无妨，绝不能写进猜测值）。
+新闻源是自家采集的 news_item（财联社 / 金十 / 华尔街见闻 / 新浪 / 同花顺
+合并去重，见 services/news.py），库里不够时回落 akshare 东财全球快讯；
+打分走 DeepSeek JSON mode（与 strategy_ai 同配置），失败静默跳过当日（前向序列缺一天无妨，绝不能写进猜测值）。
 """
 
 from __future__ import annotations
 
 import logging
 
-from app.services import llm
+from sqlalchemy.orm import Session
+
+from app.services import llm, news
 
 logger = logging.getLogger("kairos.narrative")
 
@@ -23,44 +25,33 @@ MAX_HEADLINES = 120
 MAX_EVIDENCE = 5
 
 
-def fetch_headlines() -> list[str]:
-    """拉当日财经快讯标题。
+MIN_DB_HEADLINES = 30
 
-    主源东财全球快讯（快、稳定）；财联社电报只在主源空手时才试——
-    该接口 2026-08 起 404，且 akshare 内部重试会挂近十分钟，
-    不能让它挡在每日任务的必经路上。
+
+def fetch_headlines(db: Session | None = None) -> list[str]:
+    """近 24 小时的快讯标题，每个事件一条。
+
+    主源是自家采集的 news_item（五源合并、按重要度挑）；库里不够
+    （采集刚上线 / 被关掉）时回落东财全球快讯。财联社的 akshare 接口
+    2026-08 起 404 且会挂近十分钟，已不再使用。
     """
+    if db is not None:
+        titles = news.recent_headlines(db, limit=MAX_HEADLINES)
+        if len(titles) >= MIN_DB_HEADLINES:
+            return titles
+        logger.info("news_item has only %d headlines in 24h; falling back to akshare", len(titles))
 
-    def _from_em() -> list[str]:
+    try:
         import akshare as ak  # noqa: PLC0415 — 可选依赖
 
         df = ak.stock_info_global_em()
         col = "标题" if "标题" in df.columns else df.columns[0]
-        return [str(t).strip() for t in df[col].tolist() if str(t).strip()]
+        titles = [str(t).strip() for t in df[col].tolist() if str(t).strip()]
+    except Exception as exc:  # noqa: BLE001
+        logger.info("Headline source akshare em unavailable: %s", exc)
+        return []
 
-    def _from_cls() -> list[str]:
-        import akshare as ak  # noqa: PLC0415
-
-        df = ak.stock_info_global_cls()
-        col = "标题" if "标题" in df.columns else df.columns[0]
-        return [str(t).strip() for t in df[col].tolist() if str(t).strip()]
-
-    titles: list[str] = []
-    for fetch in (_from_em, _from_cls):
-        try:
-            titles = fetch()
-        except Exception as exc:  # noqa: BLE001 — 单源失败再试下一个
-            logger.info("Headline source %s unavailable: %s", fetch.__name__, exc)
-        if titles:
-            break
-
-    seen: set[str] = set()
-    out: list[str] = []
-    for t in titles:
-        if t not in seen:
-            seen.add(t)
-            out.append(t)
-    return out[:MAX_HEADLINES]
+    return list(dict.fromkeys(titles))[:MAX_HEADLINES]
 
 
 def score_narrative(headlines: list[str], sector_names: list[str]) -> dict | None:

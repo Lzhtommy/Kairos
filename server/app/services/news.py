@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.news import NewsItem
@@ -59,7 +59,7 @@ class Item:
 _TAG = re.compile(r"<[^>]+>")
 _BREAK = re.compile(r"<br\s*/?>|</p>", re.I)
 _BOILER = re.compile(
-    r"^(?:(?:财联社|金十数据|格隆汇)\d{1,2}月\d{1,2}日(?:电|讯)?|\d{1,2}月\d{1,2}日(?:电|讯))[，,｜|：:\s]*"
+    r"^(?:(?:财联社|金十数据|金十期货|格隆汇)\d{1,2}月\d{1,2}日(?:电|讯)?|\d{1,2}月\d{1,2}日(?:电|讯))[，,｜|：:\s]*"
 )
 _BRACKET_TITLE = re.compile(r"^【([^】]{2,200})】\s*")
 
@@ -427,3 +427,111 @@ class Collector:
 
 
 collector = Collector()
+
+
+# ---------------------------------------------------------------- 查询（按事件聚合）
+
+SOURCE_NAMES = {"cls": "财联社", "jin10": "金十数据", "wscn": "华尔街见闻", "sina": "新浪财经", "ths": "同花顺"}
+MULTI_SOURCE = 3  # 3 家及以上同时报道的事件视为重要
+
+
+def _iso(dt: datetime) -> str:
+    return _utc(dt).isoformat().replace("+00:00", "Z")
+
+
+def _build_event(items: list[NewsItem]) -> dict:
+    items = sorted(items, key=lambda r: _utc(r.pub_at))
+    # 正文取信息量最多的一条：重要度高 > 有标题 > 正文长
+    main = max(items, key=lambda r: (r.importance, bool(r.title), len(r.content)))
+    title = main.title or next((r.title for r in items if r.title), "")
+    n_sources = len({r.source for r in items})
+    importance = max(r.importance for r in items)
+    level = max(importance, 1 if n_sources >= MULTI_SOURCE else 0)
+    return {
+        "id": items[0].event_id,
+        "pub_at": _iso(items[0].pub_at),
+        "level": level,
+        "title": title,
+        "content": main.content,
+        "sources": [
+            {"source": r.source, "name": SOURCE_NAMES.get(r.source, r.source), "url": r.url,
+             "pub_at": _iso(r.pub_at), "importance": r.importance}
+            for r in items
+        ],
+    }
+
+
+def _important_having():  # noqa: ANN202
+    return or_(func.max(NewsItem.importance) >= 1, func.count(func.distinct(NewsItem.source)) >= MULTI_SOURCE)
+
+
+def list_events(db: Session, *, limit: int = 50, before: int | None = None, important: bool = False,
+                q: str | None = None, now: datetime | None = None) -> list[dict]:
+    """最新事件，按 event_id 倒序（≈ 首次报道时间倒序），before 为翻页游标。"""
+    ev = NewsItem.event_id
+    stmt = select(ev).where(ev.is_not(None))
+    if before is not None:
+        stmt = stmt.where(ev < before)
+    if q:
+        # 搜索只看近 30 天，避免对全表 LIKE
+        since = (now or datetime.now(timezone.utc)) - timedelta(days=30)
+        hit = select(NewsItem.event_id).where(
+            NewsItem.seen_at >= since,
+            or_(NewsItem.title.contains(q, autoescape=True), NewsItem.content.contains(q, autoescape=True)),
+        )
+        stmt = stmt.where(ev.in_(hit))
+    stmt = stmt.group_by(ev)
+    if important:
+        stmt = stmt.having(_important_having())
+    ids = list(db.scalars(stmt.order_by(ev.desc()).limit(limit)))
+    if not ids:
+        return []
+    groups: dict[int, list[NewsItem]] = {}
+    for r in db.scalars(select(NewsItem).where(ev.in_(ids))):
+        groups.setdefault(r.event_id, []).append(r)
+    return [_build_event(groups[i]) for i in ids if i in groups]
+
+
+def recent_headlines(db: Session, *, hours: int = 24, limit: int = 120, now: datetime | None = None) -> list[str]:
+    """叙事打分用：近 N 小时的事件，每个事件一条标题。
+
+    超过 limit 时优先留重要度高、报道家数多的，再按时间正序排给 LLM。
+    """
+    now = now or datetime.now(timezone.utc)
+    rows = db.scalars(
+        select(NewsItem).where(NewsItem.pub_at >= now - timedelta(hours=hours), NewsItem.event_id.is_not(None))
+    ).all()
+    groups: dict[int, list[NewsItem]] = {}
+    for r in rows:
+        groups.setdefault(r.event_id, []).append(r)
+    events = [_build_event(g) for g in groups.values()]
+    events.sort(key=lambda e: (e["level"], len(e["sources"]), e["pub_at"]), reverse=True)
+    picked = sorted(events[:limit], key=lambda e: e["pub_at"])
+    out = []
+    for e in picked:
+        text = e["title"] or e["content"][:100]
+        if text:
+            out.append(text)
+    return out
+
+
+def source_status(db: Session, now: datetime | None = None) -> list[dict]:
+    """各源最近一次入库时间、近 24 小时条数和当前熔断状态。"""
+    now = now or datetime.now(timezone.utc)
+    stats = {
+        s: (last, n)
+        for s, last, n in db.execute(
+            select(NewsItem.source, func.max(NewsItem.seen_at), func.count())
+            .where(NewsItem.seen_at >= now - timedelta(hours=24))
+            .group_by(NewsItem.source)
+        )
+    }
+    out = []
+    for s in collector.sources:
+        last, n = stats.get(s, (None, 0))
+        h = collector.health.get(s)
+        out.append({
+            "source": s, "name": SOURCE_NAMES.get(s, s), "last_seen": _iso(last) if last else None,
+            "count_24h": n, "failing": bool(h and h.fails > 0),
+        })
+    return out

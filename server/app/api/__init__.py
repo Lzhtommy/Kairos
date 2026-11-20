@@ -8,6 +8,7 @@ from app.api import (
     backtests,
     data,
     health,
+    news,
     paper,
     quotes,
     research,
@@ -27,6 +28,7 @@ api_router.include_router(settings.router)
 api_router.include_router(quotes.router)
 api_router.include_router(screener.router)
 api_router.include_router(sector.router)
+api_router.include_router(news.router)
 api_router.include_router(strategies.router)
 api_router.include_router(backtests.router)
 api_router.include_router(paper.router)

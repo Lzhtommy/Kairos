@@ -353,7 +353,7 @@ def test_update_narrative_writes_and_skips(db, monkeypatch):
     monkeypatch.setattr(settings, "deepseek_api_key", "test-key")
     monkeypatch.setattr(settings, "ai_provider", "deepseek")
     monkeypatch.setattr(narrative_job, "SessionLocal", lambda: db)
-    monkeypatch.setattr(narrative_job, "fetch_headlines", lambda: ["半导体大基金三期落地", "无关新闻"])
+    monkeypatch.setattr(narrative_job, "fetch_headlines", lambda _db: ["半导体大基金三期落地", "无关新闻"])
 
     def fake_score(headlines, names):
         assert "电子" in names
