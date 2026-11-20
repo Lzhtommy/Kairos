@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     # 联网搜索（Tavily）。留空时 agent 只有站内数据 + 东财快讯，没有自由搜索工具
     tavily_api_key: str = ""
 
+    # 全球快讯轮询（app/services/news.py），全天候运行
+    enable_news: bool = True
+    news_interval_seconds: int = 15
+
     # 行业轮动模块的板块数据源："auto" | "sw" | "eastmoney" | "off"
     # （auto 先试申万研究口径，再回落东财行业板块；首次落库后按库内口径锁定）
     sector_source: str = "auto"

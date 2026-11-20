@@ -51,6 +51,7 @@ async def lifespan(_app: FastAPI):
     )
     from app.jobs.hot_rank import record_daily_hot_ranks, refresh_market_hot_ranks
     from app.jobs.narrative import update_narrative
+    from app.jobs.news import collect_news
     from app.jobs.listing import listing_missing, refresh_listing
     from app.jobs.warehouse import backfill_missing, refresh_announcements, refresh_warehouse
     from app.jobs.research import process_research_queue, requeue_interrupted
@@ -165,6 +166,17 @@ async def lifespan(_app: FastAPI):
             coalesce=True,
             next_run_time=datetime.now(timezone.utc),
         )
+        # 全球快讯：全天候轮询 5 个 7×24 源，跨源合并后落库
+        if settings.enable_news:
+            _scheduler.add_job(
+                collect_news,
+                "interval",
+                seconds=settings.news_interval_seconds,
+                id="news",
+                max_instances=1,
+                coalesce=True,
+                next_run_time=datetime.now(timezone.utc),
+            )
         # 研报任务队列：每 20s 取一条 queued 串行执行（生成一份约数分钟）
         _scheduler.add_job(
             process_research_queue,
