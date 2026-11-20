@@ -1,6 +1,6 @@
 import { api } from "@/api/client"
 
-export type SessionKind = "premarket" | "postclose" | "review" | "manual"
+export type SessionKind = "premarket" | "open" | "postclose" | "review" | "manual"
 
 export type AgentSessionRow = {
   id: number

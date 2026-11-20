@@ -21,7 +21,9 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models.agent import AgentAccount, AgentMemory, AgentOrder, AgentPlaybook, AgentPosition, AgentSession
+from app.models.agent import (
+    AgentAccount, AgentEquity, AgentMemory, AgentOrder, AgentPlaybook, AgentPosition, AgentSession,
+)
 from app.models.market import Fundamental, IndexQuote, Kline, Quote, StockInfo
 from app.models.research import ResearchReport
 from app.models.sector import SectorBar, SectorInfo, SectorMetric, SectorNarrative, SectorTilt
@@ -43,6 +45,9 @@ class Ctx:
     session: AgentSession
     can_trade: bool  # 周度反思只读
     can_edit_playbook: bool
+    only: frozenset[str] | None = None  # 非空时只开放这些工具（开盘执行会话用）
+    order_deadline: datetime | None = None  # 过了这个时刻（UTC aware）拒绝下单 / 撤单，防止单子顺延到次日
+    memory_quota: int | None = None  # 本次运行最多新写几条经验（None 不限）
     cache: dict[str, Any] = field(default_factory=dict)
 
 
@@ -75,6 +80,8 @@ def specs(ctx: Ctx) -> list[dict[str, Any]]:
         if group == "playbook" and not ctx.can_edit_playbook:
             continue
         if group == "web" and not settings.tavily_api_key:
+            continue
+        if ctx.only is not None and spec["name"] not in ctx.only:
             continue
         out.append(spec)
     return out
@@ -146,7 +153,50 @@ def _pct(a: float | None, b: float | None) -> float | None:
     return round((a / b - 1) * 100, 2) if a and b else None
 
 
+def _cst(ts: datetime | None) -> str | None:
+    return f"{broker._aware(ts) + timedelta(hours=8):%Y-%m-%d %H:%M}" if ts else None  # 库里是 UTC
+
+
+def quote_phase(ts: datetime | None) -> str:
+    """行情快照所处阶段——盘前看到的"现价"其实是上一交易日的收盘，必须让模型分清。"""
+    if ts is None:
+        return "未知"
+    t = broker._aware(ts) + timedelta(hours=8)
+    if t.date() < broker.cst_today().date():
+        return f"上一交易日（{t:%m-%d}）快照：price 为当时收盘，open/high/low 也是那天的，不是今天的"
+    hm = (t.hour, t.minute)
+    if hm < (9, 25):
+        return "今日开盘前（集合竞价未结束），price 不是今日成交价"
+    if hm < (9, 30):
+        return "今日集合竞价已结束：open 即今日开盘价，连续竞价 09:30 开始"
+    if hm < (15, 0):
+        return f"今日盘中 {t:%H:%M}"
+    return "今日收盘"
+
+
 # ---------------------------------------------------------------- 账户
+
+
+BENCH_NAMES = {"000300": "沪深300", "000905": "中证500", "000852": "中证1000", "399006": "创业板指"}
+
+
+def performance(db: Session, acct: AgentAccount) -> dict[str, Any] | None:
+    """成立以来（按已结算的收盘净值）账户收益 vs 基准收益，单位 %。"""
+    first = db.execute(
+        select(AgentEquity).where(AgentEquity.account_id == acct.id).order_by(AgentEquity.date).limit(1)
+    ).scalar()
+    last = db.execute(
+        select(AgentEquity).where(AgentEquity.account_id == acct.id).order_by(AgentEquity.date.desc()).limit(1)
+    ).scalar()
+    if first is None or last is None:
+        return None
+    ret = _pct(last.total, acct.initial_cash)
+    bench = _pct(last.bench_close, first.bench_close) if first.bench_close and last.bench_close else None
+    return {
+        "from": first.date.strftime("%Y-%m-%d"), "to": last.date.strftime("%Y-%m-%d"),
+        "returnPct": ret, "benchmark": BENCH_NAMES.get(acct.benchmark, acct.benchmark), "benchPct": bench,
+        "excessPct": round(ret - bench, 2) if ret is not None and bench is not None else None,
+    }
 
 
 def portfolio(ctx: Ctx) -> dict[str, Any]:
@@ -176,6 +226,7 @@ def portfolio(ctx: Ctx) -> dict[str, Any]:
         "total": round(total, 2),
         "initialCash": acct.initial_cash,
         "totalReturnPct": _pct(total, acct.initial_cash),
+        "vsBenchmark": performance(db, acct),  # 按最近一次收盘结算口径
         "positions": sorted(rows, key=lambda x: -x["value"]),
         "pendingOrders": [_order_row(o) for o in pending],
     }
@@ -191,7 +242,8 @@ def _order_row(o: AgentOrder) -> dict[str, Any]:
     }
 
 
-@tool("get_portfolio", "查看账户现金、可用资金（已扣在途买单）、持仓（成本 / 现价 / 浮盈）和未成交挂单。")
+@tool("get_portfolio", "查看账户现金、可用资金（已扣在途买单）、持仓（成本 / 现价 / 浮盈）、未成交挂单，"
+                       "以及成立以来收益与同期基准（vsBenchmark，excessPct 为超额）。")
 def _get_portfolio(ctx: Ctx, args: dict[str, Any]) -> Any:
     return portfolio(ctx)
 
@@ -250,7 +302,8 @@ def _market_overview(ctx: Ctx, args: dict[str, Any]) -> Any:
         select(SectorNarrative).where(SectorNarrative.code == "_market").order_by(SectorNarrative.date.desc()).limit(1)
     ).scalar()
     return {
-        "asOf": str(asof)[:16] if asof else None,
+        "asOf": _cst(asof),  # 北京时间
+        "phase": quote_phase(asof),
         "indices": [
             {"code": i.code, "name": i.name, "price": i.price, "changePct": i.change_pct}
             for i in db.execute(select(IndexQuote)).scalars()
@@ -321,7 +374,10 @@ def _screen_stocks(ctx: Ctx, args: dict[str, Any]) -> Any:
     info = _names(db)
     divs = {f.code: f.dividend_yield for f in db.execute(select(Fundamental)).scalars()}
     rows = []
+    asof: datetime | None = None
     for q in db.execute(select(Quote)).scalars():
+        if q.ts and (asof is None or q.ts > asof):
+            asof = q.ts
         meta = info.get(q.code)
         if meta is None or meta.delist_date is not None or not q.price:
             continue
@@ -346,7 +402,7 @@ def _screen_stocks(ctx: Ctx, args: dict[str, Any]) -> Any:
             rows.append(row)
     sign = 1 if args.get("ascending") else -1
     rows.sort(key=lambda r: (r[sort_by] is None, sign * (r[sort_by] or 0)))
-    return {"matched": len(rows), "items": rows[: _limit(args, 20, 50)]}
+    return {"quotePhase": quote_phase(asof), "matched": len(rows), "items": rows[: _limit(args, 20, 50)]}
 
 
 @tool(
@@ -393,7 +449,8 @@ def _get_stock(ctx: Ctx, args: dict[str, Any]) -> Any:
         "quote": {
             "price": q.price, "changePct": change_pct(q.price, q.prev_close), "open": q.open, "high": q.high,
             "low": q.low, "turnoverYi": _r(q.turnover), "turnoverRate": _r(q.turnover_rate),
-            "pe": _r(q.pe), "pb": _r(q.pb), "marketCapYi": _r(q.market_cap, 1), "asOf": str(q.ts)[:16],
+            "pe": _r(q.pe), "pb": _r(q.pb), "marketCapYi": _r(q.market_cap, 1), "prevClose": q.prev_close,
+            "asOf": _cst(q.ts), "phase": quote_phase(q.ts),
         } if q else None,
         "technical": {
             "lastDate": bars[-1][0].strftime("%Y-%m-%d") if bars else None,
@@ -508,7 +565,25 @@ def _sector_overview(ctx: Ctx, args: dict[str, Any]) -> Any:
             "narrative": {"direction": n.direction, "strength": n.strength, "summary": n.summary} if n else None,
         })
     rows.sort(key=lambda r: -(r["ret5d"] or -999))
-    return {"asOf": days[0].strftime("%Y-%m-%d") if days else None, "sectors": rows}
+    out: dict[str, Any] = {"asOf": days[0].strftime("%Y-%m-%d") if days else None}
+    lag = _sector_lag(db, days[0]) if days else 0
+    if lag:
+        out["stale"] = (
+            f"注意：行业指数只更新到 {days[0]:%Y-%m-%d}，缺最近 {lag} 个交易日（申万数据源延迟），"
+            "ret1d / ret5d / ret20d 都截止在那一天。最近一日的行业涨跌请看 market_overview 的 "
+            "topIndustries / bottomIndustries（按个股快照均值），不要把这里的数字当成最新。"
+        )
+    out["sectors"] = rows
+    return out
+
+
+def _sector_lag(db: Session, sector_last: datetime) -> int:
+    """行业指数落后于最近一个已收盘交易日几个交易日。"""
+    upto = broker.cst_today()
+    now = broker.cst_now()
+    if (now.hour, now.minute) < broker._CLOSE_FINAL:
+        upto -= timedelta(days=1)
+    return len(broker.calendar(db, sector_last, upto))
 
 
 # ---------------------------------------------------------------- 资讯
@@ -581,6 +656,15 @@ def _web_search(ctx: Ctx, args: dict[str, Any]) -> Any:
 # ---------------------------------------------------------------- 交易
 
 
+def _check_deadline(ctx: Ctx) -> None:
+    if ctx.order_deadline is not None and datetime.now(timezone.utc) >= ctx.order_deadline:
+        cst = ctx.order_deadline + timedelta(hours=8)
+        raise ValueError(
+            f"已过本轮下单截止时间（{cst:%H:%M:%S}），再下的单会顺延到下一个交易日，所以不再接受下单 / 撤单。"
+            "把想做的操作写进结论，留给下一次运行。"
+        )
+
+
 @tool(
     "place_order",
     "下单（模拟盘，按真实规则撮合）。盘前（09:30 前）下的单按当日行情撮合，之后下的单在下一个交易日撮合；"
@@ -598,6 +682,7 @@ def _web_search(ctx: Ctx, args: dict[str, Any]) -> Any:
     group="trade",
 )
 def _place_order(ctx: Ctx, args: dict[str, Any]) -> Any:
+    _check_deadline(ctx)
     limit = args.get("limit_price")
     o = broker.place_order(
         ctx.db, ctx.account, code=str(args.get("code") or ""), side=str(args.get("side") or ""),
@@ -616,6 +701,7 @@ def _place_order(ctx: Ctx, args: dict[str, Any]) -> Any:
     group="trade",
 )
 def _cancel_order(ctx: Ctx, args: dict[str, Any]) -> Any:
+    _check_deadline(ctx)
     o = ctx.db.get(AgentOrder, int(args.get("order_id") or 0))
     if o is None or o.account_id != ctx.account.id:
         raise ValueError("订单不存在")
@@ -659,17 +745,24 @@ def _recall_memories(ctx: Ctx, args: dict[str, Any]) -> Any:
     return out
 
 
+RULE_MIN_SAMPLES = 3  # 升级为 rule 至少要几笔独立的实盘样本
+
+
 @tool(
     "save_memory",
     "把一条可复用的经验写进经验库，供以后的自己参考。要具体、可执行、可证伪"
-    "（如“缩量阴跌中的低估值股，跌破 60 日线后平均还要再跌 8%，不要左侧抄底”），不要写空话或当天流水账。",
+    "（如“缩量阴跌中的低估值股，跌破 60 日线后平均还要再跌 8%，不要左侧抄底”），不要写空话或当天流水账。"
+    f"rule 必须有至少 {RULE_MIN_SAMPLES} 笔独立实盘样本支撑，样本不够的记成 lesson 或 watch。"
+    "规则只能依赖你在决策时点真正拿得到的信息（见系统提示「决策时点」），不要写“盘中 / 10:30 后 / 尾盘再挂”这类做不到的动作。"
+    "已有相近条目时，先 retire_memory 旧条目再写合并后的新条目，不要叠加。",
     {
         "content": {"type": "string"},
         "kind": {"type": "string", "enum": ["lesson", "rule", "watch"],
                  "description": "lesson=从结果得出的教训；rule=打算遵守的规则；watch=需要持续跟踪的观察"},
+        "samples": {"type": "integer", "description": "支撑这条经验的独立实盘样本数（不同股票 / 不同日期的成交或明确的错过）"},
         "tags": {"type": "array", "items": {"type": "string"}, "description": "如 止损 / 追高 / 半导体 / 情绪"},
     },
-    ["content", "kind"],
+    ["content", "kind", "samples"],
     group="memory",
 )
 def _save_memory(ctx: Ctx, args: dict[str, Any]) -> Any:
@@ -677,11 +770,29 @@ def _save_memory(ctx: Ctx, args: dict[str, Any]) -> Any:
     if len(content) < 8:
         raise ValueError("内容太短，写具体一点")
     kind = args.get("kind") if args.get("kind") in ("lesson", "rule", "watch") else "lesson"
+    try:
+        samples = int(args.get("samples") or 0)
+    except (TypeError, ValueError):
+        samples = 0
+    if samples < 1:
+        raise ValueError("samples 必须填写支撑这条经验的实盘样本数（≥1）")
+    if kind == "rule" and samples < RULE_MIN_SAMPLES:
+        raise ValueError(
+            f"只有 {samples} 个样本，不足以成为 rule（至少 {RULE_MIN_SAMPLES} 个）。改记为 lesson 或 watch，"
+            "等样本积累后在周度反思里再升级"
+        )
+    used = ctx.cache.get("memories_saved", 0)
+    if ctx.memory_quota is not None and used >= ctx.memory_quota:
+        raise ValueError(
+            f"本次运行最多新写 {ctx.memory_quota} 条经验，已用完。只留最重要的一条；其余如确有价值，"
+            "在结论里提一句，等周度反思再整理"
+        )
     tags = [str(t)[:20] for t in (args.get("tags") or [])][:6]
-    m = AgentMemory(account_id=ctx.account.id, kind=kind, content=content[:1000], tags=tags,
+    m = AgentMemory(account_id=ctx.account.id, kind=kind, content=f"{content[:980]}（样本 {samples}）", tags=tags,
                     session_id=ctx.session.id)
     ctx.db.add(m)
     ctx.db.commit()
+    ctx.cache["memories_saved"] = used + 1
     return {"ok": True, "id": m.id}
 
 

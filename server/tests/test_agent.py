@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import copy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -230,9 +230,11 @@ def test_run_session_records_trace(db, monkeypatch):
     monkeypatch.setattr(llm, "enabled", lambda: True)
     monkeypatch.setattr(llm, "model_name", lambda: "fake")
 
+    monkeypatch.setattr(agent_svc, "order_deadline", lambda day: datetime(2100, 1, 1, tzinfo=timezone.utc))
+
     def fake_run(system, user, specs, call, **kw):
-        assert "交易手册" in system and "盘前" in user
-        call("save_memory", {"content": "放量突破后次日低开不追", "kind": "rule", "tags": ["追高"]})
+        assert "交易手册" in system and "盘前" in user and "决策时点" in system
+        call("save_memory", {"content": "放量突破后次日低开不追", "kind": "rule", "samples": 3, "tags": ["追高"]})
         call("place_order", {"code": "600000", "side": "buy", "shares": 100, "reason": "测试"})
         return "## 今日计划\n买入 600000", 1234
 
@@ -257,16 +259,177 @@ def test_run_session_failure_is_recorded(db, monkeypatch):
 
 
 def test_review_stats_attributes_memories(db):
-    add_stock(db, "600000", DAYS, closes=[10.0, 10.0, 11.0, 11.0, 11.0], volumes=[1_000_000] * 5)
+    days = trading_days("2026-03-02", 8)
+    closes = [10.0, 10.0, 11.0, 12.0, 12.0, 9.0, 9.0, 9.0]
+    add_stock(db, "600000", days, closes=closes, highs=[c * 1.02 for c in closes], lows=[c * 0.98 for c in closes],
+              volumes=[1_000_000] * 8)  # 带日内振幅，避免被当成一字板
     acct = _acct(db)
-    _order(db, acct, "600000", "buy", 1000, mem=[7])
-    broker.settle_day(db, acct, DAYS[1])
-    _order(db, acct, "600000", "sell", 1000, created=datetime(2026, 3, 3, 9, 0, tzinfo=timezone.utc), mem=[7])
-    broker.settle_day(db, acct, DAYS[2])
+    a = _order(db, acct, "600000", "buy", 1000, mem=[1])
+    broker.settle_day(db, acct, days[1])  # 10.0
+    b = _order(db, acct, "600000", "buy", 500, created=datetime(2026, 3, 3, 9, 0, tzinfo=timezone.utc), mem=[2])
+    broker.settle_day(db, acct, days[2])  # 11.0
+    sell = _order(db, acct, "600000", "sell", 1000, created=datetime(2026, 3, 4, 9, 0, tzinfo=timezone.utc), mem=[3])
+    broker.settle_day(db, acct, days[3])  # 12.0
+    assert db.get(AgentOrder, sell.id).status == "filled"
+
+    out = agent_svc._order_outcomes(db, db.query(AgentOrder).filter_by(status="filled").all())
+    assert out[a.id] == pytest.approx(20.0)  # 先进先出：卖出的 1000 股全部来自第一笔
+    assert out[b.id] == pytest.approx((9.0 / 11.0 - 1) * 100)  # 第二笔还拿着，按最新价 9 计
+    assert out[sell.id] == pytest.approx(25.0)  # 卖在 12，之后跌到 9：卖对了（实现盈亏口径会算成别的东西）
+
     stats = agent_svc.review_stats(db, acct)
-    assert stats["memoryOutcomes"][7]["orders"] == 2
-    assert stats["memoryOutcomes"][7]["wins"] == 2
+    mo = stats["memoryOutcomes"]
+    assert mo[1]["wins"] == 1 and mo[2]["wins"] == 0 and mo[3]["wins"] == 1
     assert stats["closedTrades"] == 1 and stats["winRate"] == 100.0
+
+
+def test_sell_outcome_negative_when_price_rises_after_stop_loss(db):
+    days = trading_days("2026-03-02", 5)
+    closes = [10.0, 10.0, 9.0, 11.0, 12.0]
+    add_stock(db, "600000", days, closes=closes, highs=[c * 1.02 for c in closes], lows=[c * 0.98 for c in closes],
+              volumes=[1_000_000] * 5)
+    acct = _acct(db)
+    _order(db, acct, "600000", "buy", 1000)
+    broker.settle_day(db, acct, days[1])
+    sell = _order(db, acct, "600000", "sell", 1000, created=datetime(2026, 3, 3, 9, 0, tzinfo=timezone.utc), mem=[5])
+    broker.settle_day(db, acct, days[2])  # 9.0 止损
+    out = agent_svc._order_outcomes(db, db.query(AgentOrder).filter_by(status="filled").all())
+    assert out[sell.id] == pytest.approx((9.0 - 12.0) / 9.0 * 100)  # 卖完涨回 12：卖早了
+
+
+def test_sell_without_later_bars_has_no_outcome_yet(db):
+    days = trading_days("2026-03-02", 3)
+    add_stock(db, "600000", days, closes=[10.0, 10.0, 11.0], volumes=[1_000_000] * 3)
+    acct = _acct(db)
+    _order(db, acct, "600000", "buy", 1000)
+    broker.settle_day(db, acct, days[1])
+    sell = _order(db, acct, "600000", "sell", 1000, created=datetime(2026, 3, 3, 9, 0, tzinfo=timezone.utc))
+    broker.settle_day(db, acct, days[2])
+    out = agent_svc._order_outcomes(db, db.query(AgentOrder).filter_by(status="filled").all())
+    assert sell.id not in out
+
+
+# ---------------------------------------------------------------- 决策时点 / 经验门槛 / 数据时点
+
+
+def test_save_memory_requires_samples_and_respects_quota(db):
+    acct = _acct(db)
+    ctx = _ctx(db, acct)
+    ctx.memory_quota = 1
+    assert "samples" in tools.execute(ctx, "save_memory", {"content": "开盘大幅高开的票不追", "kind": "lesson"})
+    assert "不足以成为 rule" in tools.execute(
+        ctx, "save_memory", {"content": "开盘大幅高开的票不追", "kind": "rule", "samples": 1})
+    assert '"ok":true' in tools.execute(
+        ctx, "save_memory", {"content": "开盘大幅高开的票不追", "kind": "lesson", "samples": 1})
+    assert "最多新写 1 条" in tools.execute(
+        ctx, "save_memory", {"content": "另一条经验另一条经验", "kind": "watch", "samples": 2})
+    m = db.query(AgentMemory).one()
+    assert m.content.endswith("（样本 1）") and m.kind == "lesson"
+
+
+def test_order_deadline_rejects_late_orders(db):
+    add_stock(db, "600000", DAYS, [10.0] * 5)
+    acct = _acct(db)
+    ctx = _ctx(db, acct)
+    ctx.order_deadline = datetime.now(timezone.utc) - timedelta(seconds=1)
+    out = tools.execute(ctx, "place_order", {"code": "600000", "side": "buy", "shares": 100, "reason": "x"})
+    assert "已过本轮下单截止时间" in out
+    assert db.query(AgentOrder).count() == 0
+    ctx.order_deadline = datetime.now(timezone.utc) + timedelta(minutes=5)
+    assert '"ok":true' in tools.execute(
+        ctx, "place_order", {"code": "600000", "side": "buy", "shares": 100, "reason": "x"})
+
+
+def test_order_deadline_is_0929_cst():
+    assert agent_svc.order_deadline(datetime(2026, 11, 23)) == datetime(2026, 11, 23, 1, 29, 30, tzinfo=timezone.utc)
+
+
+def test_session_kind_permissions(db, monkeypatch):
+    add_stock(db, "600000", DAYS, [10.0] * 5)
+    acct = _acct(db)
+    monkeypatch.setattr(llm, "enabled", lambda: True)
+    monkeypatch.setattr(llm, "model_name", lambda: "fake")
+    monkeypatch.setattr(settings, "tavily_api_key", "k")
+    seen: dict[str, set] = {}
+
+    def fake_run(system, user, specs, call, **kw):
+        names = {s["name"] for s in specs}
+        seen[kind] = names
+        call("place_order", {"code": "600000", "side": "buy", "shares": 100, "reason": "t"})
+        return "ok", 1
+
+    monkeypatch.setattr(llm, "run_tools", fake_run)
+    for kind in ("postclose", "open"):
+        agent_svc.run_session(db, acct, kind)
+    assert "place_order" not in seen["postclose"] and "save_memory" in seen["postclose"]
+    assert seen["open"] == set(agent_svc._OPEN_TOOLS)  # 开盘执行：不调研、不写经验
+    # postclose 的下单被拒；open 是否成交取决于当前时刻是否过了 09:29:30，这里只断言 postclose 没下出单
+    assert all(o.session_id != 1 for o in db.query(AgentOrder).all())
+
+
+def test_open_prompt_carries_premarket_plan(db):
+    acct = _acct(db)
+    db.add(AgentSession(account_id=acct.id, kind="premarket", trade_date=broker.cst_today(), status="done",
+                        summary="## 计划\n开盘涨幅 ≤2% 则限价买 600000"))
+    db.commit()
+    user = agent_svc._task_prompt(db, acct, "open")
+    assert "开盘涨幅 ≤2% 则限价买 600000" in user and "09:29:30" in user
+
+
+def test_premarket_prompt_carries_last_postclose_plan(db):
+    acct = _acct(db)
+    db.add(AgentSession(account_id=acct.id, kind="postclose", trade_date=DAYS[0], status="done",
+                        summary="明日计划：持仓 A 跌破 MA20 开盘卖出"))
+    db.commit()
+    assert "持仓 A 跌破 MA20 开盘卖出" in agent_svc._task_prompt(db, acct, "premarket")
+
+
+def test_quote_phase_labels(monkeypatch):
+    now = datetime(2026, 11, 20, 1, 27, tzinfo=timezone.utc)  # 09:27 CST
+    monkeypatch.setattr(broker, "cst_now", lambda: now + timedelta(hours=8))
+    assert tools.quote_phase(datetime(2026, 11, 19, 7, 10)).startswith("上一交易日")
+    assert "集合竞价已结束" in tools.quote_phase(datetime(2026, 11, 20, 1, 26))
+    assert "开盘前" in tools.quote_phase(datetime(2026, 11, 20, 1, 0))
+    assert tools.quote_phase(datetime(2026, 11, 20, 7, 10)) == "今日收盘"
+
+
+def test_auction_ready(db, monkeypatch):
+    from app.jobs import agent as agent_jobs
+    from app.models.market import Quote
+
+    days = trading_days("2026-11-16", 4)
+    add_stock(db, "600000", days, [10.0] * 4)
+    add_stock(db, "600001", days, [10.0] * 4)
+    monkeypatch.setattr(broker, "cst_now", lambda: datetime(2026, 11, 20, 9, 27))
+    assert not agent_jobs.auction_ready(db)  # 快照还是 11-19 的
+    for q in db.query(Quote).all():
+        q.ts = datetime(2026, 11, 20, 1, 25, 58)  # 09:25:58 CST
+    db.commit()
+    assert agent_jobs.auction_ready(db)
+    for q in db.query(Quote).all():
+        q.open = 0.0  # 采到了但没有开盘价
+    db.commit()
+    assert not agent_jobs.auction_ready(db)
+
+
+def test_portfolio_reports_benchmark_excess(db):
+    acct = _acct(db)
+    db.add(AgentEquity(account_id=acct.id, date=DAYS[0], cash=100_000, market_value=0, total=100_000,
+                       bench_close=4000.0))
+    db.add(AgentEquity(account_id=acct.id, date=DAYS[1], cash=99_000, market_value=0, total=99_000,
+                       bench_close=3900.0))
+    db.commit()
+    perf = tools.portfolio(_ctx(db, acct))["vsBenchmark"]
+    assert perf["returnPct"] == -1.0 and perf["benchPct"] == -2.5 and perf["excessPct"] == 1.5
+    assert "超额 +1.50%" in agent_svc._system_prompt(db, acct)
+
+
+def test_sector_lag_counts_missing_days(db, monkeypatch):
+    days = trading_days("2026-11-16", 5)  # 16~20
+    add_stock(db, "600519", days, [10.0] * 5)
+    monkeypatch.setattr(broker, "cst_now", lambda: datetime(2026, 11, 20, 8, 50))  # 盘前，20 日还没收盘
+    assert tools._sector_lag(db, datetime(2026, 11, 18)) == 1  # 缺 19 日
+    assert tools._sector_lag(db, datetime(2026, 11, 19)) == 0
 
 
 # ---------------------------------------------------------------- LLM 工具循环

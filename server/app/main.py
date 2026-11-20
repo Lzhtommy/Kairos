@@ -39,7 +39,9 @@ async def lifespan(_app: FastAPI):
             conn.execute(text("ALTER TABLE users ADD COLUMN is_admin BOOLEAN NOT NULL DEFAULT 0"))
         conn.commit()
 
-    from app.jobs.agent import agent_postclose, agent_premarket, agent_weekly_review, mark_interrupted
+    from app.jobs.agent import (
+        agent_open, agent_postclose, agent_premarket, agent_settle, agent_weekly_review, mark_interrupted,
+    )
     from app.jobs.backup import backup_database
     from app.jobs.collect import (
         collect_once,
@@ -128,8 +130,8 @@ async def lifespan(_app: FastAPI):
             max_instances=1,
             coalesce=True,
         )
-        # 行业板块日更（K 线 + 拥挤度 + 月度倾斜）：盘后 15:40 CST（07:40 UTC）
-        # + 次日盘前 08:40 CST（00:40 UTC）。申万当日 K 线常到深夜甚至次日才发布，
+        # 行业板块日更（K 线 + 拥挤度 + 月度倾斜）：盘后 15:40 CST（07:40 UTC）、晚间 20:15 CST
+        # （12:15 UTC，赶在 20:30 agent 复盘前）+ 次日盘前 08:40 CST（00:40 UTC）。申万当日 K 线常到深夜甚至次日才发布，
         # 只跑盘后那一轮会让页面一直落后一个交易日，盘前这轮负责补齐。
         # 启动时补跑一次（幂等 + 盘中自动跳过，首轮会全量 bootstrap 板块历史）。
         _scheduler.add_job(
@@ -141,6 +143,15 @@ async def lifespan(_app: FastAPI):
             max_instances=1,
             coalesce=True,
             next_run_time=datetime.now(timezone.utc),
+        )
+        _scheduler.add_job(
+            update_sectors,
+            "cron",
+            hour=12,
+            minute=15,
+            id="sector_update_evening",
+            max_instances=1,
+            coalesce=True,
         )
         # 盘后 15:50 CST（07:50 UTC）行业叙事打分（DeepSeek，只前向记录）；
         # 周末也跑——政策叙事常发生在非交易日。
@@ -227,8 +238,9 @@ async def lifespan(_app: FastAPI):
             coalesce=True,
             next_run_time=datetime.now(timezone.utc),
         )
-        # AI 操盘手：盘前 08:50 CST（00:50 UTC）分析并下当日单；盘后 15:45 CST（07:45 UTC）
-        # 结算撮合 + 复盘（启动时补跑，内部闸门保证只在当日收盘后复盘）；周六 10:00 CST 周度反思
+        # AI 操盘手：08:50 CST 盘前分析（看不到开盘价，可下当日单）；09:26:10 开盘执行（采集器 09:25:55
+        # 那轮已带今日开盘价，按盘前计划下单，09:29:30 截止）；15:45 结算撮合（不依赖 LLM，启动时补跑）；
+        # 20:30 盘后复盘（公告 / 行业数据基本齐了，只读不下单，启动时补跑、内部闸门限 20:00 后）；周六 10:00 周度反思
         _scheduler.add_job(
             agent_premarket,
             "cron",
@@ -240,11 +252,34 @@ async def lifespan(_app: FastAPI):
             coalesce=True,
         )
         _scheduler.add_job(
-            agent_postclose,
+            agent_open,
+            "cron",
+            day_of_week="mon-fri",
+            hour=1,
+            minute=26,
+            second=10,
+            id="agent_open",
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=60,
+        )
+        _scheduler.add_job(
+            agent_settle,
             "cron",
             day_of_week="mon-fri",
             hour=7,
             minute=45,
+            id="agent_settle",
+            max_instances=1,
+            coalesce=True,
+            next_run_time=datetime.now(timezone.utc),
+        )
+        _scheduler.add_job(
+            agent_postclose,
+            "cron",
+            day_of_week="mon-fri",
+            hour=12,
+            minute=30,
             id="agent_postclose",
             max_instances=1,
             coalesce=True,

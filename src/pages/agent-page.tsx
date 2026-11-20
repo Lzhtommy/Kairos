@@ -52,7 +52,7 @@ const MEMORY_KIND: Record<string, string> = { lesson: "教训", rule: "规则", 
 
 const RUN_KINDS: { kind: SessionKind; label: string; hint: string }[] = [
   { kind: "manual", label: "立即分析", hint: "检查持仓与市场，必要时下单（09:30 后下的单次日撮合）" },
-  { kind: "postclose", label: "盘后复盘", hint: "先结算到最新交易日，再复盘并沉淀经验" },
+  { kind: "postclose", label: "盘后复盘", hint: "先结算到最新交易日，再复盘、沉淀经验、写明日计划（不下单）" },
   { kind: "review", label: "周度反思", hint: "评估经验库、改写交易手册" },
 ]
 
@@ -105,7 +105,7 @@ export function AgentPage() {
         <div>
           <h1 className="text-lg font-semibold text-foreground">AI 操盘</h1>
           <p className="mt-0.5 text-sm text-muted-foreground">
-            LLM 自主调研、下单的 A 股模拟账户：每个交易日盘前分析、盘后复盘，按真实费率与撮合规则记账，
+            LLM 自主调研、下单的 A 股模拟账户：每个交易日盘前分析、开盘执行、盘后复盘，按真实费率与撮合规则记账，
             并从实盘结果中沉淀经验、每周改写自己的交易手册
           </p>
         </div>
@@ -587,7 +587,7 @@ function Memories({ detail }: { detail: AgentDetail }) {
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <p className="text-xs text-muted-foreground">
-          agent 在盘后复盘中写下经验，下单时引用；周度反思按引用订单的实际收益评估，淘汰被证伪的条目
+          agent 在复盘中写下经验，下单时引用；周度反思按引用订单的决策结果评估（买单看持有收益，卖单看卖出后 5 日走势），淘汰被证伪的条目
         </p>
         {retired > 0 && (
           <label className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
@@ -619,7 +619,7 @@ function Memories({ detail }: { detail: AgentDetail }) {
                 <span>{m.created}</span>
                 {m.outcome && (
                   <span className={cn("ml-auto font-mono", tone(m.outcome.avgRetPct))}>
-                    引用 {m.outcome.orders} 笔 · 均 {fmtPct(m.outcome.avgRetPct)} · 胜 {m.outcome.wins}
+                    引用 {m.outcome.orders} 笔 · 均 {fmtPct(m.outcome.avgRetPct)} · 做对 {m.outcome.wins}
                   </span>
                 )}
               </div>
