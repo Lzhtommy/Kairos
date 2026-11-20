@@ -73,13 +73,13 @@ function NarrativeCell({ item }: { item: NarrativeItem | null }) {
     return <span className="text-muted-foreground">—</span>
   const dir = item.direction ?? 0
   return (
-    <span className="flex items-center gap-1.5" title={item.evidence?.join("\n")}>
+    <span className="flex items-start gap-1.5" title={item.evidence?.join("\n")}>
       {dir > 0.1 ? (
-        <CaretUp weight="bold" className="size-3 shrink-0 text-up" />
+        <CaretUp weight="bold" className="mt-0.5 size-3 shrink-0 text-up" />
       ) : dir < -0.1 ? (
-        <CaretDown weight="bold" className="size-3 shrink-0 text-down" />
+        <CaretDown weight="bold" className="mt-0.5 size-3 shrink-0 text-down" />
       ) : null}
-      <span className="truncate text-xs" title={item.summary}>
+      <span className="text-xs leading-relaxed">
         {item.summary}
       </span>
     </span>
@@ -298,7 +298,7 @@ export function SectorPage() {
                     <TableCell>
                       <ValuationCell v={s.valuation} />
                     </TableCell>
-                    <TableCell className="hidden max-w-72 lg:table-cell">
+                    <TableCell className="hidden min-w-64 max-w-96 whitespace-normal lg:table-cell">
                       <NarrativeCell item={s.narrative} />
                     </TableCell>
                   </TableRow>
