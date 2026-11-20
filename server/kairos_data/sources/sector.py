@@ -4,6 +4,8 @@
 两种口径不可混用（截面指标会失真），首次落库后由 sector_info.source 锁定。
 
 - sw：申万一级 31 个（2021 版），经 akshare index_hist_sw 直连申万宏源研究。
+  历史日线（trend）当日数据常到次日才发布，且偶尔返回旧快照；收盘后先用实时接口
+  （current，get_snapshot）补当日一根，trend 出来后再覆盖。
   研究阶段全部结论基于此口径；本地网络可用，生产 ECS 可用性未验证。
   另有日频估值（PE/PB/股息率，申万指数分析日报表），直连 httpx，不经 akshare。
 - eastmoney：东财行业板块（BK 代码，约 86 个），push2delay 列板块 +
@@ -44,6 +46,7 @@ _THROTTLE = 0.3               # 板块逐个拉 K 线的请求间隔
 
 
 _SW_VAL_URL = "https://www.swsresearch.com/institute-sw/api/index_analysis/index_analysis_report/"
+_SW_CURRENT_URL = "https://www.swsresearch.com/institute-sw/api/index_publish/current/"
 _SW_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
           "(KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
 
@@ -72,6 +75,19 @@ class SectorBarData:
     low: float
     close: float
     volume: int
+    amount: float  # 亿元
+
+
+@dataclass
+class SectorSnapshot:
+    """申万实时行情的一行（无日期字段，日期由调用方按 prev_close 对齐交易日历判定）。"""
+
+    prev_close: float
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int  # 亿股（取整，与 index_hist_sw 落库口径一致）
     amount: float  # 亿元
 
 
@@ -187,6 +203,28 @@ class SWSectorSource:
                     volume=int(float(r.get("成交量", 0) or 0)),
                     amount=float(r.get("成交额", 0) or 0),  # 亿元
                 )
+            )
+        return out
+
+    def get_snapshot(self) -> dict[str, SectorSnapshot]:
+        """申万一级实时行情（index_publish/current）。收盘后就是当日终值，比历史日线（trend）早一天以上可得。
+
+        字段：l3 昨收、l4 今开、l6 最高、l7 最低、l8 最新、l5 成交额（百万元）、l11 成交量（百万股）。
+        l3 与 trend 的上一日收盘逐位一致（2026-11-20 实测），调用方据此判定这行属于哪个交易日。
+        """
+        params = {"page": "1", "page_size": "50", "indextype": "一级行业"}
+        r = httpx.get(_SW_CURRENT_URL, params=params, headers={"User-Agent": _SW_UA}, timeout=30, verify=False)
+        r.raise_for_status()
+        out: dict[str, SectorSnapshot] = {}
+        for row in r.json()["data"]["results"]:
+            code = str(row.get("swindexcode") or "")
+            vals = [_num(row.get(k)) for k in ("l3", "l4", "l6", "l7", "l8", "l11", "l5")]
+            if code not in SW_L1 or any(v is None for v in vals[:5]):
+                continue
+            prev, open_, high, low, close, vol, amt = vals
+            out[code] = SectorSnapshot(
+                prev_close=prev, open=open_, high=high, low=low, close=close,
+                volume=int((vol or 0) / 100), amount=round((amt or 0) / 100, 4),
             )
         return out
 

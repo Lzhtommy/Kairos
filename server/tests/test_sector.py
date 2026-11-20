@@ -175,6 +175,112 @@ def test_update_sectors_idempotent(db, _sector_env):
     assert db.query(SectorTilt).count() == n_tilts
 
 
+class SnapSource(FakeSource):
+    """申万式源：历史日线滞后，另有实时快照。"""
+
+    def __init__(self, panel_bars, snap=None, stale_first=False):
+        super().__init__(panel_bars)
+        self.snap = snap or {}
+        self.stale_first = stale_first
+        self.calls = 0
+
+    def get_bars(self, code, limit=3000):
+        self.calls += 1
+        bars = super().get_bars(code, limit)
+        if self.stale_first and self.calls == 1:
+            return bars[:-3]  # 第一次返回旧快照
+        return bars
+
+    def get_snapshot(self):
+        return self.snap
+
+
+def _fake_now(monkeypatch, sector_job, now_cst: datetime):
+    from datetime import timedelta, timezone
+
+    class FakeDT(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            utc = now_cst - timedelta(hours=8)
+            return utc.replace(tzinfo=timezone.utc) if tz else utc
+
+    monkeypatch.setattr(sector_job, "datetime", FakeDT)
+
+
+@pytest.fixture()
+def _snap_env(db, monkeypatch):
+    from app.jobs import sector as sector_job
+    from tests.conftest import add_stock
+
+    days = trading_days("2026-11-02", 15)  # 11-02 ~ 11-20
+    add_stock(db, "600519", days, [10.0] * 15)  # 交易日历
+    monkeypatch.setattr(sector_job, "SessionLocal", lambda: db)
+    monkeypatch.setattr(sector_job, "in_trading_session", lambda: False)
+    monkeypatch.setattr(sector_job, "throttle", lambda: None)
+    monkeypatch.setattr(sector_job.time, "sleep", lambda s: None)
+    return sector_job, days
+
+
+def _use(monkeypatch, sector_job, src):
+    monkeypatch.setattr(sector_job, "get_sector_source", lambda preferred: src)
+
+
+def test_snapshot_fills_today_after_close_then_official_overwrites(db, monkeypatch, _snap_env):
+    from kairos_data.sources.sector import SectorSnapshot
+
+    sector_job, days = _snap_env
+    hist = {"801010": _bars(days[:-1], [100.0 + k for k in range(14)])}  # 历史日线缺最后一天（11-20）
+    snap = {"801010": SectorSnapshot(prev_close=113.0, open=113.5, high=116.0, low=112.0, close=115.0,
+                                     volume=20, amount=150.0)}
+    src = SnapSource(hist, snap)
+    _use(monkeypatch, sector_job, src)
+
+    _fake_now(monkeypatch, sector_job, datetime(2026, 11, 20, 12, 0))  # 午休：快照不是终值
+    sector_job.update_sectors()
+    assert db.query(SectorBar).filter(SectorBar.ts == days[-1]).count() == 0
+
+    _fake_now(monkeypatch, sector_job, datetime(2026, 11, 20, 15, 40))
+    sector_job.update_sectors()
+    bar = db.query(SectorBar).filter(SectorBar.ts == days[-1]).one()
+    assert (bar.close, bar.amount) == (115.0, 150.0)
+
+    sector_job.update_sectors()  # 幂等：快照的昨收已对不上最后一根，不会再补
+    assert db.query(SectorBar).filter(SectorBar.code == "801010").count() == 15
+
+    # 次日官方日线出来：覆盖快照补的那根
+    src._bars["801010"] = hist["801010"] + [(days[-1], 115.01, 152.3)]
+    _fake_now(monkeypatch, sector_job, datetime(2026, 11, 21, 8, 40))
+    sector_job.update_sectors()
+    bar = db.query(SectorBar).filter(SectorBar.ts == days[-1]).one()
+    assert (bar.close, bar.amount) == (115.01, 152.3)
+
+
+def test_snapshot_skipped_when_prev_close_mismatch(db, monkeypatch, _snap_env):
+    from kairos_data.sources.sector import SectorSnapshot
+
+    sector_job, days = _snap_env
+    hist = {"801010": _bars(days[:-2], [100.0 + k for k in range(13)])}  # 缺两天
+    snap = {"801010": SectorSnapshot(prev_close=113.0, open=113.5, high=116.0, low=112.0, close=115.0,
+                                     volume=20, amount=150.0)}  # 快照属于 11-20，昨收是 11-19 的
+    _use(monkeypatch, sector_job, SnapSource(hist, snap))
+    _fake_now(monkeypatch, sector_job, datetime(2026, 11, 20, 15, 40))
+    sector_job.update_sectors()
+    assert db.query(SectorBar).filter(SectorBar.code == "801010").count() == 13  # 对不上就不猜
+
+
+def test_stale_source_is_retried(db, monkeypatch, _snap_env):
+    sector_job, days = _snap_env
+    hist = {"801010": _bars(days[:-2], [100.0] * 13)}  # 库里到 11-18
+    _use(monkeypatch, sector_job, SnapSource(hist))
+    _fake_now(monkeypatch, sector_job, datetime(2026, 11, 20, 20, 15))
+    sector_job.update_sectors()
+    src = SnapSource({"801010": _bars(days, [100.0] * 15)}, stale_first=True)
+    _use(monkeypatch, sector_job, src)
+    sector_job.update_sectors()
+    assert src.calls == 2  # 第一次只到 11-17，比库里还旧 → 重拉
+    assert db.query(SectorBar).filter(SectorBar.code == "801010").count() == 15
+
+
 # ---------------------------------------------------------------- 估值
 def test_rolling_pct_window_and_missing():
     from app.services.sector_valuation import MIN_DAYS, label, primary_metric, rolling_pct
