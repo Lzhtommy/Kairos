@@ -12,6 +12,8 @@ import {
   Trash,
   Check,
   X,
+  Code,
+  SidebarSimple,
 } from "@phosphor-icons/react"
 import { CodeBlock } from "@/components/strategy/code-block"
 import { Button } from "@/components/ui/button"
@@ -56,6 +58,7 @@ export function StrategyBuilderPage() {
   const [draftCode, setDraftCode] = useState<string>("")
   const [draftName, setDraftName] = useState<string>("")
   const [lastPrompt, setLastPrompt] = useState("")
+  const [showCode, setShowCode] = useState(false) // 代码面板默认收起，对话区占满
   const [savedId, setSavedId] = useState<string | null>(null)
   // 草稿相对已保存版本有改动（保存 = 更新该策略，而不是新建）
   const [dirty, setDirty] = useState(false)
@@ -294,7 +297,12 @@ export function StrategyBuilderPage() {
   const activeCode = draftCode || PLACEHOLDER_CODE
 
   return (
-    <div className="grid h-[calc(100dvh-4rem)] grid-cols-1 lg:h-[100dvh] lg:grid-cols-[240px_1fr_440px]">
+    <div
+      className={cn(
+        "grid h-[calc(100dvh-4rem)] grid-cols-1 lg:h-[100dvh]",
+        showCode ? "lg:grid-cols-[240px_1fr_440px]" : "lg:grid-cols-[240px_1fr]",
+      )}
+    >
       {/* Strategy list */}
       <aside className="hidden min-h-0 border-r border-border lg:flex lg:flex-col">
         <div className="flex items-center justify-between p-3">
@@ -348,9 +356,30 @@ export function StrategyBuilderPage() {
       </aside>
 
       {/* Chat */}
-      <div className="flex min-h-0 min-w-0 flex-col border-r border-border">
-        <div className="flex h-12 shrink-0 items-center px-4">
+      <div className={cn("flex min-h-0 min-w-0 flex-col", showCode && "border-r border-border")}>
+        <div className="flex h-12 shrink-0 items-center justify-between px-4">
           <p className="text-sm font-medium text-foreground">策略工坊</p>
+          {!showCode && (
+            <div className="flex gap-1.5">
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                aria-label="保存策略"
+                onClick={save}
+                disabled={saving || !draftDsl}
+              >
+                <FloppyDisk className="size-4" />
+              </Button>
+              <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setShowCode(true)}>
+                <Code className="size-3.5" />
+                策略代码
+              </Button>
+              <Button size="sm" className="gap-1.5" onClick={goBacktest} disabled={saving || !draftDsl}>
+                <Play weight="fill" className="size-3.5" />
+                去回测
+              </Button>
+            </div>
+          )}
         </div>
         {/* min-h-0 让长对话在本栏内滚动，输入框常驻底部，不再把整页撑出滚动条 */}
         <div ref={scrollRef} className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-4 scrollbar-thin">
@@ -466,11 +495,15 @@ export function StrategyBuilderPage() {
         </div>
       </div>
 
-      {/* Code panel */}
+      {/* Code panel（默认收起） */}
+      {showCode && (
       <div className="flex min-h-0 min-w-0 flex-col">
         <div className="flex h-12 shrink-0 items-center justify-between px-4">
           <p className="text-sm font-medium text-foreground">策略代码</p>
           <div className="flex gap-1.5">
+            <Button size="icon-sm" variant="ghost" aria-label="收起策略代码" onClick={() => setShowCode(false)}>
+              <SidebarSimple className="size-4 -scale-x-100" />
+            </Button>
             <Button
               size="icon-sm"
               variant="ghost"
@@ -496,6 +529,7 @@ export function StrategyBuilderPage() {
           </div>
         </div>
       </div>
+      )}
     </div>
   )
 }
