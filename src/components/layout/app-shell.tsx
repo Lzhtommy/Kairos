@@ -29,8 +29,8 @@ import {
 } from "@/components/ui/tooltip"
 
 const NAV_ITEMS = [
-  { to: "/app/screener", label: "选股", icon: FunnelSimple },
   { to: "/app/strategy", label: "策略工坊", icon: Sparkle },
+  { to: "/app/screener", label: "选股", icon: FunnelSimple },
   { to: "/app/watchlist", label: "每日精选", icon: Star, adminOnly: true },
   { to: "/app/sector", label: "行业", icon: CirclesFour },
   { to: "/app/data", label: "数据", icon: Database },
