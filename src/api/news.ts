@@ -21,6 +21,18 @@ export type NewsEvent = {
   title: string
   content: string
   sources: NewsSourceRef[]
+  /** 同一件事的后续（同一讲话的其他表态、行情进一步变化、他家报道），按时间正序 */
+  followups: NewsFollowup[]
+  /** 最后一条后续的时间，没有后续时等于 pub_at */
+  last_at: string
+}
+
+export type NewsFollowup = {
+  id: number
+  pub_at: string
+  title: string
+  content: string
+  sources: NewsSourceRef[]
 }
 
 export type NewsPage = { events: NewsEvent[]; next: number | null }

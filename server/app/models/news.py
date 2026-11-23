@@ -45,6 +45,9 @@ class NewsEvent(Base):
 
     事件第一次出现后一分钟内批量打标；后续加入的报道源不再重打。
     没有这一行 = 还没打标或 LLM 不可用，前端按源标记规则兜底。
+
+    parent_id 非空 = LLM 判定是更早某个事件的后续（同一讲话的另一句、同一波行情的进一步
+    变化、合并没认出来的他家报道），不单独显示，挂在父事件下面。父事件的 score 是整串的最高分。
     """
 
     __tablename__ = "news_event"
@@ -54,4 +57,8 @@ class NewsEvent(Base):
     score: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     sectors: Mapped[list] = mapped_column(JSON, default=list)
     model: Mapped[str] = mapped_column(String(32), default="")
+    parent_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    # 父事件：整串（自身 + 后续）的报道家数，挂后续时更新。一句一条的讲话单看每条只有一家，
+    # 整串往往五家都报了
+    thread_sources: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

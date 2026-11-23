@@ -321,11 +321,11 @@ def test_classify_pending_writes_sanitized_rows_and_skips_done(db, monkeypatch):
     ids = _seed(db)
     db.add(SectorInfo(code="801080", name="电子", source="sw"))
     db.commit()
-    # 编号按事件新→旧：0 新浪公告、1 斯里兰卡、2 地震、3 PPI；故意漏掉 1，给 2 非法分类和分数
+    # 批内按时间正序：0 PPI、1 地震、2 斯里兰卡、3 新浪公告；故意漏掉 2，给 1 非法分类和分数
     calls = _fake_llm(monkeypatch, {"items": [
-        {"i": 0, "c": "公司个股", "s": 2, "sec": []},
-        {"i": 2, "c": "瞎编", "s": 9, "sec": ["电子", "不存在"]},
-        {"i": 3, "c": "宏观数据", "s": "4", "sec": ["电子"]},
+        {"i": 3, "c": "公司个股", "s": 2, "sec": []},
+        {"i": 1, "c": "瞎编", "s": 9, "sec": ["电子", "不存在"]},
+        {"i": 0, "c": "宏观数据", "s": "4", "sec": ["电子"]},
         {"i": 99, "c": "其他", "s": 1},
     ]})
     now = T0 + timedelta(minutes=3)
@@ -337,6 +337,90 @@ def test_classify_pending_writes_sanitized_rows_and_skips_done(db, monkeypatch):
     assert (rows[ids["美国地质"]].category, rows[ids["美国地质"]].score, rows[ids["美国地质"]].sectors) == (None, 5, ["电子"])
     assert (rows[ids["斯里兰卡"]].category, rows[ids["斯里兰卡"]].score) == (None, None)  # 漏掉的写空行
     assert news_classify.classify_pending(db, now) == 0 and len(calls) == 1  # 已标注的不再送
+
+
+def _thread_seed(db, t=T0):
+    """库克同一场讲话三句（同一源、各自成事件）+ 一条无关新闻。"""
+    a = Feed(
+        _item("a", "1", "美联储理事库克：高通胀并未给美国央行留出耐心等待的空间。", t),
+        _item("a", "2", "美联储理事库克：嵌入式通胀将要求美联储采取更激进的应对措施。", t + timedelta(minutes=1)),
+        _item("a", "3", "美国地质勘探局：加利福尼亚州索莱达地区发生5.4级地震。", t + timedelta(minutes=2)),
+    )
+    Collector({"a": a}).run(db, t + timedelta(minutes=3))
+    return sorted(db.scalars(select(NewsItem.event_id).distinct()))
+
+
+def test_classify_threads_followups_within_batch_and_raises_parent_score(db, monkeypatch):
+    e1, e2, e3 = _thread_seed(db)
+    calls = _fake_llm(monkeypatch, {"items": [
+        {"i": 0, "c": "央行货币", "s": 3},
+        {"i": 1, "c": "央行货币", "s": 4, "p": 0},
+        {"i": 2, "c": "其他", "s": 2, "p": 2},  # 指向自己 / 更晚的条目：忽略
+    ]})
+    news_classify.classify_pending(db, T0 + timedelta(minutes=4))
+    assert "A0." not in calls[0]  # 库里还没有可作父事件的
+    rows = {r.event_id: r for r in db.scalars(select(NewsEvent))}
+    assert rows[e2].parent_id == e1 and rows[e3].parent_id is None
+    assert rows[e1].score == 4  # 父事件抬到整串最高分
+
+    # 列表只出父事件，后续挂在下面；父事件按 4 分进要闻
+    (ev,) = news.list_events(db)
+    assert ev["id"] == e1 and [f["id"] for f in ev["followups"]] == [e2]
+    assert ev["last_at"] == ev["followups"][0]["pub_at"]
+    assert [x["id"] for x in news.list_events(db, view="all")] == [e3, e1]
+    # 搜后续里的词也能找到父事件
+    assert [x["id"] for x in news.list_events(db, view="all", q="嵌入式通胀", now=T0)] == [e1]
+    # 叙事标题不重复算后续
+    assert len(news.recent_headlines(db, now=T0 + timedelta(hours=1))) == 2
+
+
+def test_classify_threads_to_anchor_from_earlier_round(db, monkeypatch):
+    e1, e2, e3 = _thread_seed(db)
+    db.add(NewsEvent(event_id=e1, category="央行货币", score=4, sectors=[]))
+    db.commit()
+    # 本轮只有 e2、e3 待标；A0 = e1
+    calls = _fake_llm(monkeypatch, {"items": [
+        {"i": 0, "c": "央行货币", "s": 3, "p": "A0"},
+        {"i": 1, "c": "其他", "s": 2, "p": "A7"},  # 不存在的锚点：忽略
+    ]})
+    news_classify.classify_pending(db, T0 + timedelta(minutes=4))
+    assert "A0. 美联储理事库克：高通胀" in calls[0]
+    rows = {r.event_id: r for r in db.scalars(select(NewsEvent))}
+    assert rows[e2].parent_id == e1 and rows[e3].parent_id is None
+    assert rows[e1].score == 4  # 后续分数低，不改父事件
+
+
+def test_thread_sources_make_multi_source_speech_featured(db, monkeypatch):
+    t = T0
+    lines = ["美联储理事库克：高通胀并未给美国央行留出耐心等待的空间。",
+             "美联储理事库克：嵌入式通胀将要求美联储采取更激进的应对措施。",
+             "美联储理事库克表示，当前金融条件过于宽松，物价在广泛品类中快速上涨。"]
+    feeds = {s: Feed(_item(s, "1", lines[k], t + timedelta(seconds=k))) for k, s in enumerate(["a", "b", "c"])}
+    Collector(feeds).run(db, t + timedelta(minutes=1))
+    e1, e2, e3 = sorted(db.scalars(select(NewsItem.event_id).distinct()))
+    assert len({e1, e2, e3}) == 3  # 字面不够像，采集时没合并
+    _fake_llm(monkeypatch, {"items": [
+        {"i": 0, "c": "央行货币", "s": 3}, {"i": 1, "c": "央行货币", "s": 3, "p": 0},
+        {"i": 2, "c": "央行货币", "s": 3, "p": 1},  # 指向后续 → 解析到根
+    ]})
+    news_classify.classify_pending(db, t + timedelta(minutes=2))
+    rows = {r.event_id: r for r in db.scalars(select(NewsEvent))}
+    assert rows[e3].parent_id == e1 and rows[e1].thread_sources == 3
+    (ev,) = news.list_events(db)  # 每条 3 分、各一家，整串三家 → 要闻
+    assert ev["id"] == e1 and ev["featured"] and len(ev["followups"]) == 2
+
+
+def test_classify_anchor_excludes_low_score_and_old_events(db, monkeypatch):
+    e1, e2, _ = _thread_seed(db)
+    db.add(NewsEvent(event_id=e1, category="央行货币", score=2, sectors=[]))  # 2 分不当父事件
+    db.commit()
+    calls = _fake_llm(monkeypatch, {"items": []})
+    news_classify.classify_pending(db, T0 + timedelta(minutes=4))
+    assert "A0." not in calls[0]
+
+
+def test_split_title_strips_boilerplate_in_title():
+    assert news.split_title("财联社11月21日电，", "特朗普称利率过高。") == ("", "特朗普称利率过高。")
 
 
 def test_classify_failure_writes_nothing_and_retries(db, monkeypatch):

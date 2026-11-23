@@ -74,7 +74,7 @@ def clean(s: str | None) -> str:
 
 def split_title(title: str | None, content: str) -> tuple[str, str]:
     """正文以【标题】开头的拆出来（财联社 / 新浪 / 金十的惯例），去掉「财联社X月X日电，」这类抬头。"""
-    title = clean(title)
+    title = _BOILER.sub("", clean(title)).strip()
     content = clean(content)
     m = _BRACKET_TITLE.match(content)
     if m:
@@ -477,6 +477,7 @@ def _build_event(items: list[NewsItem], ann: NewsEvent | None = None) -> dict:
     n_sources = len({r.source for r in items})
     importance = max(r.importance for r in items)
     score = ann.score if ann else None
+    n_sources = max(n_sources, (ann.thread_sources or 0) if ann else 0)
     featured = llm_featured(score, n_sources) if score is not None else fallback_featured(importance, n_sources)
     stocks: dict[str, str] = {}
     for r in items:
@@ -508,6 +509,23 @@ def _load(db: Session, ids: list[int]) -> tuple[dict[int, list[NewsItem]], dict[
     return groups, anns
 
 
+def _with_followups(db: Session, events: list[dict]) -> list[dict]:
+    """给每个事件挂上它的后续（parent_id 指向它的事件），按时间正序。"""
+    ids = [e["id"] for e in events]
+    kids: dict[int, list[int]] = {}
+    for cid, pid in db.execute(select(NewsEvent.event_id, NewsEvent.parent_id).where(NewsEvent.parent_id.in_(ids))):
+        kids.setdefault(pid, []).append(cid)
+    groups = _load(db, [c for cs in kids.values() for c in cs])[0] if kids else {}
+    for e in events:
+        fs = [_build_event(groups[c]) for c in kids.get(e["id"], []) if c in groups]
+        fs.sort(key=lambda f: f["pub_at"])
+        e["followups"] = [
+            {k: f[k] for k in ("id", "pub_at", "title", "content", "sources")} for f in fs
+        ]
+        e["last_at"] = fs[-1]["pub_at"] if fs else e["pub_at"]
+    return events
+
+
 def list_events(db: Session, *, limit: int = 50, before: int | None = None, view: str = "featured",
                 category: str | None = None, q: str | None = None, now: datetime | None = None) -> list[dict]:
     """最新事件，按 event_id 倒序（≈ 首次报道时间倒序），before 为翻页游标。
@@ -518,7 +536,9 @@ def list_events(db: Session, *, limit: int = 50, before: int | None = None, view
     ev = NewsItem.event_id
     imp, n_src = func.max(NewsItem.importance), func.count(func.distinct(NewsItem.source))
     score = func.max(NewsEvent.score)
-    stmt = select(ev).select_from(NewsItem).outerjoin(NewsEvent, NewsEvent.event_id == ev).where(ev.is_not(None))
+    # 后续事件（parent_id 非空）不单独出现，挂在父事件下面
+    stmt = (select(ev).select_from(NewsItem).outerjoin(NewsEvent, NewsEvent.event_id == ev)
+            .where(ev.is_not(None), NewsEvent.parent_id.is_(None)))
     if before is not None:
         stmt = stmt.where(ev < before)
     if category:
@@ -530,11 +550,15 @@ def list_events(db: Session, *, limit: int = 50, before: int | None = None, view
             NewsItem.seen_at >= since,
             or_(NewsItem.title.contains(q, autoescape=True), NewsItem.content.contains(q, autoescape=True)),
         )
-        stmt = stmt.where(ev.in_(hit))
+        # 命中后续事件时显示它的父事件
+        hit_parent = select(NewsEvent.parent_id).where(NewsEvent.event_id.in_(hit), NewsEvent.parent_id.is_not(None))
+        stmt = stmt.where(or_(ev.in_(hit), ev.in_(hit_parent)))
     stmt = stmt.group_by(ev)
     if view == "featured":
         fallback = or_(imp >= 2, n_src >= MULTI_SOURCE, and_(n_src >= 2, imp >= 1))
-        by_llm = or_(score >= FEATURED_SCORE, and_(score >= FEATURED_SCORE - 1, n_src >= MULTI_SOURCE))
+        thread_src = func.max(NewsEvent.thread_sources)
+        by_llm = or_(score >= FEATURED_SCORE,
+                     and_(score >= FEATURED_SCORE - 1, or_(n_src >= MULTI_SOURCE, thread_src >= MULTI_SOURCE)))
         stmt = stmt.having(or_(by_llm, and_(score.is_(None), fallback)))
     else:
         sina_noise = and_(n_src == 1, func.max(NewsItem.source) == "sina", imp == 0,
@@ -544,7 +568,7 @@ def list_events(db: Session, *, limit: int = 50, before: int | None = None, view
     if not ids:
         return []
     groups, anns = _load(db, ids)
-    return [_build_event(groups[i], anns.get(i)) for i in ids if i in groups]
+    return _with_followups(db, [_build_event(groups[i], anns.get(i)) for i in ids if i in groups])
 
 
 def recent_headlines(db: Session, *, hours: int = 24, limit: int = 120, now: datetime | None = None) -> list[str]:
@@ -561,7 +585,9 @@ def recent_headlines(db: Session, *, hours: int = 24, limit: int = 120, now: dat
     if not ids:
         return []
     groups, anns = _load(db, ids)
-    events = [_build_event(g, anns.get(i)) for i, g in groups.items()]
+    # 后续事件和父事件说的是同一件事，叙事打分只取父事件那一条
+    events = [_build_event(g, anns.get(i)) for i, g in groups.items()
+              if not (anns.get(i) and anns[i].parent_id is not None)]
 
     def rank(e: dict) -> tuple:
         s = e["score"] if e["score"] is not None else (FEATURED_SCORE if e["featured"] else 2)

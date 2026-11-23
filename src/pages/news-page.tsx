@@ -12,6 +12,7 @@ import {
   fetchNewsEvents,
   fetchNewsSources,
   type NewsEvent,
+  type NewsFollowup,
   type NewsSourceStatus,
   type NewsView,
 } from "@/api/news"
@@ -292,6 +293,8 @@ function EventRow({ event: e, fresh }: { event: NewsEvent; fresh: boolean }) {
   const [open, setOpen] = useState(false)
   const important = e.featured
   const long = e.content.length > 140
+  // 整串（含后续）的报道家数
+  const nSources = new Set([...e.sources, ...e.followups.flatMap((f) => f.sources)].map((s) => s.source)).size
   return (
     <li
       className={cn(
@@ -306,6 +309,11 @@ function EventRow({ event: e, fresh }: { event: NewsEvent; fresh: boolean }) {
         >
           {timeFmt.format(new Date(e.pub_at))}
         </time>
+        {e.followups.length > 0 && (
+          <div className="mt-0.5 font-mono text-[10px] text-muted-foreground tabular-nums" title="最近一条后续">
+            ↻{timeFmt.format(new Date(e.last_at))}
+          </div>
+        )}
       </div>
       <div className={cn("min-w-0 flex-1 border-l-2 pl-4", important ? "border-primary" : "border-transparent")}>
         {e.title && (
@@ -324,6 +332,7 @@ function EventRow({ event: e, fresh }: { event: NewsEvent; fresh: boolean }) {
             {e.content}
           </p>
         )}
+        {e.followups.length > 0 && <Followups items={e.followups} />}
         <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
           {e.category && <span className="rounded bg-muted px-1.5 py-px text-foreground/80">{e.category}</span>}
           {e.stocks.slice(0, 4).map((st) => (
@@ -353,10 +362,47 @@ function EventRow({ event: e, fresh }: { event: NewsEvent; fresh: boolean }) {
                 <span key={s.source}>{s.name}</span>
               ),
             )}
-            {e.sources.length >= 2 && <span className="tabular-nums">{e.sources.length} 家报道</span>}
+            {nSources >= 2 && <span className="tabular-nums">{nSources} 家报道</span>}
           </span>
         </div>
       </div>
     </li>
+  )
+}
+
+const FOLLOWUPS_SHOWN = 3
+
+/** 后续：默认只露最新几条（行情最新进展最有用），其余点开 */
+function Followups({ items }: { items: NewsFollowup[] }) {
+  const [all, setAll] = useState(false)
+  const shown = all ? items : items.slice(-FOLLOWUPS_SHOWN)
+  const hidden = items.length - shown.length
+  return (
+    <div className="mt-2 space-y-1 border-l border-border pl-3">
+      {hidden > 0 && (
+        <button onClick={() => setAll(true)} className="text-xs text-muted-foreground hover:text-foreground">
+          还有 {hidden} 条更早的后续
+        </button>
+      )}
+      {shown.map((f) => {
+        const text = f.title || f.content
+        return (
+          <p key={f.id} className="flex gap-2 text-xs leading-relaxed text-muted-foreground">
+            <time dateTime={f.pub_at} className="shrink-0 font-mono tabular-nums">
+              {timeFmt.format(new Date(f.pub_at))}
+            </time>
+            <span className={cn("min-w-0", !all && "line-clamp-2")}>
+              {text}
+              <span className="ml-1.5 text-muted-foreground/70">{f.sources.map((s) => s.name).join(" · ")}</span>
+            </span>
+          </p>
+        )
+      })}
+      {all && items.length > FOLLOWUPS_SHOWN && (
+        <button onClick={() => setAll(false)} className="text-xs text-muted-foreground hover:text-foreground">
+          收起
+        </button>
+      )}
+    </div>
   )
 }
