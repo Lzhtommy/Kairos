@@ -245,8 +245,8 @@ def test_featured_view_uses_llm_score_then_fallback_rule(db):
         NewsEvent(event_id=ids["德国10"], category="宏观数据", score=3, sectors=["电子"]),
     ])
     db.commit()
-    # 地震 4 分进；PPI 3 分但三家同报，也进
-    assert [e["id"] for e in news.list_events(db)] == [ids["美国地质"], ids["德国10"]]
+    # 地震 4 分进；PPI 3 分、三家同报，不够四家，不进
+    assert [e["id"] for e in news.list_events(db)] == [ids["美国地质"]]
     db.get(NewsEvent, ids["德国10"]).score = 2
     db.commit()
     evs = news.list_events(db)
@@ -259,8 +259,8 @@ def test_featured_view_uses_llm_score_then_fallback_rule(db):
 
 def test_llm_featured_rule():
     assert news.llm_featured(4, 1)
-    assert news.llm_featured(3, 3)
-    assert not news.llm_featured(3, 2)
+    assert news.llm_featured(3, 4)
+    assert not news.llm_featured(3, 3)
     assert not news.llm_featured(2, 5)
 
 
@@ -394,20 +394,22 @@ def test_thread_sources_make_multi_source_speech_featured(db, monkeypatch):
     t = T0
     lines = ["美联储理事库克：高通胀并未给美国央行留出耐心等待的空间。",
              "美联储理事库克：嵌入式通胀将要求美联储采取更激进的应对措施。",
-             "美联储理事库克表示，当前金融条件过于宽松，物价在广泛品类中快速上涨。"]
-    feeds = {s: Feed(_item(s, "1", lines[k], t + timedelta(seconds=k))) for k, s in enumerate(["a", "b", "c"])}
+             "美联储理事库克表示，当前金融条件过于宽松，物价在广泛品类中快速上涨。",
+             "美联储理事库克谈10月反对票：我的投票反映了应对通胀的紧迫性。"]
+    feeds = {s: Feed(_item(s, "1", lines[k], t + timedelta(seconds=k)))
+             for k, s in enumerate(["a", "b", "c", "d"])}
     Collector(feeds).run(db, t + timedelta(minutes=1))
-    e1, e2, e3 = sorted(db.scalars(select(NewsItem.event_id).distinct()))
-    assert len({e1, e2, e3}) == 3  # 字面不够像，采集时没合并
+    e1, e2, e3, e4 = sorted(db.scalars(select(NewsItem.event_id).distinct()))  # 字面不够像，采集时没合并
     _fake_llm(monkeypatch, {"items": [
         {"i": 0, "c": "央行货币", "s": 3}, {"i": 1, "c": "央行货币", "s": 3, "p": 0},
         {"i": 2, "c": "央行货币", "s": 3, "p": 1},  # 指向后续 → 解析到根
+        {"i": 3, "c": "央行货币", "s": 3, "p": 0},
     ]})
     news_classify.classify_pending(db, t + timedelta(minutes=2))
     rows = {r.event_id: r for r in db.scalars(select(NewsEvent))}
-    assert rows[e3].parent_id == e1 and rows[e1].thread_sources == 3
-    (ev,) = news.list_events(db)  # 每条 3 分、各一家，整串三家 → 要闻
-    assert ev["id"] == e1 and ev["featured"] and len(ev["followups"]) == 2
+    assert rows[e3].parent_id == e1 and rows[e1].thread_sources == 4
+    (ev,) = news.list_events(db)  # 每条 3 分、各一家，整串四家 → 要闻
+    assert ev["id"] == e1 and ev["featured"] and len(ev["followups"]) == 3
 
 
 def test_classify_anchor_excludes_low_score_and_old_events(db, monkeypatch):

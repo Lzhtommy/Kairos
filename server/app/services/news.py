@@ -453,11 +453,14 @@ SOURCE_NAMES = {"cls": "财联社", "jin10": "金十数据", "wscn": "华尔街�
 # 「要闻」：LLM 重要度 ≥ 4，或 3 分且 3 家以上同报（报道家数是独立于 LLM 的信号）。
 # 2026-11-20 收盘后实测约 8 条/小时；只看 ≥ 4 分约 2 条/小时，太稀。
 FEATURED_SCORE = 4
-MULTI_SOURCE = 3
+MULTI_SOURCE = 3  # 未打标时的兜底规则
+# 3 分事件进要闻需要的报道家数。2026-11-24 核对：≥3 家时 A 股开盘那小时 28 条要闻，多是「期市开盘」
+# 「中间价」「板块拉升」这类五家都会报的例行消息；≥4 家降到 13 条
+LLM_MULTI_SOURCE = 4
 
 
 def llm_featured(score: int, n_sources: int) -> bool:
-    return score >= FEATURED_SCORE or (score >= FEATURED_SCORE - 1 and n_sources >= MULTI_SOURCE)
+    return score >= FEATURED_SCORE or (score >= FEATURED_SCORE - 1 and n_sources >= LLM_MULTI_SOURCE)
 
 
 def _iso(dt: datetime) -> str:
@@ -558,7 +561,7 @@ def list_events(db: Session, *, limit: int = 50, before: int | None = None, view
         fallback = or_(imp >= 2, n_src >= MULTI_SOURCE, and_(n_src >= 2, imp >= 1))
         thread_src = func.max(NewsEvent.thread_sources)
         by_llm = or_(score >= FEATURED_SCORE,
-                     and_(score >= FEATURED_SCORE - 1, or_(n_src >= MULTI_SOURCE, thread_src >= MULTI_SOURCE)))
+                     and_(score >= FEATURED_SCORE - 1, or_(n_src >= LLM_MULTI_SOURCE, thread_src >= LLM_MULTI_SOURCE)))
         stmt = stmt.having(or_(by_llm, and_(score.is_(None), fallback)))
     else:
         sina_noise = and_(n_src == 1, func.max(NewsItem.source) == "sina", imp == 0,
