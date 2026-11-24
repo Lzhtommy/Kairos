@@ -61,4 +61,5 @@ class NewsEvent(Base):
     # 父事件：整串（自身 + 后续）的报道家数，挂后续时更新。一句一条的讲话单看每条只有一家，
     # 整串往往五家都报了
     thread_sources: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    pushed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)  # 已推送
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

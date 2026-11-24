@@ -24,12 +24,18 @@ def collect_news() -> None:
 
 def classify_news() -> None:
     from app.services.news_classify import classify_pending  # noqa: PLC0415
+    from app.services.news_push import push_pending  # noqa: PLC0415
 
     db = SessionLocal()
     try:
         classify_pending(db)
     except Exception:  # noqa: BLE001
         logger.exception("news classify failed")
+        db.rollback()
+    try:
+        push_pending(db)  # 标注失败也照推：上一轮标好、报道家数刚凑够的事件
+    except Exception:  # noqa: BLE001
+        logger.exception("news push failed")
         db.rollback()
     finally:
         db.close()

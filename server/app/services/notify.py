@@ -50,12 +50,19 @@ def _send_email(to: str, title: str, text: str) -> bool:
 def _send_webhook(url: str, title: str, text: str) -> bool:
     if "qyapi.weixin.qq.com" in url:  # 企业微信群机器人
         payload = {"msgtype": "text", "text": {"content": f"{title}\n{text}"}}
-    elif "open.feishu.cn" in url:  # 飞书自定义机器人
+    elif "open.feishu.cn" in url or "open.larksuite.com" in url:  # 飞书自定义机器人
         payload = {"msg_type": "text", "content": {"text": f"{title}\n{text}"}}
-    elif "sctapi.ftqq.com" in url:  # Server 酱
-        payload = {"title": title, "desp": text}
     else:
         payload = {"title": title, "text": text}
     r = httpx.post(url, json=payload, timeout=15)
     r.raise_for_status()
+    # 飞书 / 企业微信出错（签名校验、关键词不匹配、地址失效）也回 HTTP 200，错误码在响应体里
+    try:
+        body = r.json()
+    except ValueError:
+        return True
+    code = body.get("code", body.get("errcode", 0)) if isinstance(body, dict) else 0
+    if code:
+        logger.warning("webhook rejected: %s", str(body)[:200])
+        return False
     return True

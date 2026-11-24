@@ -506,3 +506,94 @@ def test_news_api_requires_login_and_returns_events(db):
     assert "宏观数据" in c.get("/news/categories").json()
     srcs = c.get("/news/sources").json()
     assert [s["source"] for s in srcs] == ["cls", "jin10", "wscn", "sina", "ths"]
+
+
+# ---------------------------------------------------------------- 要闻推送
+
+from app.models.user import User, UserSetting  # noqa: E402
+from app.services import news_push, notify  # noqa: E402
+
+HOOK = "https://open.feishu.cn/open-apis/bot/v2/hook/abc"
+
+
+def _subs(db, *levels):
+    for k, lv in enumerate(levels):
+        u = User(username=f"u{k}", password_hash="x")
+        db.add(u)
+        db.flush()
+        db.add(UserSetting(user_id=u.id, news_push_level=lv, news_webhook=HOOK + str(k)))
+    db.commit()
+
+
+def test_push_by_tier_once_within_window(db, monkeypatch):
+    ids = _seed(db)  # PPI 三家，地震一家
+    sent = []
+    monkeypatch.setattr(notify, "send", lambda ch, url, title, text: sent.append((url, title)) or True)
+    _subs(db, "top", "important", "off")
+    db.add_all([
+        NewsEvent(event_id=ids["美国地质"], category="其他", score=5, sectors=[]),
+        NewsEvent(event_id=ids["德国10"], category="宏观数据", score=4, sectors=[]),
+        NewsEvent(event_id=ids["斯里兰卡"], category="海外市场", score=3, sectors=[]),
+    ])
+    db.commit()
+    now = T0 + timedelta(minutes=5)
+    assert news_push.push_pending(db, now) == 1  # 只有 5 分的地震；PPI 4 分但只有三家
+    assert sorted(u[-1] for u, _ in sent) == ["0", "1"] and "【Kairos 重大】" in sent[0][1]
+    assert news_push.push_pending(db, now) == 0  # 推过不再推
+
+    # PPI 第四家报道到了 → 够 important 档，只发给 important 用户
+    sent.clear()
+    db.get(NewsEvent, ids["德国10"]).thread_sources = 4
+    db.commit()
+    assert news_push.push_pending(db, now) == 1
+    assert [u[-1] for u, _ in sent] == ["1"] and "【Kairos 要闻】" in sent[0][1]
+
+
+def test_push_skips_stale_and_followups(db, monkeypatch):
+    ids = _seed(db)
+    monkeypatch.setattr(notify, "send", lambda *a: True)
+    _subs(db, "important")
+    db.add_all([
+        NewsEvent(event_id=ids["美国地质"], category="其他", score=5, sectors=[]),
+        NewsEvent(event_id=ids["德国10"], category="宏观数据", score=5, sectors=[], parent_id=ids["美国地质"]),
+    ])
+    db.commit()
+    assert news_push.push_pending(db, T0 + timedelta(hours=1)) == 0  # 超过 30 分钟窗口
+    assert news_push.push_pending(db, T0 + timedelta(minutes=5)) == 1  # 后续不单推
+
+
+def test_settings_api_news_push_validation(db):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.api.settings import router
+    from app.core.db import get_db
+    from app.core.security import get_current_user
+
+    u = User(username="me", password_hash="x")
+    db.add(u)
+    db.commit()
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_db] = lambda: db
+    app.dependency_overrides[get_current_user] = lambda: u
+    c = TestClient(app)
+    body = {"notifyChannel": "none", "notifyTarget": "", "newsPushLevel": "top",
+            "newsWebhook": "https://sctapi.ftqq.com/x.send"}
+    assert c.put("/me/settings", json=body).status_code == 422
+    r = c.put("/me/settings", json=body | {"newsWebhook": HOOK}).json()
+    assert (r["newsPushLevel"], r["newsWebhook"]) == ("top", HOOK)
+    # 清空地址 → 自动关闭
+    assert c.put("/me/settings", json=body | {"newsWebhook": ""}).json()["newsPushLevel"] == "off"
+
+
+def test_feishu_error_code_counts_as_failure(monkeypatch):
+    class R:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"code": 19024, "msg": "Key Words Not Found"}
+
+    monkeypatch.setattr(notify.httpx, "post", lambda *a, **k: R())
+    assert notify.send("webhook", HOOK, "t", "x") is False

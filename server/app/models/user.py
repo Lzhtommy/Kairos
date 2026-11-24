@@ -52,3 +52,6 @@ class UserSetting(Base):
     # 策略命中变化的通知渠道：none | email | webhook
     notify_channel: Mapped[str] = mapped_column(String(16), default="none")
     notify_target: Mapped[str] = mapped_column(String(512), default="")
+    # 快讯要闻推送（services/news_push.py）：off | top（只推 5 分重大事件）| important（再加 4 分且 4 家以上）
+    news_push_level: Mapped[str] = mapped_column(String(16), default="off")
+    news_webhook: Mapped[str] = mapped_column(String(512), default="")  # 飞书自定义机器人地址
