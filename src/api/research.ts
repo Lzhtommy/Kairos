@@ -68,7 +68,11 @@ export type InstReport = { date: string | null; org: string; title: string; rati
 /** 定期报告深读条目：quote 为报告原文，page 由程序按原文回查；doc 为出处（如「2026 半年报」，早期报告无此字段 = 年报） */
 type PeriodicSource = { quote: string; page: number; doc?: string }
 export type AnnualKpi = PeriodicSource & { name: string; value: string; unit: string }
-export type AnnualRisk = PeriodicSource & { title: string }
+/** list_only：报告只列了风险名称清单、没有逐条展开，多条已合并为一条（title 用顿号连接） */
+export type AnnualRisk = PeriodicSource & { title: string; list_only?: boolean }
+/** 经营数据「指标 × 报告期」矩阵：金额已换算为亿元，yoy 为原文披露的同比 */
+export type KpiCell = { value: string; unit: string; page: number | null; yoy?: string }
+export type KpiTable = { docs: string[]; rows: { name: string; cells: Record<string, KpiCell> }[] }
 export type AnnualCitation = PeriodicSource & { topic: string; claim: string }
 
 export type PeerRow = {
@@ -106,6 +110,9 @@ export type Section = {
   profile?: Record<string, string>
   segments?: { name: string; share_fact: string; gm_fact: string }[]
   kpis?: AnnualKpi[]
+  kpi_table?: KpiTable
+  /** 成长性章：单季序列的报告期（YYYY-MM-DD），对应 facts 里的 q_rev_* / q_np_* / q_gm_* */
+  quarters?: string[]
   company_risks?: AnnualRisk[]
   citations?: AnnualCitation[]
   /** 不计分的参考指标 fact id */

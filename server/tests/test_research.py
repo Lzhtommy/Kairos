@@ -478,12 +478,12 @@ def test_run_report_with_periodic_insights(db, stocks, monkeypatch):
     assert [(x["doc"], x["page"]) for x in secs["risks"]["company_risks"]] == [("2025 年报", 23)]
     assert [s["key"] for s in r.sources if s["key"] in ("q1", "annual")] == ["q1", "annual"]
     assert "公司自述风险" in r.content_md and "2026 一季报 第 2 页" in r.content_md
-    # 后续跟踪：代码生成、不调 LLM，排在风险提示之后；公司自述风险进入跟踪清单
+    # 后续跟踪：代码生成、不调 LLM，排在风险提示之后；公司自述风险只在风险提示一章展示，不进跟踪清单
     keys = [s["key"] for s in r.sections]
     assert keys.index("tracking") == keys.index("risks") + 1
     assert secs["tracking"]["ai"] is False and secs["tracking"]["md"] == ""
-    assert any(t["key"] == "risk_宏观经济风险" for t in secs["tracking"]["tracking"])
-    assert secs["health"]["info_facts"] == ["contract_liab", "contract_liab_yoy"]
+    assert not any(t["kind"] == "risk" for t in secs["tracking"]["tracking"])
+    assert secs["health"]["info_facts"][:2] == ["contract_liab", "contract_liab_yoy"]
     assert "参考指标（不计分）" in r.content_md and "## " in r.content_md
 
     # 再生成一次：两份抽取都命中缓存
@@ -566,7 +566,7 @@ def test_build_tracking():
     items = build_tracking(ds, result, periodic)
     by_key = {i["key"]: i for i in items}
     kinds = [i["kind"] for i in items]
-    # 分组顺序：排雷 → 指标 → 公告 → 公司自述风险 → 下一期数据
+    # 分组顺序：排雷 → 指标 → 公告 → 下一期数据
     assert kinds == sorted(kinds, key=["flag", "metric", "event", "risk", "next"].index)
     assert by_key["flag_goodwill"]["kind"] == "flag"
     # 指标异常附上公司解释（取最新报告里关键词命中的第一条）
@@ -574,7 +574,7 @@ def test_build_tracking():
     assert by_key["ar_yoy"]["explain"]["page"] == 18
     assert by_key["contract_liab_yoy"]["value"] == "-20.00%"  # 合同负债同比 -20% 触发
     assert by_key["event_inquiry"]["kind"] == "event"
-    assert by_key["risk_市场竞争风险"]["note"] == "公司自述（2026 半年报 第 21 页）"
+    assert not any(i["kind"] == "risk" for i in items)  # 公司自述风险在风险提示一章原文展示
     assert by_key["next"]["label"] == "2026 三季报" and "10-31" in by_key["next"]["note"]
     # 同一指标不重复（得分偏低 + 异常规则都命中时只留一条）
     assert len([i for i in items if i["key"] == "deducted_np_yoy"]) == 1
@@ -630,7 +630,10 @@ def test_tracking_flags_slow_forecast_progress():
     item = next(i for i in build_tracking(ds, score(ds), None) if i["key"] == "inst_eps_progress")
     assert item["value"] == "67.74%" and "80.00%" in item["note"]
     info = _info_facts("valuation", ds["facts"])
-    assert info[:2] == ["fwd_pe_2026", "inst_eps_growth_fc_2026"] and info[6] == "fwd_pe_2027" and info[-2:] == ["inst_eps_progress", "eps_progress_prev"]
+    # 同一年的放一起：均值 → 前瞻市盈率 → 增速 → 篇数 → 区间 → 离散度；「inst_eps_fc_*」不吞 min / max / n / cv
+    assert info[:3] == ["inst_eps_fc_2026", "fwd_pe_2026", "inst_eps_growth_fc_2026"]
+    assert info[7:9] == ["inst_eps_fc_2027", "fwd_pe_2027"] and len(info) == len(set(info))
+    assert info[-2:] == ["inst_eps_progress", "eps_progress_prev"]
 
 
 def test_chat_json_retries_once_on_invalid_json(monkeypatch):
@@ -656,3 +659,178 @@ def test_chat_json_retries_once_on_invalid_json(monkeypatch):
     replies = iter(["{bad", "{still bad"])
     with pytest.raises(ValueError):
         research_writer._chat_json([{"role": "user", "content": "x"}])
+
+
+# ---------------------------------------------------------------- 研报对比后的修正（2026-11 茅台样本）
+
+
+def test_number_check_handles_thousands_and_year_prefix():
+    allowed = {2285.0, 665.93, 1720.54, 4.1}
+    # 「2,285」是一个数；「2023年665.93亿元」的年份不能吃掉金额的前两位；「1720.54」不是日期
+    assert find_bad_numbers("国内经销商 2,285 个，2023年665.93亿元，营收 1720.54亿元", allowed) == []
+    assert find_bad_numbers("2026年9月末、2026-09-30、2026Q3，基酒 4.1 万吨", allowed) == []
+    assert find_bad_numbers("营收 999.99亿元", allowed) == ["999.99"]
+    assert allowed_numbers({}, ["国内经销商 2,285 个"]) >= {2285.0}
+
+
+def test_list_only_risks_are_merged_and_detailed_report_preferred():
+    from app.services.research_annual import merge_extracts, merge_list_risks
+
+    quote = "一是宏观经济风险；二是安全风险；三是舆情风险；四是环境保护风险。"
+    listed = [{"title": t, "quote": quote, "page": 12} for t in ("宏观经济风险", "安全风险", "舆情风险", "环境保护风险")]
+    merged = merge_list_risks(listed)
+    assert len(merged) == 1 and merged[0]["list_only"] and merged[0]["title"] == "宏观经济风险、安全风险、舆情风险、环境保护风险"
+
+    detailed = [{"title": "宏观经济风险", "quote": "宏观经济增速放缓可能影响高端白酒消费需求。", "page": 40}]
+    out = merge_extracts([
+        ({"doc": "2026 半年报", "kind": "semi"}, {"risks": listed}),
+        ({"doc": "2025 年报", "kind": "annual"}, {"risks": detailed}),
+    ])
+    assert [(r["doc"], r["title"]) for r in out["risks"]] == [("2025 年报", "宏观经济风险")]
+    # 都只有清单时退回最新那份（合并后的一条）
+    out = merge_extracts([({"doc": "2026 半年报", "kind": "semi"}, {"risks": listed})])
+    assert len(out["risks"]) == 1 and out["risks"][0]["list_only"]
+
+
+def test_tracking_consistent_with_scoring_exemptions():
+    from app.services.research_tracking import build_tracking
+
+    ds = build_facts(make_raw(), VALUATION, "测试")
+    f = ds["facts"]
+    f["ar_yoy"] = {"value": 1327.79, "unit": "%", "label": "应收账款同比", "source": "balance", "period": "2026-06-30",
+                   "group": "cashflow"}
+    f["ar_to_revenue"]["value"] = 0.28
+    f["pe_pct_self"].update(value=91.37, days=336)
+    result = score(ds)
+    ar_item = next(it for it in result["sub_scores"]["cashflow"]["items"] if it["key"] == "ar_minus_rev_growth")
+    assert "0.28%" in ar_item["note"]
+    periodic = {"drivers": [{"topic": "balance", "claim": "应收账款减少主要是线上平台应收货款减少", "quote": "q",
+                             "page": 8, "doc": "2026 半年报"}], "kpis": [], "risks": []}
+    keys = {i["key"] for i in build_tracking(ds, result, periodic)}
+    assert "ar_yoy" not in keys and "pe_pct_self" not in keys
+
+    # 应收占比不小时照常提示，但方向相反的公司解释不挂
+    f["ar_to_revenue"]["value"] = 30
+    item = next(i for i in build_tracking(ds, score(ds), periodic) if i["key"] == "ar_yoy")
+    assert item["explain"] is None
+    # 历史够长时「历史高位」照常提示
+    f["pe_pct_self"]["days"] = 2430
+    assert "pe_pct_self" in {i["key"] for i in build_tracking(ds, score(ds), None)}
+
+
+def test_kpi_table_converts_amounts_and_merges_yoy():
+    from app.services.research_writer import kpi_table
+
+    kpis = [
+        {"name": "i茅台平台酒类不含税收入", "value": "5,856,230.60", "unit": "万元", "page": 3, "doc": "2026 三季报"},
+        {"name": "直销营业收入", "value": "2,181,234.00", "unit": "万元", "page": 3, "doc": "2026 三季报"},
+        {"name": "直销营业收入同比", "value": "40.31", "unit": "%", "page": 3, "doc": "2026 三季报"},
+        {"name": "国内经销商数量", "value": "2285", "unit": "个", "page": 3, "doc": "2026 三季报"},
+        {"name": "国内经销商数量", "value": "2,307", "unit": "个", "page": 8, "doc": "2026 半年报"},
+    ]
+    t = kpi_table(kpis)
+    assert t["docs"] == ["2026 三季报", "2026 半年报"]
+    rows = {r["name"]: r["cells"] for r in t["rows"]}
+    assert rows["i茅台平台酒类不含税收入"]["2026 三季报"]["value"] == "585.62"
+    assert rows["i茅台平台酒类不含税收入"]["2026 三季报"]["unit"] == "亿元"
+    assert rows["直销营业收入"]["2026 三季报"]["yoy"] == "40.31%"
+    assert "直销营业收入同比" not in rows
+    assert rows["国内经销商数量"]["2026 半年报"]["value"] == "2,307"
+    assert rows["国内经销商数量"]["2026 三季报"]["value"] == "2,285"  # 统一千分位
+    # 不同报告的叫法归一到同一行
+    t2 = kpi_table([{"name": "茅台酒主营业务收入", "value": "100", "unit": "亿元", "page": 1, "doc": "2026 三季报"},
+                    {"name": "茅台酒营业收入", "value": "60", "unit": "亿元", "page": 2, "doc": "2026 半年报"}])
+    assert len(t2["rows"]) == 1 and set(t2["rows"][0]["cells"]) == {"2026 三季报", "2026 半年报"}
+
+
+def test_quarterly_series_and_cumulative_margins():
+    raw = make_raw()
+    for r in raw["income"]:
+        r["营业成本"] = r["营业收入"] * 0.4
+    f = build_facts(raw, VALUATION, "测试")["facts"]
+    assert f["q_rev_2026-06-30"]["value"] == pytest.approx(25 * 1.1 ** 2)
+    assert f["q_rev_yoy_2026-06-30"]["value"] == pytest.approx(10)
+    assert f["q_gm_2026-06-30"]["value"] == pytest.approx(60)
+    assert f["gm_cum"]["value"] == pytest.approx(60) and f["gm_cum_change"]["value"] == pytest.approx(0, abs=1e-9)
+    assert f["gm_cum"]["label"] == "2026 年上半年毛利率"
+    ds = build_facts(raw, VALUATION, "测试")
+    assert ds["quarters"][-1] == "2026-06-30" and len(ds["quarters"]) <= 8
+
+
+def test_news_without_company_name_dropped():
+    raw = make_raw()
+    raw["news"] = [{"新闻标题": t, "发布时间": "2026-11-20 10:00:00", "文章来源": "x", "新闻链接": None}
+                   for t in ("茅台三季报点评", "食品饮料板块3.86亿元主力资金净流入", "贵州茅台回购完成")]
+    assert [n["title"] for n in build_facts(raw, VALUATION, "贵州茅台")["news"]] == ["茅台三季报点评", "贵州茅台回购完成"]
+
+
+def test_long_history_and_industry_growth():
+    val = {**VALUATION, "hist_source": "daily_basic", "pe_hist": [10 + i * 0.01 for i in range(2430)],
+           "pe_hist_current": 21.0, "self_code": "000001",
+           "industry_fin": [
+               {"code": f"{i:06d}", "report_date": d, "revenue": rev, "net_profit": rev / 5,
+                "revenue_yoy": yoy, "profit_yoy": yoy}
+               for i in range(1, 7)
+               for d, rev, yoy in (("2026-06-30", 100.0 * (1.1 if i == 1 else 0.9), 10.0 if i == 1 else -10.0),
+                                   ("2025-06-30", 100.0, None))
+           ]}
+    f = build_facts(make_raw(), val, "测试")["facts"]
+    assert f["pe_pct_self"]["days"] == 2430 and "近 10 年" in f["pe_pct_self"]["label"]
+    assert f["pe_pct_self"]["source"] == "daily_basic"
+    assert f["industry_median_revenue_yoy"]["value"] == pytest.approx(-10)
+    assert f["industry_revenue_yoy_agg"]["value"] == pytest.approx((110 + 450) / 600 * 100 - 100, abs=1e-3)
+    assert f["industry_revenue_yoy_agg_ex_self"]["value"] == pytest.approx(-10)
+    # 短历史标注交易日数
+    assert "仅 200 个交易日" in build_facts(make_raw(), VALUATION, "测试")["facts"]["pe_pct_self"]["label"]
+
+
+def test_citations_capped_by_subject_priority():
+    from app.services.research_writer import MAX_CITATIONS, _citations
+
+    drivers = [{"topic": "cashflow", "claim": f"主要是财务公司同业存单{i}", "quote": "q", "page": i, "doc": "2025 年报"}
+               for i in range(10)]
+    drivers += [{"topic": "cashflow", "claim": f"经营活动产生的现金流量净额变动原因{d}", "quote": "q", "page": 1, "doc": d}
+                for d in ("2026 三季报", "2026 半年报", "2025 年报")]
+    drivers.append({"topic": "balance", "claim": "合同负债减少主要是预收货款政策调整", "quote": "q", "page": 9, "doc": "2026 半年报"})
+    cites = _citations("health", {"drivers": drivers})
+    assert len(cites) == MAX_CITATIONS
+    claims = [c["claim"] for c in cites]
+    assert sum("经营活动" in c for c in claims) == 2 and any("合同负债" in c for c in claims)
+
+
+def test_markdown_notes_and_slim_appendix():
+    from app.services.research_writer import render_markdown
+
+    ds = build_facts(make_raw(), VALUATION, "测试")
+    result = score(ds)
+    md = render_markdown({
+        "name": "测试", "code": "000001", "industry": "白酒", "data_as_of": ds["data_as_of"],
+        "total_score": result["total_score"], "grade": result["grade"], "coverage": result["coverage"],
+        "sub_scores": result["sub_scores"], "red_flags": [], "scoring_version": result["scoring_version"],
+        "facts": ds["facts"], "sources": [],
+        "sections": [{"key": "valuation", "title": "估值与股东回报", "md": "x", "metric_keys": ["valuation"]}],
+    })
+    assert "零分点 → 满分点" in md.split("## 2.")[0]  # 指标表自带阈值
+    assert "注1：自身历史仅 200 个交易日" in md  # 降权说明以脚注展示
+    assert "附录：计分规则与数据来源" in md and "| 维度 | 指标 |" not in md
+
+
+def test_fact_caveats_for_immaterial_receivables_and_short_history():
+    from app.services.research_writer import _facts_block
+
+    ds = build_facts(make_raw(), VALUATION, "测试")
+    f = ds["facts"]
+    f["ar_yoy"] = {"value": 1327.79, "unit": "%", "label": "应收账款同比", "source": "balance", "period": None,
+                   "group": "cashflow"}
+    f["ar_to_revenue"]["value"] = 0.28
+    block = _facts_block(f, ["cashflow", "valuation"])
+    assert "应收账款同比：1327.79%（应收账款仅占营收 0.28%" in block
+    assert "仅覆盖近 200 个交易日" in block
+
+
+def test_strip_leading_section_title():
+    from app.services.research_writer import _strip_heading
+
+    assert _strip_heading("**风险提示**\n\n- **增长动能趋弱。** 正文") == "- **增长动能趋弱。** 正文"
+    assert _strip_heading("## 风险提示\n正文") == "正文"
+    assert _strip_heading("- **增长动能趋弱。** 正文") == "- **增长动能趋弱。** 正文"

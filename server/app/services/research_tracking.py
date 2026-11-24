@@ -1,7 +1,9 @@
 """后续跟踪清单：纯代码生成（不经 LLM），告诉读者接下来盯什么、为什么盯、公司怎么解释的。
 
-来源（按展示顺序）：排雷项 → 指标（异常规则 + 得分偏低）→ 需跟进的负面公告 → 公司自述风险 → 下一期定期报告。
-指标若在定期报告深读里有公司解释（关键词命中），附上最新一条的出处。
+来源（按展示顺序）：排雷项 → 指标（异常规则 + 得分偏低）→ 需跟进的负面公告 → 下一期定期报告。
+公司自述风险已在「风险提示」一章原文展示，这里不再逐条重复。
+指标若在定期报告深读里有公司解释（关键词命中且变动方向一致），附上最新一条的出处。
+口径与评分一致：应收占营收不足 2% 不提示应收增速；自身估值历史不足 2 年不提示「历史高位」。
 """
 
 from __future__ import annotations
@@ -9,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from app.services.research_facts import fmt
+from app.services.research_score import AR_IMMATERIAL_PCT, SELF_HIST_MIN_DAYS
 
 KIND_ORDER = ["flag", "metric", "event", "risk", "next"]
 
@@ -18,13 +21,19 @@ ANOMALIES: list[tuple[str, Callable[[float], bool], str]] = [
     ("revenue_yoy", lambda v: v < 0, "营收同比下滑"),
     ("rev_q_yoy_latest", lambda v: v < -10, "最近单季营收同比明显下滑"),
     ("ar_yoy", lambda v: v > 30, "应收账款增长较快，关注回款与信用政策"),
-    ("contract_liab_yoy", lambda v: v < -15, "合同负债（预收款）同比下降，可能预示后续收入放缓"),
+    ("contract_liab_yoy", lambda v: v < -15,
+     "合同负债（预收款）同比下降：可能是下游打款意愿减弱，也可能是收款政策调整，看公司解释与后续收入"),
     ("ocf_to_np_3y", lambda v: v < 0.8, "经营现金流对利润覆盖不足"),
     ("debt_ratio", lambda v: v > 65, "资产负债率偏高"),
     ("pe_pct_self", lambda v: v > 80, "估值处于自身历史高位"),
 ]
 WEAK_RATIO = 0.3  # 得分率低于此视为偏低
 PROGRESS_LAG_PP = 10  # 预测完成度比去年同期低这么多个百分点才提示
+
+# 指标值的方向：正数 = 「增加」。公司解释只写了反方向（如指标同比 +1300%、解释写「应收账款减少主要是……」，
+# 多半是另一份报告期的解释）时不挂，免得自相矛盾
+_UP_WORDS = ("增加", "增长", "上升", "提高", "上涨", "扩大")
+_DOWN_WORDS = ("减少", "下降", "下滑", "降低", "回落", "收窄")
 
 # 指标 → 在公司解释里找的关键词
 EXPLAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
@@ -46,12 +55,37 @@ _NEXT_REPORT = {
 }
 
 
-def _explain(fid: str, drivers: list[dict]) -> dict | None:
+def _direction_ok(claim: str, value: float | None) -> bool:
+    if value is None or value == 0:
+        return True
+    up, down = any(w in claim for w in _UP_WORDS), any(w in claim for w in _DOWN_WORDS)
+    if up == down:  # 都没写或两个方向都有：不判断
+        return True
+    return up if value > 0 else down
+
+
+def _explain(fid: str, drivers: list[dict], value: float | None = None) -> dict | None:
     for kw in EXPLAIN_KEYWORDS.get(fid, ()):
         for d in drivers:  # 已按报告期由新到旧
-            if kw in d["claim"]:
+            if kw in d["claim"] and _direction_ok(d["claim"], value):
                 return {"claim": d["claim"], "doc": d.get("doc") or "年报", "page": d["page"]}
     return None
+
+
+# 方向有意义的指标（同比、增速类）；比率类指标（负债率、估值分位）不判断方向
+_DIRECTIONAL = {"deducted_np_yoy", "revenue_yoy", "rev_q_yoy_latest", "ar_yoy", "contract_liab_yoy",
+                "deducted_np_cagr_3y", "revenue_cagr_3y", "rev_q_yoy_change", "ar_minus_rev_growth"}
+
+
+def _skip(fid: str, facts: dict) -> bool:
+    """与评分口径一致的豁免：应收占营收很小；自身估值历史太短。"""
+    if fid in ("ar_yoy", "ar_minus_rev_growth"):
+        ratio = facts.get("ar_to_revenue", {}).get("value")
+        return ratio is not None and ratio < AR_IMMATERIAL_PCT
+    if fid in ("pe_pct_self", "pb_pct_self"):
+        days = facts.get(fid, {}).get("days")
+        return days is not None and days < SELF_HIST_MIN_DAYS
+    return False
 
 
 def build_tracking(dataset: dict, result: dict, periodic: dict | None) -> list[dict]:
@@ -66,26 +100,33 @@ def build_tracking(dataset: dict, result: dict, periodic: dict | None) -> list[d
     seen: set[str] = set()
     for fid, cond, note in ANOMALIES:
         f = facts.get(fid)
+        if _skip(fid, facts):
+            seen.add(fid)
+            continue
         if f is not None and cond(f["value"]):
             seen.add(fid)
+            v = f["value"] if fid in _DIRECTIONAL else None
             items.append({"kind": "metric", "key": fid, "label": f["label"], "value": fmt(f), "note": note,
-                          "explain": _explain(fid, drivers)})
+                          "explain": _explain(fid, drivers, v)})
     for key, d in result["sub_scores"].items():
         if key == "events":
             continue
         for it in d["items"]:
             if it["key"] in seen or it["points"] is None or not it["max"] or it["points"] / it["max"] >= WEAK_RATIO:
                 continue
+            if _skip(it["key"], facts):
+                continue
             seen.add(it["key"])
+            v = it["value"] if it["key"] in _DIRECTIONAL else None
             items.append({"kind": "metric", "key": it["key"], "label": it["label"], "value": it["display"],
-                          "note": f"得分偏低（{it['points']} / {it['max']}）", "explain": _explain(it["key"], drivers)})
+                          "note": f"得分偏低（{it['points']} / {it['max']}）", "explain": _explain(it["key"], drivers, v)})
 
     # 预测完成度明显慢于去年同期（季节性基准）：全年一致预期能否兑现
     prog, prev = facts.get("inst_eps_progress"), facts.get("eps_progress_prev")
     if prog and prev and prog["value"] < prev["value"] - PROGRESS_LAG_PP:
         items.append({"kind": "metric", "key": "inst_eps_progress", "label": prog["label"], "value": fmt(prog),
                       "note": f"慢于去年同期（{fmt(prev)}），关注全年机构预测能否兑现",
-                      "explain": _explain("deducted_np_yoy", drivers)})
+                      "explain": _explain("deducted_np_yoy", drivers, facts.get("deducted_np_yoy", {}).get("value"))})
 
     latest_by_tag: dict[str, dict] = {}
     for e in dataset.get("events") or []:  # 已按日期倒序
@@ -95,10 +136,6 @@ def build_tracking(dataset: dict, result: dict, periodic: dict | None) -> list[d
         if (e := latest_by_tag.get(tag)) is not None:
             items.append({"kind": "event", "key": f"event_{tag}", "label": e["label"], "value": e["date"] or "",
                           "note": e["title"], "url": e.get("url")})
-
-    for r in (periodic or {}).get("risks") or []:
-        items.append({"kind": "risk", "key": f"risk_{r['title']}", "label": r["title"], "value": "",
-                      "note": f"公司自述（{r.get('doc') or '年报'} 第 {r['page']} 页）"})
 
     as_of = dataset.get("data_as_of") or ""
     nxt = _NEXT_REPORT.get(as_of[5:])

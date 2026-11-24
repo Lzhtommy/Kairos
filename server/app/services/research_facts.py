@@ -79,10 +79,54 @@ def _pct_rank(values: list[float], current: float) -> float:
     return below / len(values) * 100
 
 
+def _span_label(days: int) -> str:
+    """分位样本跨度：满 2 年写「近 N 年」，否则写交易日数（短历史要让读者一眼看出来）。"""
+    if days >= 480:
+        return f"近 {round(days / 243)} 年，{days} 个交易日"
+    return f"仅 {days} 个交易日"
+
+
 def _cagr(start: float | None, end: float | None, years: int) -> float | None:
     if start is None or end is None or start <= 0 or end <= 0:
         return None
     return ((end / start) ** (1 / years) - 1) * 100
+
+
+QUARTER_ENDS = ("03-31", "06-30", "09-30", "12-31")
+QUARTERS_SHOWN = 8
+# 新浪利润表累计科目（按优先级取第一个有值的）
+CUM_FIELDS = {
+    "rev": ("营业收入", "营业总收入"),
+    "cost": ("营业成本",),
+    "np": ("归属于母公司所有者的净利润", "净利润"),
+}
+
+
+def _quarter_label(d: str) -> str:
+    """'2026-09-30' → '2026Q3'。"""
+    return f"{d[:4]}Q{QUARTER_ENDS.index(d[5:]) + 1}"
+
+
+def _cum_label(d: str) -> str:
+    """累计期的中文名：'2026-09-30' → '2026 年前三季度'。"""
+    return f"{d[:4]} 年" + {"03-31": "一季度", "06-30": "上半年", "09-30": "前三季度", "12-31": "全年"}[d[5:]]
+
+
+def news_aliases(name: str) -> list[str]:
+    """新闻标题里可能出现的公司简称：全称、去掉 ST 前缀、去掉省市地名前缀（「贵州茅台」→「茅台」）。"""
+    base = re.sub(r"^\*?ST", "", (name or "").replace(" ", ""))
+    out = [base] if base else []
+    if len(base) >= 4 and base[:2] in PLACE_PREFIXES:
+        out.append(base[2:])
+    return out
+
+
+PLACE_PREFIXES = {
+    "北京", "天津", "上海", "重庆", "河北", "山西", "辽宁", "吉林", "江苏", "浙江", "安徽", "福建", "江西", "山东",
+    "河南", "湖北", "湖南", "广东", "广西", "海南", "四川", "贵州", "云南", "陕西", "甘肃", "青海", "西藏", "宁夏",
+    "新疆", "内蒙", "深圳", "广州", "杭州", "南京", "武汉", "成都", "西安", "苏州", "宁波", "厦门", "青岛", "大连",
+    "中国", "黑龙",
+}
 
 
 # ---------------------------------------------------------------- 格式化
@@ -217,32 +261,36 @@ def build_facts(raw: dict[str, list[dict] | None], valuation: dict, name: str = 
     balance = by_date(raw.get("balance"))
     cashflow = by_date(raw.get("cashflow"))
 
-    # 单季营收同比：累计值差分
+    # 单季值：累计值差分
+    def cum(d: str, field: str) -> float | None:
+        r = income.get(d) or {}
+        for k in CUM_FIELDS[field]:
+            if r.get(k) is not None:
+                return yuan_to_yi(r.get(k))
+        return None
+
     def cum_rev(d: str) -> float | None:
-        r = income.get(d)
-        return yuan_to_yi(r.get("营业收入") if r and r.get("营业收入") is not None else (r or {}).get("营业总收入"))
+        return cum(d, "rev")
 
-    quarter_ends = ("03-31", "06-30", "09-30", "12-31")
-
-    def single_q(d: str) -> float | None:
-        cur = cum_rev(d)
+    def single_q(d: str, field: str = "rev") -> float | None:
+        cur = cum(d, field)
         if cur is None:
             return None
-        idx = quarter_ends.index(d[5:]) if d[5:] in quarter_ends else -1
+        idx = QUARTER_ENDS.index(d[5:]) if d[5:] in QUARTER_ENDS else -1
         if idx < 0:
             return None
         if idx == 0:
             return cur
-        prev = cum_rev(f"{d[:4]}-{quarter_ends[idx - 1]}")
+        prev = cum(f"{d[:4]}-{QUARTER_ENDS[idx - 1]}", field)
         return None if prev is None else cur - prev
 
-    def sq_yoy(d: str) -> float | None:
-        cur, ago = single_q(d), single_q(_year_ago(d))
+    def sq_yoy(d: str, field: str = "rev") -> float | None:
+        cur, ago = single_q(d, field), single_q(_year_ago(d), field)
         if cur is None or ago is None or ago <= 0:
             return None
         return (cur / ago - 1) * 100
 
-    q_dates = sorted(d for d in income if d[5:] in quarter_ends)
+    q_dates = sorted(d for d in income if d[5:] in QUARTER_ENDS)
     if len(q_dates) >= 2:
         d1, d0 = q_dates[-1], q_dates[-2]
         y1, y0 = sq_yoy(d1), sq_yoy(d0)
@@ -250,6 +298,44 @@ def build_facts(raw: dict[str, list[dict] | None], valuation: dict, name: str = 
         put("rev_q_yoy_prev", y0, "%", "前一单季营收同比", "income", d0, "growth")
         if y1 is not None and y0 is not None:
             put("rev_q_yoy_change", y1 - y0, "pp", "单季营收同比变化", "income", d1, "growth")
+
+    # 单季序列（最近 QUARTERS_SHOWN 个季度）：营收、归母净利润及同比、毛利率——看拐点用，只展示不计分
+    quarters: list[str] = []
+    for d in q_dates[-QUARTERS_SHOWN:]:
+        rev, np_ = single_q(d, "rev"), single_q(d, "np")
+        if rev is None:
+            continue
+        q = _quarter_label(d)
+        quarters.append(d)
+        put(f"q_rev_{d}", rev, "亿元", f"{q} 单季营收", "income", d, "quarterly")
+        put(f"q_rev_yoy_{d}", sq_yoy(d, "rev"), "%", f"{q} 单季营收同比", "income", d, "quarterly")
+        put(f"q_np_{d}", np_, "亿元", f"{q} 单季归母净利润", "income", d, "quarterly")
+        put(f"q_np_yoy_{d}", sq_yoy(d, "np"), "%", f"{q} 单季归母净利润同比", "income", d, "quarterly")
+        cost = single_q(d, "cost")
+        if cost is not None and rev > 0:
+            put(f"q_gm_{d}", (rev - cost) / rev * 100, "%", f"{q} 单季毛利率", "income", d, "quarterly")
+
+    # 最新累计期利润率 vs 上年同期：年报利润率是一年前的口径，这里补上最新趋势（不计分）
+    if q_dates:
+        d1 = q_dates[-1]
+        d0 = _year_ago(d1)
+        span = _cum_label(d1)
+
+        def margins(d: str) -> tuple[float | None, float | None]:
+            rev, cost, np_ = cum(d, "rev"), cum(d, "cost"), cum(d, "np")
+            if not rev or rev <= 0:
+                return None, None
+            return (None if cost is None else (rev - cost) / rev * 100), (None if np_ is None else np_ / rev * 100)
+
+        (gm1, nm1), (gm0, nm0) = margins(d1), margins(d0)
+        put("gm_cum", gm1, "%", f"{span}毛利率", "income", d1, "profitability")
+        put("gm_cum_prev", gm0, "%", f"上年同期（{_cum_label(d0)}）毛利率", "income", d0, "profitability")
+        if gm1 is not None and gm0 is not None:
+            put("gm_cum_change", gm1 - gm0, "pp", f"{span}毛利率同比变化", "income", d1, "profitability")
+        put("nm_cum", nm1, "%", f"{span}归母净利率", "income", d1, "profitability")
+        put("nm_cum_prev", nm0, "%", f"上年同期（{_cum_label(d0)}）归母净利率", "income", d0, "profitability")
+        if nm1 is not None and nm0 is not None:
+            put("nm_cum_change", nm1 - nm0, "pp", f"{span}归母净利率同比变化", "income", d1, "profitability")
 
     data_as_of = max(balance) if balance else (norm_date(periodic[-1].get("报告期")) if periodic else None)
 
@@ -366,19 +452,24 @@ def build_facts(raw: dict[str, list[dict] | None], valuation: dict, name: str = 
     pe = valuation.get("pe")
     put("pe", pe, "倍", "市盈率", "factor_history", valuation.get("as_of"), "valuation")
     put("pb", valuation.get("pb"), "倍", "市净率", "factor_history", valuation.get("as_of"), "valuation")
-    put("dividend_yield", valuation.get("dividend_yield"), "%", "股息率", "factor_history",
+    put("dividend_yield", valuation.get("dividend_yield"), "%", "股息率（近 12 个月）", "factor_history",
         valuation.get("as_of"), "shareholder")
     put("market_cap", valuation.get("market_cap"), "亿元", "总市值", "factor_history", valuation.get("as_of"), "valuation")
+    # 自身历史分位：优先用 daily_basic 的长历史（PE(TTM) / PB(MRQ)，最多近 10 年），当前值也取同一来源，
+    # 口径一致；没有时退回本地因子快照（部署以来，通常不足 2 年——评分降权，文字不得写「历史高位 / 低位」）
+    hist_src = valuation.get("hist_source") or "factor_history"
     pe_hist = [v for v in valuation.get("pe_hist") or [] if v and v > 0]
     pb_hist = [v for v in valuation.get("pb_hist") or [] if v and v > 0]
-    if pe and pe > 0 and len(pe_hist) >= 120:
-        put("pe_pct_self", _pct_rank(pe_hist, pe), "%", f"市盈率自身历史分位（{len(pe_hist)} 个交易日）",
-            "factor_history", valuation.get("as_of"), "valuation")
+    pe_now = valuation.get("pe_hist_current", pe)
+    pb_now = valuation.get("pb_hist_current", valuation.get("pb"))
+    if pe and pe > 0 and pe_now and pe_now > 0 and len(pe_hist) >= 120:
+        put("pe_pct_self", _pct_rank(pe_hist, pe_now), "%", f"市盈率自身历史分位（{_span_label(len(pe_hist))}）",
+            hist_src, valuation.get("hist_as_of") or valuation.get("as_of"), "valuation")
         facts["pe_pct_self"]["days"] = len(pe_hist)
-    pb = valuation.get("pb")
-    if pb and pb > 0 and len(pb_hist) >= 120:
-        put("pb_pct_self", _pct_rank(pb_hist, pb), "%", f"市净率自身历史分位（{len(pb_hist)} 个交易日）",
-            "factor_history", valuation.get("as_of"), "valuation")
+    if pb_now and pb_now > 0 and len(pb_hist) >= 120:
+        put("pb_pct_self", _pct_rank(pb_hist, pb_now), "%", f"市净率自身历史分位（{_span_label(len(pb_hist))}）",
+            hist_src, valuation.get("hist_as_of") or valuation.get("as_of"), "valuation")
+        facts["pb_pct_self"]["days"] = len(pb_hist)
     peers = [v for v in valuation.get("industry_pes") or [] if v and v > 0]
     if pe and pe > 0 and len(peers) >= 10:
         put("pe_pct_industry", _pct_rank(peers, pe), "%", f"市盈率同行业分位（{len(peers)} 家）",
@@ -397,9 +488,9 @@ def build_facts(raw: dict[str, list[dict] | None], valuation: dict, name: str = 
             return [v for r in rows if (v := r.get(key)) is not None and (v > 0 or not positive)]
 
         put("peers_count", float(n), "", "同行业样本数", "factor_history", as_of, "peers")
-        put("roe_snapshot", me.get("roe"), "%", "ROE（行情快照口径）", "factor_history", as_of, "peers")
-        for key, label, positive in (("roe", "ROE", False), ("pe", "市盈率", True), ("pb", "市净率", True),
-                                     ("dividend_yield", "股息率", False)):
+        put("roe_snapshot", me.get("roe"), "%", "ROE（TTM，行情快照）", "factor_history", as_of, "peers")
+        for key, label, positive in (("roe", "ROE（TTM）", False), ("pe", "市盈率", True), ("pb", "市净率", True),
+                                     ("dividend_yield", "股息率（近 12 个月）", False)):
             v = vals(key, positive)
             if v:
                 unit = "%" if key in ("roe", "dividend_yield") else "倍"
@@ -408,7 +499,7 @@ def build_facts(raw: dict[str, list[dict] | None], valuation: dict, name: str = 
         if n >= 10:
             if me.get("roe") is not None:
                 put("roe_pct_industry", _pct_rank(vals("roe"), me["roe"]), "%",
-                    f"ROE 同行业分位（{n} 家，行情快照口径）", "factor_history", as_of, "peers")
+                    f"ROE（TTM）同行业分位（{n} 家）", "factor_history", as_of, "peers")
             pb_vals = vals("pb", True)
             if me.get("pb") and me["pb"] > 0:
                 put("pb_pct_industry", _pct_rank(pb_vals, me["pb"]), "%", f"市净率同行业分位（{len(pb_vals)} 家）",
@@ -421,6 +512,8 @@ def build_facts(raw: dict[str, list[dict] | None], valuation: dict, name: str = 
         table = [{**r, "self": False} for r in others[:6]] + [{**me, "self": True}]
         table.sort(key=lambda r: r.get("market_cap") or 0, reverse=True)
         peers = {"industry": valuation.get("industry"), "count": n, "as_of": as_of, "rows": table}
+
+    _industry_growth(put, valuation, data_as_of)
 
     # ---------- 公司概况与主营构成
     profile_rec = (raw.get("profile") or [{}])[0] if raw.get("profile") else {}
@@ -465,11 +558,14 @@ def build_facts(raw: dict[str, list[dict] | None], valuation: dict, name: str = 
         events.sort(key=lambda e: e["date"] or "", reverse=True)
 
     # ---------- 新闻
+    # 东财个股新闻按关键词搜，常混进板块资金流、「百元股」这类和公司无关的稿子：标题里没有公司简称的丢掉
+    aliases = news_aliases(name)
     news = [
         {"title": str(r.get("新闻标题") or ""), "time": str(r.get("发布时间") or ""),
          "source": str(r.get("文章来源") or ""), "url": r.get("新闻链接")}
-        for r in (raw.get("news") or [])[:10]
-    ]
+        for r in raw.get("news") or []
+        if not aliases or any(a in str(r.get("新闻标题") or "") for a in aliases)
+    ][:10]
 
     # ---------- 机构研报一致预期（近 90 天）
     consensus = None
@@ -551,6 +647,7 @@ def build_facts(raw: dict[str, list[dict] | None], valuation: dict, name: str = 
 
     return {
         "facts": facts,
+        "quarters": quarters,
         "data_as_of": data_as_of,
         "profile": profile,
         "segments": segments,
@@ -561,3 +658,40 @@ def build_facts(raw: dict[str, list[dict] | None], valuation: dict, name: str = 
         "deducted_last2": deducted_last2,
         "peers": peers,
     }
+
+
+INDUSTRY_GROWTH_MIN = 5  # 同报告期有数据的同业少于此数不做行业增速对比
+
+
+def _industry_growth(put, valuation: dict, data_as_of: str | None) -> None:
+    """同行业同报告期的累计营收 / 归母净利润增速（fin_report，东财口径）：中位数、行业合计、剔除本公司后合计、本公司分位。
+
+    行业合计 = Σ本期 / Σ上年同期 − 1（只算两期都有数据的公司）；龙头体量大时「剔除本公司」更能反映行业本身。
+    """
+    rows = valuation.get("industry_fin") or []
+    self_code = valuation.get("self_code")
+    if not data_as_of or not rows:
+        return
+    ago = _year_ago(data_as_of)
+    by = {(r["code"], r["report_date"]): r for r in rows}
+    cur = [r for r in rows if r["report_date"] == data_as_of]
+    if len(cur) < INDUSTRY_GROWTH_MIN:
+        return
+    span = _cum_label(data_as_of)
+    for key, yoy_key, label in (("revenue", "revenue_yoy", "营收"), ("net_profit", "profit_yoy", "归母净利润")):
+        yoys = [r[yoy_key] for r in cur if r.get(yoy_key) is not None]
+        if len(yoys) >= INDUSTRY_GROWTH_MIN:
+            put(f"industry_median_{yoy_key}", statistics.median(yoys), "%", f"同行业{span}{label}同比中位数",
+                "fin_report", data_as_of, "peers")
+            me = next((r for r in cur if r["code"] == self_code), None)
+            if me is not None and me.get(yoy_key) is not None and len(yoys) >= 10:
+                put(f"{yoy_key}_pct_industry", _pct_rank(yoys, me[yoy_key]), "%",
+                    f"{span}{label}同比同行业分位（{len(yoys)} 家）", "fin_report", data_as_of, "peers")
+        for suffix, keep, desc in (("", lambda c: True, "行业合计"), ("_ex_self", lambda c: c != self_code, "剔除本公司后行业合计")):
+            pairs = [(r[key], by[(r["code"], ago)][key]) for r in cur
+                     if keep(r["code"]) and r.get(key) is not None and (r["code"], ago) in by
+                     and by[(r["code"], ago)].get(key) is not None]
+            now_sum, ago_sum = sum(a for a, _ in pairs), sum(b for _, b in pairs)
+            if len(pairs) >= INDUSTRY_GROWTH_MIN and ago_sum > 0:
+                put(f"industry_{key}_yoy_agg{suffix}", (now_sum / ago_sum - 1) * 100, "%",
+                    f"{desc}{span}{label}同比（{len(pairs)} 家）", "fin_report", data_as_of, "peers")

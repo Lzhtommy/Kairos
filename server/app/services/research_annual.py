@@ -314,13 +314,21 @@ def merge_extracts(docs: list[tuple[dict, dict]]) -> dict:
     （季报不披露风险；半年报常写「与年报相比无重大变化」，此时抽不出条目，自然退回年报）。
     """
     out: dict = {"drivers": [], "kpis": [], "risks": [], "reports": []}
+    fallback: list[dict] = []
     for meta, ex in docs:
         tag = {"doc": meta.get("doc") or "定期报告"}
         out["drivers"] += [{**d, **tag} for d in ex.get("drivers") or []]
         out["kpis"] += [{**k, **tag} for k in ex.get("kpis") or []]
-        if not out["risks"] and meta.get("kind", "annual") in ("annual", "semi"):
-            out["risks"] = [{**r, **tag} for r in ex.get("risks") or []]
+        risks = merge_list_risks(ex.get("risks") or [])  # 旧缓存（a3 及以前）没合并过
+        if not out["risks"] and risks and meta.get("kind", "annual") in ("annual", "semi"):
+            # 只有风险名称清单、没有逐条说明的（半年报常见）先记着，优先用有展开说明的那份
+            if _risks_detailed(risks):
+                out["risks"] = [{**r, **tag} for r in risks]
+            elif not fallback:
+                fallback = [{**r, **tag} for r in risks]
         out["reports"].append(meta)
+    if not out["risks"]:
+        out["risks"] = fallback
     return out
 
 
@@ -418,5 +426,32 @@ def verify_extract(raw: dict, pages: list[tuple[int, str]]) -> dict:
             out["dropped"] += 1
             continue
         out["risks"].append({"title": _str(d, "title"), "quote": _str(d, "quote"), "page": page})
+    out["risks"] = merge_list_risks(out["risks"])
 
     return out
+
+
+def merge_list_risks(risks: list[dict]) -> list[dict]:
+    """多条风险引用同一段原文（报告只列了「一是……二是……」的名称清单，没有展开）时合并成一条，
+    标 list_only——否则读者会看到四条一模一样的引用。"""
+    groups: dict[str, list[dict]] = {}
+    for r in risks:
+        groups.setdefault(norm(r["quote"]), []).append(r)
+    out: list[dict] = []
+    done: set[str] = set()
+    for r in risks:
+        key = norm(r["quote"])
+        if key in done:
+            continue
+        done.add(key)
+        g = groups[key]
+        if len(g) == 1:
+            out.append(r)
+        else:
+            out.append({"title": "、".join(x["title"] for x in g), "quote": r["quote"], "page": r["page"],
+                        "list_only": True})
+    return out
+
+
+def _risks_detailed(risks: list[dict]) -> bool:
+    return any(not r.get("list_only") for r in risks)

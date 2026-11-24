@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.market import FactorSnapshot, Fundamental, Quote, StockInfo
 from app.models.research import ResearchRawCache, ResearchReport
+from app.models.warehouse import DailyBasic, FinReport
 from app.services import llm
 from app.services.research_annual import REPORT_KINDS, choose_reports, merge_extracts, report_blocks
 from app.services.research_data import fetch_all, fetch_report_text, latest_report_meta, report_source
@@ -19,7 +20,10 @@ from app.services.research_writer import EXTRACT_VERSION, extract_periodic, llm_
 
 logger = logging.getLogger("kairos.research")
 
-HIST_LIMIT = 750  # 约 3 年交易日
+HIST_LIMIT = 750  # 本地因子快照：约 3 年交易日
+LONG_HIST_LIMIT = 2430  # daily_basic：约 10 年交易日
+LONG_HIST_MAX_LAG_DAYS = 10  # daily_basic 最新一行离今天超过这么多天就不用（同步停了，当前值不新鲜）
+INDUSTRY_FIN_DAYS = 800  # 同业财报回看：覆盖最新报告期及其上年同期
 
 
 def valuation_inputs(db: Session, code: str, industry: str) -> dict:
@@ -54,6 +58,7 @@ def valuation_inputs(db: Session, code: str, industry: str) -> dict:
     ).all()
     out["pe_hist"] = [pe for pe, _ in hist if pe is not None]
     out["pb_hist"] = [pb for _, pb in hist if pb is not None]
+    out.update(_long_history(db, code))
 
     out["self_code"], out["industry"] = code, industry
     if industry and industry != "—":
@@ -72,7 +77,48 @@ def valuation_inputs(db: Session, code: str, industry: str) -> dict:
                  "dividend_yield": None if f.dividend_yield is None else f.dividend_yield * 100}
                 for f, name in rows
             ]
+            out["industry_fin"] = _industry_fin(db, [f.code for f, _ in rows])
     return out
+
+
+def _long_history(db: Session, code: str) -> dict:
+    """daily_basic（BaoStock，补到上市日）的 PE(TTM) / PB(MRQ) 长历史；不够新或不比快照长时返回空，沿用快照。"""
+    rows = db.execute(
+        select(DailyBasic.trade_date, DailyBasic.pe_ttm, DailyBasic.pb_mrq)
+        .where(DailyBasic.code == code, DailyBasic.suspended.is_(False))
+        .order_by(DailyBasic.trade_date.desc())
+        .limit(LONG_HIST_LIMIT)
+    ).all()
+    if len(rows) < HIST_LIMIT:
+        return {}
+    last = rows[0][0]
+    if (date.today() - last).days > LONG_HIST_MAX_LAG_DAYS:
+        return {}
+    return {
+        "hist_source": "daily_basic",
+        "hist_as_of": last.isoformat(),
+        "pe_hist": [pe for _, pe, _ in rows if pe is not None],
+        "pb_hist": [pb for _, _, pb in rows if pb is not None],
+        "pe_hist_current": rows[0][1],
+        "pb_hist_current": rows[0][2],
+    }
+
+
+def _industry_fin(db: Session, codes: list[str]) -> list[dict]:
+    """同行业公司近两年各报告期的营收 / 归母净利润及同比（fin_report），给行业增速对比用。"""
+    if not codes:
+        return []
+    since = date.today() - timedelta(days=INDUSTRY_FIN_DAYS)
+    rows = db.execute(
+        select(FinReport.code, FinReport.report_date, FinReport.revenue, FinReport.net_profit,
+               FinReport.revenue_yoy, FinReport.profit_yoy)
+        .where(FinReport.code.in_(codes), FinReport.report_date >= since)
+    ).all()
+    return [
+        {"code": c, "report_date": d.isoformat(), "revenue": rev, "net_profit": np_,
+         "revenue_yoy": ry, "profit_yoy": py}
+        for c, d, rev, np_, ry, py in rows
+    ]
 
 
 def _extract_cached(db: Session, code: str, kind: str, payload: dict, progress) -> tuple[dict | None, int, str | None]:

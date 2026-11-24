@@ -1,4 +1,4 @@
-"""基本面评分 v1.1（docs/RESEARCH-DESIGN.md §3）——纯函数，同输入永远同输出。
+"""基本面评分 v1.2（docs/RESEARCH-DESIGN.md §3）——纯函数，同输入永远同输出。
 
 每个指标分段线性：零分点 → 满分点之间插值，两端截断（零分点 > 满分点即反向指标）。
 缺失指标不计分；维度可用满分 < 50% 时该维度「数据不足」不进总分；
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from app.services.research_facts import EVENT_LABELS, fmt
 
-SCORING_VERSION = "v1.1"
+SCORING_VERSION = "v1.2"  # v1.2：估值自身分位改用最长 10 年 daily_basic 历史（规则不变，输入变长）
 
 # (维度 key, 维度名, 满分, [(fact_id, 满分, 零分点, 满分点)])
 DIMENSIONS: list[tuple[str, str, float, list[tuple[str, float, float, float]]]] = [
@@ -71,6 +71,7 @@ EVENT_POINTS = {
 GRADES = [(80, "A"), (65, "B"), (50, "C"), (float("-inf"), "D")]
 GRADE_D_FLAGS = {"st", "investigation"}  # 命中直接定 D；其余排雷项封顶 C
 SELF_HIST_MIN_DAYS = 480  # 自身历史不足约 2 年时，自身分位权重一半移给同行业分位
+AR_IMMATERIAL_PCT = 2.0  # 应收账款占营收低于此（%）视为无应收风险；跟踪清单同用
 MIN_COVERAGE = 0.7
 DIM_MIN_AVAILABLE = 0.5
 
@@ -92,8 +93,8 @@ def _item_points(fid: str, facts: dict, max_pts: float, zero: float, full: float
         return 0.0, "亏损（市盈率 ≤ 0）记 0 分"
     if fid == "ar_minus_rev_growth":
         ratio = v("ar_to_revenue")
-        if ratio is not None and ratio < 2:
-            return max_pts, "应收账款占营收 < 2%，视为无应收风险"
+        if ratio is not None and ratio < AR_IMMATERIAL_PCT:
+            return max_pts, f"应收账款仅占营收 {fmt(facts['ar_to_revenue'])}（< 2%），增速再高也不构成回款风险，记满分"
     f = facts.get(fid)
     if f is not None:
         return linear(f["value"], max_pts, zero, full), None

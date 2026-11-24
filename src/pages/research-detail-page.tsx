@@ -22,13 +22,13 @@ import {
 import {
   type AnnualCitation,
   type AnnualRisk,
-  DIM_ORDER,
   deleteResearch,
   downloadResearchMarkdown,
   fetchResearch,
   fetchResearchHistory,
   type EventItem,
   type Fact,
+  type KpiTable,
   type NewsItem,
   type PeersBlock,
   type TrackingItem,
@@ -49,7 +49,11 @@ import { cn } from "@/lib/utils"
 
 const DISCLAIMER = "本报告由程序基于公开数据自动生成，仅供研究参考，不构成投资建议。"
 
-const SOURCE_FALLBACK: Record<string, string> = { factor_history: "本地行情快照" }
+const SOURCE_FALLBACK: Record<string, string> = {
+  factor_history: "本地行情快照",
+  daily_basic: "BaoStock 每日指标（PE TTM / PB MRQ 长历史）",
+  fin_report: "东方财富 财报摘要（同业）",
+}
 
 const NEGATIVE_TAGS = new Set(["reduce", "inquiry", "investigation", "forecast_down", "lawsuit", "audit_nonstandard"])
 // 与后端 research_score.GRADE_D_FLAGS 一致：命中直接定 D（v1.1 起）
@@ -101,7 +105,7 @@ function ReportView({ report }: { report: ResearchDetail }) {
 
   const summary = report.sections.find((s) => s.key === "summary")
   const body = report.sections.filter((s) => s.key !== "summary")
-  const toc = [...body.map((s) => ({ key: s.key, title: s.title })), { key: "appendix", title: "附录：评分明细" }]
+  const toc = [...body.map((s) => ({ key: s.key, title: s.title })), { key: "appendix", title: "附录：规则与来源" }]
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-6 lg:px-6">
@@ -243,6 +247,7 @@ function ReportView({ report }: { report: ResearchDetail }) {
                     <MetricTable key={m} dim={report.sub_scores[m]} sourceLabel={sourceLabel} />
                   ) : null,
                 )}
+                {s.quarters && s.quarters.length > 0 && <Quarterly quarters={s.quarters} facts={report.facts} />}
                 {s.info_facts && s.info_facts.length > 0 && <InfoFacts ids={s.info_facts} facts={report.facts} />}
                 {s.peers && <PeersTable peers={s.peers} />}
                 {s.key === "events" && <EventList items={(s.items ?? []) as EventItem[]} />}
@@ -264,9 +269,9 @@ function ReportView({ report }: { report: ResearchDetail }) {
           <section id="sec-appendix" className="scroll-mt-4">
             <h2 className="mb-4 text-base font-semibold text-foreground">
               <span className="mr-2 font-mono text-sm text-muted-foreground">{body.length + 2}</span>
-              附录：评分明细与数据来源
+              附录：计分规则与数据来源
             </h2>
-            <Appendix report={report} sourceLabel={sourceLabel} />
+            <Appendix report={report} />
           </section>
 
           <p className="border-t border-border pt-4 text-xs text-muted-foreground">{DISCLAIMER}</p>
@@ -475,7 +480,9 @@ function Overview({ section, facts }: { section: Section; facts: Record<string, 
           </Table>
         </div>
       )}
-      {kpis.length > 0 && (
+      {section.kpi_table ? (
+        <KpiMatrix table={section.kpi_table} />
+      ) : kpis.length > 0 && (
         <div className="rounded-lg border border-border md:col-span-2">
           <Table>
             <TableHeader>
@@ -539,17 +546,26 @@ function CompanyRisks({ items }: { items: AnnualRisk[] }) {
     <div className="rounded-lg border border-border">
       <div className="border-b border-border px-4 py-2.5 text-sm font-medium">公司自述风险（定期报告原文）</div>
       <ul className="divide-y divide-border text-sm">
-        {items.map((r, i) => (
-          <li key={i} className="px-4 py-2.5">
-            <div className="font-medium text-foreground">{r.title}</div>
-            <div className="mt-0.5 text-xs text-muted-foreground">
-              {r.quote}
-              <span className="ml-1">
-                — {docLabel(r)} 第 {r.page} 页
-              </span>
-            </div>
-          </li>
-        ))}
+        {items.map((r, i) =>
+          r.list_only ? (
+            <li key={i} className="px-4 py-2.5">
+              <div className="text-foreground">{r.title}</div>
+              <div className="mt-0.5 text-xs text-muted-foreground">
+                报告只列出风险名称，未逐条展开 — {docLabel(r)} 第 {r.page} 页
+              </div>
+            </li>
+          ) : (
+            <li key={i} className="px-4 py-2.5">
+              <div className="font-medium text-foreground">{r.title}</div>
+              <div className="mt-0.5 text-xs text-muted-foreground">
+                {r.quote}
+                <span className="ml-1">
+                  — {docLabel(r)} 第 {r.page} 页
+                </span>
+              </div>
+            </li>
+          ),
+        )}
       </ul>
     </div>
   )
@@ -594,8 +610,8 @@ function PeersTable({ peers }: { peers: PeersBlock }) {
               <TableHead className="text-right">市值（亿元）</TableHead>
               <TableHead className="text-right">市盈率</TableHead>
               <TableHead className="text-right">市净率</TableHead>
-              <TableHead className="text-right">ROE</TableHead>
-              <TableHead className="text-right">股息率</TableHead>
+              <TableHead className="text-right">ROE（TTM）</TableHead>
+              <TableHead className="text-right">股息率（近 12 个月）</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -617,6 +633,9 @@ function PeersTable({ peers }: { peers: PeersBlock }) {
           </TableBody>
         </Table>
       </div>
+      <p className="border-t border-border px-4 py-2 text-[11px] text-muted-foreground">
+        ROE 为行情快照的 TTM 口径，与「盈利能力」一节的年报 ROE 不同。
+      </p>
     </div>
   )
 }
@@ -634,7 +653,7 @@ function TrackingList({ items }: { items: TrackingItem[] }) {
   return (
     <div className="space-y-4">
       <p className="text-xs text-muted-foreground">
-        由程序按规则生成：排雷项、异常或得分偏低的指标、负面公告、公司自述风险；有公司解释的附上出处。
+        由程序按规则生成：排雷项、异常或得分偏低的指标、负面公告；有公司解释的附上出处。公司自述风险见「风险提示」。
       </p>
       {TRACKING_GROUPS.map(({ kind, title }) => {
         const group = items.filter((it) => it.kind === kind)
@@ -759,46 +778,14 @@ function NewsBlock({ section }: { section: Section }) {
 
 const SOURCE_STATUS: Record<string, string> = { ok: "实时", cache: "缓存", stale: "过期缓存", failed: "失败" }
 
-function Appendix({ report, sourceLabel }: { report: ResearchDetail; sourceLabel: (k?: string | null) => string }) {
+function Appendix({ report }: { report: ResearchDetail }) {
+  // 各指标的数值、得分、阈值与特殊计分说明已在各章指标表中，这里只留规则与数据来源
   return (
     <div className="space-y-4">
-      <div className="rounded-lg border border-border">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>维度</TableHead>
-              <TableHead>指标</TableHead>
-              <TableHead className="text-right">数值</TableHead>
-              <TableHead className="text-right">得分</TableHead>
-              <TableHead className="hidden text-right md:table-cell">零分点 → 满分点</TableHead>
-              <TableHead className="hidden md:table-cell">来源</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {DIM_ORDER.flatMap((k) =>
-              (report.sub_scores[k]?.items ?? []).map((it) => (
-                <TableRow key={`${k}-${it.key}`}>
-                  <TableCell className="text-xs text-muted-foreground">{report.sub_scores[k].label}</TableCell>
-                  <TableCell className="text-sm">{it.label}</TableCell>
-                  <TableCell className="text-right font-mono text-sm tabular-nums">{it.display}</TableCell>
-                  <TableCell className="text-right font-mono text-xs tabular-nums">
-                    {it.points == null ? "—" : it.max == null ? it.points : `${it.points} / ${it.max}`}
-                  </TableCell>
-                  <TableCell className="hidden text-right font-mono text-xs text-muted-foreground tabular-nums md:table-cell">
-                    {it.zero == null ? "—" : `${it.zero} → ${it.full}`}
-                  </TableCell>
-                  <TableCell className="hidden text-xs text-muted-foreground md:table-cell">
-                    {it.source ? `${sourceLabel(it.source)}${it.period ? ` · ${it.period}` : ""}` : "—"}
-                  </TableCell>
-                </TableRow>
-              )),
-            )}
-          </TableBody>
-        </Table>
-      </div>
       <p className="text-xs leading-5 text-muted-foreground">
         计分规则：每个指标在「零分点 → 满分点」之间线性插值、两端截断；缺失指标不计分，维度按剩余权重折算；维度可用满分不足一半记为「数据不足」；
-        整体覆盖率低于 70% 不给评级；命中排雷项评级封顶 C，其中 ST / 立案调查直接定 D（v1.1 起）。评分完全由程序按规则计算，AI 只负责文字解读。
+        整体覆盖率低于 70% 不给评级；命中排雷项评级封顶 C，其中 ST / 立案调查直接定 D（v1.1 起）。估值自身分位优先用近 10 年每日估值（v1.2 起），
+        不足 2 年时自身分位降权、文字不作「历史高位 / 低位」判断。评分完全由程序按规则计算，AI 只负责文字解读；各指标的阈值与特殊计分说明见各章指标表。
       </p>
       <div className="rounded-lg border border-border">
         <Table>
@@ -832,6 +819,176 @@ function Appendix({ report, sourceLabel }: { report: ResearchDetail; sourceLabel
         </Table>
       </div>
       {report.llm_model && <p className="text-xs text-muted-foreground">文字解读模型：{report.llm_model}</p>}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------- 单季度与经营数据
+
+function quarterLabel(d: string): string {
+  const q = ["03-31", "06-30", "09-30", "12-31"].indexOf(d.slice(5)) + 1
+  return `${d.slice(2, 4)}Q${q}`
+}
+
+/** 单季同比柱状图：单序列，零轴上下，最新一季直接标值，悬停看每季数值 */
+function YoyBars({ title, values, labels }: { title: string; values: (number | null)[]; labels: string[] }) {
+  const W = 320
+  const H = 120
+  const padTop = 14
+  const padBottom = 18
+  const nums = values.filter((v): v is number => v != null)
+  if (nums.length === 0) return null
+  const max = Math.max(5, ...nums.map(Math.abs))
+  const plotH = H - padTop - padBottom
+  const zeroY = padTop + plotH / 2
+  const slot = W / values.length
+  const barW = Math.min(22, slot - 6)
+  const scale = plotH / 2 / max
+  const lastIdx = values.length - 1
+  return (
+    <figure className="min-w-0">
+      <figcaption className="mb-1 text-xs text-muted-foreground">{title}</figcaption>
+      <svg viewBox={`0 0 ${W} ${H}`} className="h-auto w-full overflow-visible" role="img" aria-label={title}>
+        <line x1={0} x2={W} y1={zeroY} y2={zeroY} className="stroke-border" strokeWidth={1} />
+        {values.map((v, i) => {
+          const cx = slot * i + slot / 2
+          const label = (
+            <text x={cx} y={H - 4} textAnchor="middle" className="fill-muted-foreground text-[9px]">
+              {labels[i]}
+            </text>
+          )
+          if (v == null)
+            return (
+              <g key={i}>
+                {label}
+              </g>
+            )
+          const h = Math.max(1, Math.abs(v) * scale)
+          const x = cx - barW / 2
+          const r = Math.min(4, h, barW / 2)
+          // 数据端圆角、零轴端直角
+          const d =
+            v >= 0
+              ? `M${x},${zeroY} V${zeroY - h + r} Q${x},${zeroY - h} ${x + r},${zeroY - h} H${x + barW - r} Q${x + barW},${zeroY - h} ${x + barW},${zeroY - h + r} V${zeroY} Z`
+              : `M${x},${zeroY} V${zeroY + h - r} Q${x},${zeroY + h} ${x + r},${zeroY + h} H${x + barW - r} Q${x + barW},${zeroY + h} ${x + barW},${zeroY + h - r} V${zeroY} Z`
+          return (
+            <g key={i}>
+              <title>{`${labels[i]}：${v >= 0 ? "+" : ""}${v.toFixed(2)}%`}</title>
+              <rect x={cx - slot / 2} y={padTop} width={slot} height={plotH} fill="transparent" />
+              <path d={d} className={i === lastIdx ? "fill-indigo-500" : "fill-indigo-500/45"} />
+              {i === lastIdx && (
+                <text
+                  x={cx}
+                  y={v >= 0 ? zeroY - h - 3 : zeroY + h + 10}
+                  textAnchor="middle"
+                  className="fill-foreground font-mono text-[10px]"
+                >
+                  {`${v >= 0 ? "+" : ""}${v.toFixed(1)}%`}
+                </text>
+              )}
+              {label}
+            </g>
+          )
+        })}
+      </svg>
+    </figure>
+  )
+}
+
+function Quarterly({ quarters, facts }: { quarters: string[]; facts: Record<string, Fact> }) {
+  const val = (id: string) => facts[id]?.value ?? null
+  const labels = quarters.map(quarterLabel)
+  const rows = [...quarters].reverse()
+  return (
+    <div className="rounded-lg border border-border">
+      <div className="border-b border-border px-4 py-2.5 text-sm font-medium">
+        单季度表现
+        <span className="ml-1.5 text-xs font-normal text-muted-foreground">由累计值差分得到 · 不计分</span>
+      </div>
+      <div className="grid gap-4 px-4 py-3 sm:grid-cols-2">
+        <YoyBars title="单季营收同比" values={quarters.map((d) => val(`q_rev_yoy_${d}`))} labels={labels} />
+        <YoyBars title="单季归母净利润同比" values={quarters.map((d) => val(`q_np_yoy_${d}`))} labels={labels} />
+      </div>
+      <div className="overflow-x-auto border-t border-border">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>季度</TableHead>
+              <TableHead className="text-right">营收</TableHead>
+              <TableHead className="text-right">同比</TableHead>
+              <TableHead className="text-right">归母净利润</TableHead>
+              <TableHead className="text-right">同比</TableHead>
+              <TableHead className="text-right">毛利率</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((d) => (
+              <TableRow key={d}>
+                <TableCell className="font-mono text-sm">{quarterLabel(d)}</TableCell>
+                {[`q_rev_${d}`, `q_rev_yoy_${d}`, `q_np_${d}`, `q_np_yoy_${d}`, `q_gm_${d}`].map((id) => (
+                  <TableCell key={id} className="text-right font-mono text-sm tabular-nums">
+                    {fmtFact(facts[id])}
+                  </TableCell>
+                ))}
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+  )
+}
+
+function KpiMatrix({ table }: { table: KpiTable }) {
+  return (
+    <div className="rounded-lg border border-border md:col-span-2">
+      <div className="border-b border-border px-4 py-2.5 text-sm font-medium">
+        经营数据
+        <span className="ml-1.5 text-xs font-normal text-muted-foreground">
+          摘自定期报告 · 各期为累计口径，金额已换算为亿元 · 悬停看页码
+        </span>
+      </div>
+      <div className="overflow-x-auto">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>项目</TableHead>
+              {table.docs.map((d) => (
+                <TableHead key={d} className="text-right whitespace-nowrap">
+                  {d}
+                </TableHead>
+              ))}
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {table.rows.map((r) => (
+              <TableRow key={r.name}>
+                <TableCell className="text-sm">{r.name}</TableCell>
+                {table.docs.map((d) => {
+                  const c = r.cells[d]
+                  return (
+                    <TableCell
+                      key={d}
+                      className="text-right font-mono text-sm whitespace-nowrap tabular-nums"
+                      title={c?.page ? `${d} 第 ${c.page} 页` : undefined}
+                    >
+                      {c ? (
+                        <>
+                          {c.value}
+                          <span className="ml-1 font-sans text-xs text-muted-foreground">{c.unit}</span>
+                          {c.yoy && <div className="text-[11px] text-muted-foreground">同比 {c.yoy}</div>}
+                        </>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
+                  )
+                })}
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
     </div>
   )
 }
