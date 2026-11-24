@@ -10,7 +10,7 @@
 同时让模型判断每条是不是更早某个事件的后续（p 字段）：2026-11-21 凌晨一小时 40 条要闻里，
 美联储理事库克一段讲话占了 11 条、费城半导体指数「跌 5%→6%→7%→9%」各一条、伊朗爆炸
 三家报道没合并成一个。候选父事件 = 本批之前 THREAD_WINDOW 内 3 分以上的根事件 + 本批里更早的条目。
-后续事件写 parent_id，不单独显示；分数比父事件高时把父事件抬到同分（整串的重要度取最高）。
+后续事件写 parent_id，不单独显示；分数比父事件高的不挂，单独成为一条（升级的消息要第一时间露出来）。
 """
 
 from __future__ import annotations
@@ -67,8 +67,10 @@ p 填那一条（已有事件填 "A编号"，本批填数字编号），否则�
 - 同一个指数、品种、个股同一波行情的进一步变化（如跌幅从 5% 扩大到 7%、金价接连突破整数关口）
 - 同一个市场同一时段的大盘行情：开盘、盘中、收盘前后的指数刷新都算一串，几个主要指数（如美股标普、
   道指、纳指，A 股沪指、深成指、创业板指）放在一起报或分开报都算同一件事
-- 其他媒体对同一事件的报道或进展（同一次爆炸、同一份公告、同一项数据）
+- 其他媒体对同一事件的报道（同一次爆炸、同一份公告、同一项数据）
 不算的情况（宁可不挂）：
+- 从表态、传闻、预期、计划变成正式决定、公告、成交、落地的，是新事件：如「特朗普希望黄仁勋回到英伟达」
+  →「英伟达董事会恢复黄仁勋职务」、「据报道将降息」→「央行宣布降息」、「拟收购」→「签署最终协议」
 - 同一话题下的不同事件，如两项不同的经济数据（服务业 PMI 和综合 PMI 也算不同）、两个不同公司的公告、
   同一领导人谈不同议题
 - 不同品种或不同市场的行情，即使方向相同、原因相同：黄金和白银、国际金价和 A 股黄金股、
@@ -231,10 +233,11 @@ def _write(db: Session, batch: list[dict], result: dict[int, dict], model: str) 
                 datetime.fromisoformat(e["pub_at"].replace("Z", "+00:00"))
                 - datetime.fromisoformat(parent_pub.replace("Z", "+00:00")) > THREAD_WINDOW * 2
             )
-            if parent_row is None or parent_row.parent_id is not None or too_far:
+            # 比整串更重要的不挂：2026-11-23「董事会恢复黄仁勋职务」（4 分、五家报）被挂到半小时前
+            # 「特朗普希望黄仁勋回来」下面，只剩卡片里一行灰字。要闻的价值在及时，升级的消息要单独出来
+            stronger = r["score"] is not None and r["score"] > (parent_row.score or 0) if parent_row else False
+            if parent_row is None or parent_row.parent_id is not None or too_far or stronger:
                 pid = None
-            elif r["score"] is not None and (parent_row.score or 0) < r["score"]:
-                parent_row.score = r["score"]  # 整串重要度取最高：跌幅扩大到 9% 那条更重要
         row = NewsEvent(event_id=e["id"], model=model, parent_id=pid, **r)
         db.add(row)
         rows[e["id"]] = row

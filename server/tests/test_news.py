@@ -350,10 +350,10 @@ def _thread_seed(db, t=T0):
     return sorted(db.scalars(select(NewsItem.event_id).distinct()))
 
 
-def test_classify_threads_followups_within_batch_and_raises_parent_score(db, monkeypatch):
+def test_classify_threads_followups_within_batch(db, monkeypatch):
     e1, e2, e3 = _thread_seed(db)
     calls = _fake_llm(monkeypatch, {"items": [
-        {"i": 0, "c": "央行货币", "s": 3},
+        {"i": 0, "c": "央行货币", "s": 4},
         {"i": 1, "c": "央行货币", "s": 4, "p": 0},
         {"i": 2, "c": "其他", "s": 2, "p": 2},  # 指向自己 / 更晚的条目：忽略
     ]})
@@ -361,9 +361,8 @@ def test_classify_threads_followups_within_batch_and_raises_parent_score(db, mon
     assert "A0." not in calls[0]  # 库里还没有可作父事件的
     rows = {r.event_id: r for r in db.scalars(select(NewsEvent))}
     assert rows[e2].parent_id == e1 and rows[e3].parent_id is None
-    assert rows[e1].score == 4  # 父事件抬到整串最高分
 
-    # 列表只出父事件，后续挂在下面；父事件按 4 分进要闻
+    # 列表只出父事件，后续挂在下面
     (ev,) = news.list_events(db)
     assert ev["id"] == e1 and [f["id"] for f in ev["followups"]] == [e2]
     assert ev["last_at"] == ev["followups"][0]["pub_at"]
@@ -372,6 +371,20 @@ def test_classify_threads_followups_within_batch_and_raises_parent_score(db, mon
     assert [x["id"] for x in news.list_events(db, view="all", q="嵌入式通胀", now=T0)] == [e1]
     # 叙事标题不重复算后续
     assert len(news.recent_headlines(db, now=T0 + timedelta(hours=1))) == 2
+
+
+def test_classify_stronger_followup_stands_alone(db, monkeypatch):
+    """「希望黄仁勋回来」3 分 →「董事会恢复其职务」4 分：后者不能埋在前者卡片里。"""
+    e1, e2, _ = _thread_seed(db)
+    _fake_llm(monkeypatch, {"items": [
+        {"i": 0, "c": "央行货币", "s": 3},
+        {"i": 1, "c": "央行货币", "s": 4, "p": 0},
+        {"i": 2, "c": "其他", "s": 2},
+    ]})
+    news_classify.classify_pending(db, T0 + timedelta(minutes=4))
+    rows = {r.event_id: r for r in db.scalars(select(NewsEvent))}
+    assert rows[e2].parent_id is None and rows[e1].score == 3
+    assert [x["id"] for x in news.list_events(db)] == [e2]
 
 
 def test_classify_threads_to_anchor_from_earlier_round(db, monkeypatch):
