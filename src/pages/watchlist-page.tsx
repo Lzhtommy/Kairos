@@ -7,7 +7,9 @@ import {
   ArrowsClockwise,
   CaretLeft,
   CaretRight,
+  Check,
   CircleNotch,
+  Copy,
   Trash,
   UploadSimple,
 } from "@phosphor-icons/react"
@@ -25,6 +27,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { changePct } from "@/lib/use-live-quotes"
 import { cn } from "@/lib/utils"
 
 const BOARDS: Array<"all" | Board> = ["all", "主板", "创业板", "科创板"]
@@ -95,6 +98,8 @@ export function WatchlistPage() {
   const [openMax, setOpenMax] = useState("")
   const [hotMin, setHotMin] = useState("")
   const [hotMax, setHotMax] = useState("")
+  const [chgMin, setChgMin] = useState("")
+  const [chgMax, setChgMax] = useState("")
 
   const importsQ = useQuery({ queryKey: ["watchlistImports"], queryFn: fetchWatchlistImports })
   const imports = importsQ.data ?? []
@@ -168,6 +173,9 @@ export function WatchlistPage() {
   const hotHi = parseBound(hotMax)
   const hotActive = hotLo != null || hotHi != null
   const rangeActive = lo != null || hi != null
+  const chgLo = parseBound(chgMin)
+  const chgHi = parseBound(chgMax)
+  const chgActive = chgLo != null || chgHi != null
   const all = itemsQ.data?.items ?? []
   const rows = all.filter((s) => {
     if (board !== "all" && s.board !== board) return false
@@ -176,6 +184,13 @@ export function WatchlistPage() {
       if (s.openPct == null) return false
       if (lo != null && s.openPct < lo) return false
       if (hi != null && s.openPct > hi) return false
+    }
+    if (chgActive) {
+      // 没有行情快照（prevClose 为 0）时涨跌幅无从计算，一律不显示
+      if (!s.prevClose) return false
+      const pct = changePct(s)
+      if (chgLo != null && pct < chgLo) return false
+      if (chgHi != null && pct > chgHi) return false
     }
     if (hotActive) {
       // 昨日没有人气排名的（新股 / 未落库）同样无从比较
@@ -188,6 +203,28 @@ export function WatchlistPage() {
   const boardCount = (b: "all" | Board) =>
     b === "all" ? all.length : all.filter((s) => s.board === b).length
   const loading = itemsQ.isLoading || (itemsQ.isFetching && itemsQ.isPlaceholderData)
+
+  const [copied, setCopied] = useState(false)
+  const copiedTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  const copyList = async () => {
+    const text = rows.map((s) => `${s.code} ${s.name}`).join(" ")
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch {
+      // http 部署环境没有 clipboard API（需要安全上下文），回退隐藏 textarea
+      const ta = document.createElement("textarea")
+      ta.value = text
+      ta.style.position = "fixed"
+      ta.style.opacity = "0"
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand("copy")
+      ta.remove()
+    }
+    setCopied(true)
+    clearTimeout(copiedTimer.current)
+    copiedTimer.current = setTimeout(() => setCopied(false), 2000)
+  }
 
   return (
     <div className="mx-auto max-w-[1600px] space-y-5 px-4 py-6 lg:px-6">
@@ -316,6 +353,32 @@ export function WatchlistPage() {
               </div>
             </div>
             <div className="space-y-1.5">
+              <Label className="text-xs text-muted-foreground">当前涨跌幅 (%)</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  type="number"
+                  step="0.1"
+                  inputMode="decimal"
+                  placeholder="不限"
+                  value={chgMin}
+                  onChange={(e) => setChgMin(e.target.value)}
+                  className="w-24 font-mono"
+                  aria-label="当前涨跌幅下限"
+                />
+                <span className="text-muted-foreground">~</span>
+                <Input
+                  type="number"
+                  step="0.1"
+                  inputMode="decimal"
+                  placeholder="不限"
+                  value={chgMax}
+                  onChange={(e) => setChgMax(e.target.value)}
+                  className="w-24 font-mono"
+                  aria-label="当前涨跌幅上限"
+                />
+              </div>
+            </div>
+            <div className="space-y-1.5">
               <Label className="text-xs text-muted-foreground">昨日人气排名</Label>
               <div className="flex items-center gap-2">
                 <Input
@@ -343,12 +406,14 @@ export function WatchlistPage() {
                 />
               </div>
             </div>
-            {(board !== "all" || rangeActive || hotActive) && (
+            {(board !== "all" || rangeActive || chgActive || hotActive) && (
               <button
                 onClick={() => {
                   setBoard("all")
                   setOpenMin("")
                   setOpenMax("")
+                  setChgMin("")
+                  setChgMax("")
                   setHotMin("")
                   setHotMax("")
                 }}
@@ -375,6 +440,16 @@ export function WatchlistPage() {
               >
                 <ArrowsClockwise className={cn("size-3.5", itemsQ.isFetching && "animate-spin")} />
               </button>
+              <button
+                onClick={copyList}
+                disabled={rows.length === 0}
+                aria-label="复制股票列表"
+                title="复制当前筛选结果（代码 名称）"
+                className="flex size-6 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+              >
+                {copied ? <Check className="size-3.5 text-up" /> : <Copy className="size-3.5" />}
+              </button>
+              {copied && <span className="text-xs text-up">已复制 {rows.length} 只</span>}
             </p>
           )}
 
