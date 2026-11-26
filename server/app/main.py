@@ -47,7 +47,7 @@ async def lifespan(_app: FastAPI):
         collect_once,
         refresh_reference,
         run_bootstrap_and_first_collect,
-        snapshot_factors,
+        record_bj_daily_basic,
     )
     from app.jobs.hot_rank import record_daily_hot_ranks, refresh_market_hot_ranks
     from app.jobs.narrative import update_narrative
@@ -75,7 +75,7 @@ async def lifespan(_app: FastAPI):
         )
         # 收盘后 15:10 CST（07:10 UTC）强制补采一轮：盘中最后一采可能早于收盘集合
         # 竞价成交，当日 bar 存的不是正式收盘价，次日开盘会被除权检测误判、整段
-        # 历史被错误缩放。赶在 15:15 因子快照之前。
+        # 历史被错误缩放。赶在 15:15 北交所每日指标写入之前。
         _scheduler.add_job(
             collect_once,
             "cron",
@@ -98,14 +98,14 @@ async def lifespan(_app: FastAPI):
             coalesce=True,
             next_run_time=datetime.now(timezone.utc),
         )
-        # 收盘后 15:15 CST（07:15 UTC）归档因子快照；启动时补拍一次，
+        # 收盘后 15:15 CST（07:15 UTC）把北交所当日每日指标写入 daily_basic；启动时补写一次，
         # 覆盖服务器当天收盘后才启动的情况（幂等 + 盘中自动跳过）。
         _scheduler.add_job(
-            snapshot_factors,
+            record_bj_daily_basic,
             "cron",
             hour=7,
             minute=15,
-            id="factor_snapshot",
+            id="bj_daily_basic",
             max_instances=1,
             coalesce=True,
             next_run_time=datetime.now(timezone.utc),

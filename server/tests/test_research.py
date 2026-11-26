@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import statistics
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from fastapi import FastAPI
@@ -13,9 +13,10 @@ from app.api.research import admin_router, router
 from app.core.config import settings
 from app.core.db import get_db
 from app.core.security import get_current_user
-from app.models.market import FactorSnapshot, StockInfo
+from app.models.market import StockInfo
 from app.models.research import ResearchReport
 from app.models.user import User
+from app.models.warehouse import DailyBasic, Dividend, FinReport
 from app.services import research as research_service
 from app.services.research_facts import build_facts, classify_notice, num
 from app.services.research_score import linear, score
@@ -338,16 +339,22 @@ def test_run_report_end_to_end(db, stocks, monkeypatch):
     raw = make_raw(notices=["关于回购公司股份的进展公告"])
     sources = [{"key": k, "label": k, "fetched_at": None, "status": "ok"} for k in raw]
     monkeypatch.setattr(research_service, "fetch_all", lambda _db, _code, _p=None: (raw, sources))
+    first = date(2025, 1, 1)
     for i in range(130):
-        db.add(FactorSnapshot(
-            code="600519", ts=datetime(2025, 1, 1, tzinfo=timezone.utc) + timedelta(days=i),
-            pe=15 + i * 0.1, pb=5, roe=20, turnover_rate=1, turnover=1, market_cap=100, change_pct=0, price=10,
-            dividend_yield=0.02, industry="白酒",
-        ))
-    last = datetime(2025, 1, 1, tzinfo=timezone.utc) + timedelta(days=129)
+        db.add(DailyBasic(code="600519", trade_date=first + timedelta(days=i), close=10, suspended=False,
+                          is_st=False, pe_ttm=15 + i * 0.1, pb_mrq=5, total_mv=100e8,
+                          industry="白酒" if i >= 100 else None))  # 行业只在近段才有
+    # 最新一行行业还没补上：同业截面退回本股最近一个带行业的交易日
+    last = first + timedelta(days=129)
+    db.add(DailyBasic(code="600519", trade_date=first + timedelta(days=130), close=10, suspended=True, is_st=False))
     for code, cap in (("000858", 300), ("600809", 80), ("000568", 50)):
-        db.add(FactorSnapshot(code=code, ts=last, pe=20, pb=4, roe=15, turnover_rate=1, turnover=1, market_cap=cap,
-                              change_pct=0, price=10, dividend_yield=0.03, industry="白酒"))
+        db.add(DailyBasic(code=code, trade_date=last, close=10, suspended=False, is_st=False, pe_ttm=20, pb_mrq=4,
+                          total_mv=cap * 1e8, industry="白酒"))
+        db.add(Dividend(code=code, report_date=date(2024, 6, 30), ex_date=date(2025, 3, 1), cash_per10=3.0,
+                        progress="实施分配", plan=""))
+        db.add(FinReport(code=code, report_date=date(2024, 12, 31), notice_date=date(2025, 3, 20), roe=15.0))
+    db.add(Dividend(code="600519", report_date=date(2024, 6, 30), ex_date=date(2025, 3, 1), cash_per10=2.0,
+                    progress="实施分配", plan=""))
     db.commit()
 
     r = ResearchReport(code="600519", status="running")
@@ -359,8 +366,10 @@ def test_run_report_end_to_end(db, stocks, monkeypatch):
     assert r.grade is not None and r.total_score is not None
     assert [s["key"] for s in r.sections][0] == "summary"
     secs = {s["key"]: s for s in r.sections}
-    assert secs["peers"]["peers"]["industry"] == "白酒"  # 来自本地因子快照的同行业截面
-    assert len(secs["peers"]["peers"]["rows"]) == 4 and secs["peers"]["peers"]["rows"][0]["dividend_yield"] == 3
+    peers = secs["peers"]["peers"]
+    assert peers["industry"] == "白酒" and peers["as_of"] == last.isoformat()  # 每日指标库的同行业截面
+    assert len(peers["rows"]) == 4 and peers["rows"][0]["dividend_yield"] == 3  # 股息率按分红现算
+    assert {r["code"]: r["roe"] for r in peers["rows"]}["000858"] == 15.0  # ROE 按已公告财报现算
     assert secs["tracking"]["tracking"][-1]["key"] == "next"
     assert len(r.sections[0]["observations"]) == 3
     assert "基本面研究报告" in r.content_md and "不构成投资建议" in r.content_md
@@ -371,7 +380,8 @@ def test_run_report_end_to_end(db, stocks, monkeypatch):
     assert listed[0]["id"] == r.id and listed[0]["grade"] == r.grade
     detail = c.get(f"/research/{r.id}").json()
     assert detail["sub_scores"]["valuation"]["items"][0]["key"] == "pe_pct_self"
-    assert r.facts["dividend_yield"]["value"] == pytest.approx(2)  # 库存小数 → 百分数
+    assert r.facts["dividend_yield"]["value"] == pytest.approx(2)  # 小数 → 百分数
+    assert r.facts["pe_pct_self"]["source"] == "daily_basic"
     assert c.get("/research/stock/600519/history").json()[0]["id"] == r.id
     assert "基本面研究报告" in c.get(f"/research/{r.id}/markdown").text
 

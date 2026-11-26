@@ -448,16 +448,16 @@ def build_facts(raw: dict[str, list[dict] | None], valuation: dict, name: str = 
             put("payout_3y", sum(payouts) / len(payouts), "%", f"近 {len(payouts)} 年平均分红率",
                 "dividend", f"{end_y - 2}-{end_y}", "shareholder")
 
-    # ---------- 估值（本地因子快照）
+    # ---------- 估值（本地每日指标库）
     pe = valuation.get("pe")
-    put("pe", pe, "倍", "市盈率", "factor_history", valuation.get("as_of"), "valuation")
-    put("pb", valuation.get("pb"), "倍", "市净率", "factor_history", valuation.get("as_of"), "valuation")
-    put("dividend_yield", valuation.get("dividend_yield"), "%", "股息率（近 12 个月）", "factor_history",
+    put("pe", pe, "倍", "市盈率", "daily_basic", valuation.get("as_of"), "valuation")
+    put("pb", valuation.get("pb"), "倍", "市净率", "daily_basic", valuation.get("as_of"), "valuation")
+    put("dividend_yield", valuation.get("dividend_yield"), "%", "股息率（近 12 个月）", "daily_basic",
         valuation.get("as_of"), "shareholder")
-    put("market_cap", valuation.get("market_cap"), "亿元", "总市值", "factor_history", valuation.get("as_of"), "valuation")
-    # 自身历史分位：优先用 daily_basic 的长历史（PE(TTM) / PB(MRQ)，最多近 10 年），当前值也取同一来源，
-    # 口径一致；没有时退回本地因子快照（部署以来，通常不足 2 年——评分降权，文字不得写「历史高位 / 低位」）
-    hist_src = valuation.get("hist_source") or "factor_history"
+    put("market_cap", valuation.get("market_cap"), "亿元", "总市值", "daily_basic", valuation.get("as_of"), "valuation")
+    # 自身历史分位：daily_basic 的 PE(TTM) / PB(MRQ)，最多近 10 年（北交所 2025-06 起才有，
+    # 不足 2 年时评分降权，文字不得写「历史高位 / 低位」）
+    hist_src = valuation.get("hist_source") or "daily_basic"
     pe_hist = [v for v in valuation.get("pe_hist") or [] if v and v > 0]
     pb_hist = [v for v in valuation.get("pb_hist") or [] if v and v > 0]
     pe_now = valuation.get("pe_hist_current", pe)
@@ -473,37 +473,37 @@ def build_facts(raw: dict[str, list[dict] | None], valuation: dict, name: str = 
     peers = [v for v in valuation.get("industry_pes") or [] if v and v > 0]
     if pe and pe > 0 and len(peers) >= 10:
         put("pe_pct_industry", _pct_rank(peers, pe), "%", f"市盈率同行业分位（{len(peers)} 家）",
-            "factor_history", valuation.get("as_of"), "valuation")
+            "daily_basic", valuation.get("peers_as_of") or valuation.get("as_of"), "valuation")
 
-    # ---------- 同业对比（本地因子快照的同行业最新截面；只展示不计分）
+    # ---------- 同业对比（每日指标库的同行业最新截面；只展示不计分）
     peers = None
     rows = valuation.get("industry_rows") or []
     self_code = valuation.get("self_code")
     me = next((r for r in rows if r["code"] == self_code), None)
     if me is not None and len(rows) >= 2:
-        as_of = valuation.get("as_of")
+        as_of = valuation.get("peers_as_of") or valuation.get("as_of")
         n = len(rows)
 
         def vals(key: str, positive: bool = False) -> list[float]:
             return [v for r in rows if (v := r.get(key)) is not None and (v > 0 or not positive)]
 
-        put("peers_count", float(n), "", "同行业样本数", "factor_history", as_of, "peers")
-        put("roe_snapshot", me.get("roe"), "%", "ROE（TTM，行情快照）", "factor_history", as_of, "peers")
+        put("peers_count", float(n), "", "同行业样本数", "daily_basic", as_of, "peers")
+        put("roe_snapshot", me.get("roe"), "%", "ROE（TTM，按已公告财报滚算）", "daily_basic", as_of, "peers")
         for key, label, positive in (("roe", "ROE（TTM）", False), ("pe", "市盈率", True), ("pb", "市净率", True),
                                      ("dividend_yield", "股息率（近 12 个月）", False)):
             v = vals(key, positive)
             if v:
                 unit = "%" if key in ("roe", "dividend_yield") else "倍"
                 put(f"industry_median_{key}", statistics.median(v), unit, f"同行业{label}中位数",
-                    "factor_history", as_of, "peers")
+                    "daily_basic", as_of, "peers")
         if n >= 10:
             if me.get("roe") is not None:
                 put("roe_pct_industry", _pct_rank(vals("roe"), me["roe"]), "%",
-                    f"ROE（TTM）同行业分位（{n} 家）", "factor_history", as_of, "peers")
+                    f"ROE（TTM）同行业分位（{n} 家）", "daily_basic", as_of, "peers")
             pb_vals = vals("pb", True)
             if me.get("pb") and me["pb"] > 0:
                 put("pb_pct_industry", _pct_rank(pb_vals, me["pb"]), "%", f"市净率同行业分位（{len(pb_vals)} 家）",
-                    "factor_history", as_of, "peers")
+                    "daily_basic", as_of, "peers")
         # 对比表：市值（对数距离）最接近的 6 家——用行业龙头对比区域小盘股没有意义
         others = [r for r in rows if r["code"] != self_code and (r.get("market_cap") or 0) > 0]
         my_cap = me.get("market_cap") or 0

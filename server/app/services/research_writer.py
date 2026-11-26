@@ -493,8 +493,8 @@ def _context(key: str, dataset: dict, result: dict) -> tuple[str, list[str]]:
                      f"ROE {r['roe']:.2f}%" if r.get("roe") is not None else None,
                      f"股息率 {r['dividend_yield']:.2f}%" if r.get("dividend_yield") is not None else None]
             lines.append(f"- {r['name']}{'（本公司）' if r['self'] else ''}：" + "，".join(c for c in cells if c))
-        text = (f"同行业（{p.get('industry')}，共 {p.get('count')} 家）中市值最接近的公司（行情快照 {p.get('as_of')}）：\n"
-                + "\n".join(lines) + "\n注意：对比表的 ROE 是 TTM（行情快照），与盈利能力章节的年报 ROE 口径不同，"
+        text = (f"同行业（{p.get('industry')}，共 {p.get('count')} 家）中市值最接近的公司（数据日 {p.get('as_of')}）：\n"
+                + "\n".join(lines) + "\n注意：对比表的 ROE 是 TTM（按已公告财报滚算），与盈利能力章节的年报 ROE 口径不同，"
                 "两者不要混用；对比只说明相对位置，不推断原因。事实里有同行业营收 / 利润增速时，"
                 "对比公司与行业中位数、剔除本公司后的行业合计，说明公司跑赢还是跑输行业。")
         return text, [text]
@@ -806,7 +806,7 @@ def render_markdown(report: dict) -> str:
             out.append("")
         if sec.get("peers"):
             p = sec["peers"]
-            out += [f"**{p['industry']}行业市值相近公司**（行业共 {p['count']} 家，行情快照 {p['as_of']}）", "",
+            out += [f"**{p['industry']}行业市值相近公司**（行业共 {p['count']} 家，数据日 {p['as_of']}）", "",
                     "| 公司 | 市值（亿元） | 市盈率 | 市净率 | ROE（TTM） | 股息率（近 12 个月） |",
                     "|---|---|---|---|---|---|"]
             for r in p["rows"]:
@@ -814,7 +814,7 @@ def render_markdown(report: dict) -> str:
                 name = f"**{r['name']}**" if r["self"] else r["name"]
                 out.append(f"| {name} | {_cell(r.get('market_cap'))} | {pe} | {_cell(r.get('pb'))} | "
                            f"{_cell(r.get('roe'), '%')} | {_cell(r.get('dividend_yield'), '%')} |")
-            out += ["", "ROE 为行情快照的 TTM 口径，与「盈利能力」一节的年报 ROE 不同。", ""]
+            out += ["", "ROE 为 TTM 口径，与「盈利能力」一节的年报 ROE 不同。", ""]
         if sec.get("tracking") is not None:
             heads = {"flag": "排雷项", "metric": "指标", "event": "需跟进的公告", "risk": "公司自述风险", "next": "下一期数据"}
             for it in sec["tracking"]:

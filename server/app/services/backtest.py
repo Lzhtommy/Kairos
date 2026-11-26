@@ -8,8 +8,8 @@
 输出年化 / 回撤 / 夏普 / 胜率与基准对比曲线。
 
 涨跌停幅度按当日板块规则与当日 ST 状态（daily_basic）判定。组合模式逐期重选，
-时点因子优先取 factor_history 快照，其次 daily_basic 每日指标，都没有时按价格重构近似；
-后两种情况的 ROE / 股息率按当时已公告的财报与分红算。
+时点因子取 daily_basic 每日指标（行业 2025-06-24 起是当天值，更早用当前值），当天没有记录时
+按价格重构近似；ROE / 股息率按当时已公告的财报与分红算（app.services.pit）。
 已知简化（前端明示）：事件模式的标量条件按今日快照预筛，股票池不含已退市股票。
 所有参数服务端夹紧。
 """
@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Callable
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from statistics import mean, median, pstdev
 from typing import Any
 
@@ -27,8 +27,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models.market import FactorSnapshot, Kline, StockInfo
-from app.models.warehouse import DailyBasic, Dividend, FinReport
+from app.models.market import Kline, StockInfo
+from app.models.warehouse import DailyBasic
+from app.services.pit import PitFundamentals
 from app.services import hot_rank, technical
 from app.services.dsl import CROSS_OPS, apply_universe, execute, match_filter, validate_dsl
 from app.services.market import factor_rows, recent_cutoff
@@ -658,40 +659,6 @@ def _hlo_change_pct(
     )
 
 
-def _snapshot_rows(
-    db: Session,
-    ts: datetime,
-    day_bars: dict[str, _Bar],
-    prev_bars: dict[str, _Bar],
-    hot: tuple[dict[str, int], dict[str, int]],
-) -> list[dict[str, Any]]:
-    """factor_history 某日快照 → DSL 因子行（name/market 用当前值，ST 状态近似）。
-
-    快照表不存 high/low/open，相应涨跌幅从当日/前日 K 线补算；人气排名取当日落库值。
-    """
-    info = {s.code: s for s in db.execute(select(StockInfo)).scalars().all()}
-    rows = []
-    for s in db.execute(select(FactorSnapshot).where(FactorSnapshot.ts == ts)).scalars():
-        meta = info.get(s.code)
-        hi, lo, opn, intra = _hlo_change_pct(s.code, day_bars, prev_bars)
-        rows.append(
-            {
-                "code": s.code,
-                "name": meta.name if meta else s.code,
-                "market": meta.market if meta else "SH",
-                "industry": s.industry,
-                "pe": s.pe, "pb": s.pb, "roe": s.roe,
-                "turnover_rate": s.turnover_rate, "turnover": s.turnover,
-                "market_cap": s.market_cap, "change_pct": s.change_pct,
-                "high_change_pct": hi, "low_change_pct": lo, "open_change_pct": opn,
-                "intraday_change_pct": intra,
-                "price": s.price, "dividend_yield": s.dividend_yield,
-                "hot_rank": hot[0].get(s.code), "hot_rank_prev": hot[1].get(s.code),
-            }
-        )
-    return rows
-
-
 def _reconstructed_rows(
     rows_today: list[dict[str, Any]],
     ref_bars: dict[str, _Bar],
@@ -732,58 +699,6 @@ def _reconstructed_rows(
     return out
 
 
-class _PitFundamentals:
-    """调仓日当时已公告的 ROE(TTM) 与近 12 个月股息（与实时行情同口径）。
-
-    ROE：取公告日 ≤ 当天的最新一期；年报直接用，季报按"上年年报 + 本期累计 − 上年同期累计"
-    滚成 TTM（加权 ROE 近似可加），缺上年数据时按累计值年化。股息率 = 除权日在近 365 天内的
-    每股现金分红 / 当天不复权收盘价（小数，0.03 = 3%）。
-    """
-
-    def __init__(self, db: Session, start: date, end: date) -> None:
-        self.reports: dict[str, list[tuple[date, date, float | None]]] = {}
-        for code, notice, period, roe in db.execute(
-            select(FinReport.code, FinReport.notice_date, FinReport.report_date, FinReport.roe)
-            .where(FinReport.notice_date.is_not(None), FinReport.notice_date <= end,
-                   FinReport.report_date >= date(start.year - 2, 1, 1))
-        ):
-            self.reports.setdefault(code, []).append((notice, period, roe))
-        self.cash: dict[str, list[tuple[date, float]]] = {}
-        for code, ex, per10 in db.execute(
-            select(Dividend.code, Dividend.ex_date, Dividend.cash_per10)
-            .where(Dividend.ex_date.is_not(None), Dividend.ex_date <= end,
-                   Dividend.ex_date > start - timedelta(days=366), Dividend.cash_per10 > 0)
-        ):
-            self.cash.setdefault(code, []).append((ex, per10 / 10))
-
-    def covers(self, code: str) -> bool:
-        return code in self.reports
-
-    def roe(self, code: str, day: date) -> float | None:
-        known = {period: roe for notice, period, roe in self.reports.get(code, ()) if notice <= day}
-        if not known:
-            return None
-        latest = max(known)
-        cur = known[latest]
-        if cur is None or latest.month == 12:
-            return cur
-        annual = known.get(date(latest.year - 1, 12, 31))
-        same = known.get(latest.replace(year=latest.year - 1))
-        if annual is not None and same is not None:
-            return round(annual + cur - same, 2)
-        return round(cur * 12 / latest.month, 2)
-
-    def dividend_yield(self, code: str, day: date, price: float) -> float:
-        cash = sum(c for ex, c in self.cash.get(code, ()) if day - timedelta(days=365) < ex <= day)
-        return round(cash / price, 4) if price > 0 else 0.0
-
-    def apply_roe(self, rows: list[dict[str, Any]], day: date) -> None:
-        """有财报数据的股票换成当时的 ROE（当时尚无公告则缺值，不拿今天的冒充）。"""
-        for r in rows:
-            if self.covers(r["code"]):
-                r["roe"] = self.roe(r["code"], day)
-
-
 def _basic_rows(
     db: Session,
     ts: datetime,
@@ -792,13 +707,14 @@ def _basic_rows(
     day_bars: dict[str, _Bar],
     prev_bars: dict[str, _Bar],
     hot: tuple[dict[str, int], dict[str, int]],
-    pit: _PitFundamentals,
+    pit: PitFundamentals,
 ) -> list[dict[str, Any]] | None:
     """daily_basic 某日的真实因子行：ST、停牌、换手、成交额、PE(TTM)、PB(MRQ)、总市值、不复权价
     都是当天值，ROE / 股息率按当时已公告的财报与分红算；当天没有记录时返回 None。
 
-    停牌股不入选；之后退市的股票也在内（名称行业取 stock_info）。行业仍取当前值，某项当天缺值时
-    用 _reconstructed_rows 的近似值；北交所等没有每日指标的股票整行按近似补齐。
+    停牌股不入选；之后退市的股票也在内（名称取 stock_info）。行业有当天值（2025-06-24 起）就用，
+    否则取当前值；某项当天缺值时用 _reconstructed_rows 的近似值；当天没有每日指标的股票
+    （2025-06-24 前的北交所）整行按近似补齐。
     """
     basics = db.execute(select(DailyBasic).where(DailyBasic.trade_date == ts.date())).scalars().all()
     if not basics:
@@ -826,6 +742,8 @@ def _basic_rows(
             }
         row = {**base, "is_st": b.is_st, "price": b.close,
                "dividend_yield": pit.dividend_yield(b.code, b.trade_date, b.close)}
+        if b.industry:
+            row["industry"] = b.industry
         for key, v in (
             ("pe", b.pe_ttm),
             ("pb", b.pb_mrq),
@@ -872,12 +790,6 @@ def _run_portfolio(
         pos = all_cal.index(d)
         sel_dates.append(all_cal[pos - 1] if pos > 0 else d)
 
-    snap_days = {
-        r[0]
-        for r in db.execute(
-            select(FactorSnapshot.ts).where(FactorSnapshot.ts.in_(sel_dates)).distinct()
-        )
-    }
     # 各选股日及其前一日的 K 线（重构因子 + 最高价涨跌幅）+ 今日参照价
     prev_of = {d: all_cal[all_cal.index(d) - 1] for d in sel_dates if all_cal.index(d) > 0}
     ref_date = calendar[-1]
@@ -889,11 +801,7 @@ def _run_portfolio(
     period_sel: list[dict[str, float]] = []  # 每期 code → weight
     period_names: list[dict[str, str]] = []
     pit_periods = 0
-    pit = (
-        _PitFundamentals(db, sel_dates[0].date(), sel_dates[-1].date())
-        if any(d not in snap_days for d in sel_dates)
-        else None
-    )
+    pit = PitFundamentals(db, sel_dates[0].date(), sel_dates[-1].date())
     for d in sel_dates:
         # 调仓日当天 / 前一交易日的落库人气（hot_rank / hot_rank_prev）
         hot: tuple[dict[str, int], dict[str, int]] = ({}, {})
@@ -903,10 +811,7 @@ def _run_portfolio(
                 hot_rank.ranks_on(db, prev_of[d].date().isoformat()) if d in prev_of else {},
             )
         day_bars, prev_bars = bar_lookup.get(d, {}), bar_lookup.get(prev_of.get(d), {})
-        if d in snap_days:
-            rows_d = _snapshot_rows(db, d, day_bars, prev_bars, hot)
-            pit_periods += 1
-        elif (
+        if (
             rows_d := _basic_rows(db, d, rows_today, ref_bars, day_bars, prev_bars, hot, pit)
         ) is not None:
             pit_periods += 1
@@ -1047,7 +952,7 @@ def _run_portfolio(
             ),
             "benchmarkName": _BENCHMARKS[p["benchmark"]],
             "rebalances": len(period_sel),
-            "pitPeriods": pit_periods,  # 用真实历史因子（快照或每日指标）重选的期数
+            "pitPeriods": pit_periods,  # 用真实历史因子（每日指标）重选的期数
             # AI 诊断用的归因摘要：亏得最狠的 3 个调仓期
             "worstPeriods": [
                 {"date": rec["date"], "ret": rec["periodReturn"], "holdings": rec["holdings"]}

@@ -5,7 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
-from app.models.market import FactorSnapshot, Kline, Quote
+from app.models.market import Kline, Quote
 from app.providers.factory import get_provider
 
 router = APIRouter(tags=["health"])
@@ -18,15 +18,12 @@ def health() -> dict:
 
 @router.get("/health/data")
 def health_data(db: Session = Depends(get_db)) -> dict:
-    """数据新鲜度自检：采集是否在跑、K 线到哪天、PIT 快照积累了多少。"""
+    """数据新鲜度自检：采集是否在跑、K 线和每日指标到哪天。"""
     from app.jobs.collect import in_trading_session
 
     quotes_ts = db.execute(select(func.max(Quote.ts))).scalar()
     kline_ts = db.execute(
         select(func.max(Kline.ts)).where(Kline.period == "1d")
-    ).scalar()
-    snapshot_days = db.execute(
-        select(func.count(func.distinct(FactorSnapshot.ts)))
     ).scalar()
 
     now = datetime.now(timezone.utc)
@@ -45,20 +42,22 @@ def health_data(db: Session = Depends(get_db)) -> dict:
         "quotesUpdatedAt": quotes_ts.isoformat() if quotes_ts else None,
         "quotesLagSeconds": lag_seconds,
         "latestKlineDay": kline_ts.strftime("%Y-%m-%d") if kline_ts else None,
-        "factorSnapshotDays": snapshot_days or 0,
         "warehouse": _warehouse_freshness(db),
     }
 
 
 def _warehouse_freshness(db: Session) -> dict:
     """数据仓库各表的最新日期，判断日更是否在跑。"""
-    from app.models.warehouse import Announcement, Dividend, FinReport, HolderCount, MacroSeries, TopHolder
+    from app.models.warehouse import (
+        Announcement, DailyBasic, Dividend, FinReport, HolderCount, MacroSeries, TopHolder,
+    )
 
     def latest(col):  # noqa: ANN001, ANN202
         v = db.execute(select(func.max(col))).scalar()
         return v.isoformat()[:10] if v else None
 
     return {
+        "dailyBasic": latest(DailyBasic.trade_date),  # trade_date 有索引，取最大值不扫表
         "finNotice": latest(FinReport.notice_date),
         "dividendNotice": latest(Dividend.notice_date),
         "macro": latest(MacroSeries.period),

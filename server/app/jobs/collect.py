@@ -17,13 +17,13 @@ from app.core.db import SessionLocal
 from kairos_data.store import upsert_rows
 from app.models.market import (
     AdjustmentEvent,
-    FactorSnapshot,
     Fundamental,
     IndexQuote,
     Kline,
     Quote,
     StockInfo,
 )
+from app.models.warehouse import DailyBasic
 from app.providers.factory import get_provider
 from app.services.market import recent_cutoff
 
@@ -458,45 +458,46 @@ def _deepen_kline_history(db, provider, cap: int = 3000) -> int:
     return deepened
 
 
-def snapshot_factors() -> None:
-    """收盘后归档当个交易日的全市场因子快照（point-in-time 回测的数据源）。
+def record_bj_daily_basic() -> None:
+    """收盘后把北交所当日的每日指标写入 daily_basic（BaoStock 没有北交所，沪深由数据仓库日更写）。
 
-    幂等：以库里最新日 K 的日期为快照日，已存在即跳过；盘中不拍
-    （盘中值不是收盘值）。停机漏拍的日子无法补（quotes 只有最新一份），
-    但下一个交易日会正常续上。
+    取自行情快照，只有收盘后的值才算数：以库里最新日 K 的日期为交易日，盘中不写；当天已写过即跳过
+    （首写为准，晚些时候的快照可能已被次日采集改动）。停机漏写的日子无法补（quotes 只有最新一份）。
     """
     db = SessionLocal()
     try:
         if in_trading_session():
             return
-        snap_day = db.execute(
-            select(func.max(Kline.ts)).where(Kline.period == "1d")
-        ).scalar()
-        if snap_day is None:
+        day = db.execute(select(func.max(Kline.ts)).where(Kline.period == "1d")).scalar()
+        if day is None:
             return
+        bj = select(StockInfo.code).where(StockInfo.market == "BJ")
         exists = db.execute(
-            select(func.count()).select_from(FactorSnapshot).where(FactorSnapshot.ts == snap_day)
-        ).scalar()
+            select(DailyBasic.code).where(DailyBasic.trade_date == day.date(), DailyBasic.code.in_(bj)).limit(1)
+        ).first()
         if exists:
             return
-        from app.services.market import factor_rows
-
-        rows = factor_rows(db)
-        for r in rows:
-            db.add(
-                FactorSnapshot(
-                    code=r["code"], ts=snap_day,
-                    pe=r["pe"], pb=r["pb"], roe=r["roe"],
-                    turnover_rate=r["turnover_rate"], turnover=r["turnover"],
-                    market_cap=r["market_cap"], change_pct=r["change_pct"],
-                    price=r["price"], dividend_yield=r["dividend_yield"],
-                    industry=r["industry"],
-                )
-            )
+        rows = []
+        for q, name, industry in db.execute(
+            select(Quote, StockInfo.name, StockInfo.industry)
+            .join(StockInfo, StockInfo.code == Quote.code)
+            .where(StockInfo.market == "BJ")
+        ).tuples():
+            if not q.price:
+                continue
+            rows.append({
+                "code": q.code, "trade_date": day.date(), "close": q.price,
+                "preclose": q.prev_close or None, "volume": float(q.volume * 100),  # 数据源是手
+                "amount": q.turnover * 1e8, "turn": q.turnover_rate,
+                "suspended": q.volume <= 0, "is_st": "ST" in (name or "").upper(),
+                "pe_ttm": q.pe, "pb_mrq": q.pb, "total_mv": q.market_cap * 1e8 if q.market_cap else None,
+                "industry": industry if industry and industry != "—" else None,
+            })
+        upsert_rows(db, DailyBasic, rows)
         db.commit()
-        logger.info("Factor snapshot for %s: %d stocks", snap_day.date(), len(rows))
+        logger.info("北交所每日指标 %s：%d 只", day.date(), len(rows))
     except Exception as exc:  # noqa: BLE001 — keep the scheduler alive
-        logger.warning("Factor snapshot failed: %s", exc)
+        logger.warning("北交所每日指标写入失败：%s", exc)
     finally:
         db.close()
 

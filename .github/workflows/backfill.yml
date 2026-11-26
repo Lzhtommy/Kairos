@@ -1,7 +1,6 @@
 name: Backfill
 
 # 手动触发：在生产容器里回补历史数据。幂等，重复运行无副作用。
-# - factors: 回补最近 N 个交易日的因子快照（PIT 数据），value = 天数
 # - kline:   日 K 深度回补到 N 根（约 5 年 = 1250，断点续跑），value = 根数
 on:
   workflow_dispatch:
@@ -9,12 +8,12 @@ on:
       mode:
         description: "回补类型（kline-full=整段 qfq 重刷，修复除权台阶）"
         type: choice
-        options: [factors, kline, kline-full]
-        default: "factors"
+        options: [kline, kline-full]
+        default: "kline"
         required: true
       value:
-        description: "factors=交易日数 / kline=目标根数"
-        default: "500"
+        description: "目标根数"
+        default: "1250"
         required: true
       timeoutMinutes:
         description: "最长等待分钟数（kline 全量约需 180+）"

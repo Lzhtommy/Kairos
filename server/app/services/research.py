@@ -8,10 +8,11 @@ from datetime import date, datetime, timedelta, timezone
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models.market import FactorSnapshot, Fundamental, Quote, StockInfo
+from app.models.market import Fundamental, Quote, StockInfo
 from app.models.research import ResearchRawCache, ResearchReport
 from app.models.warehouse import DailyBasic, FinReport
 from app.services import llm
+from app.services.pit import PitFundamentals
 from app.services.research_annual import REPORT_KINDS, choose_reports, merge_extracts, report_blocks
 from app.services.research_data import fetch_all, fetch_report_text, latest_report_meta, report_source
 from app.services.research_facts import build_facts, is_financial
@@ -20,24 +21,31 @@ from app.services.research_writer import EXTRACT_VERSION, extract_periodic, llm_
 
 logger = logging.getLogger("kairos.research")
 
-HIST_LIMIT = 750  # 本地因子快照：约 3 年交易日
-LONG_HIST_LIMIT = 2430  # daily_basic：约 10 年交易日
-LONG_HIST_MAX_LAG_DAYS = 10  # daily_basic 最新一行离今天超过这么多天就不用（同步停了，当前值不新鲜）
+HIST_LIMIT = 2430  # 自身历史分位回看：约 10 年交易日
 INDUSTRY_FIN_DAYS = 800  # 同业财报回看：覆盖最新报告期及其上年同期
 
 
 def valuation_inputs(db: Session, code: str, industry: str) -> dict:
-    """估值输入全部来自本地行情库：最新快照 + 自身历史 + 同行业最新截面。"""
-    latest = db.execute(
-        select(FactorSnapshot).where(FactorSnapshot.code == code).order_by(FactorSnapshot.ts.desc()).limit(1)
-    ).scalar_one_or_none()
+    """估值输入全部来自本地每日指标库（daily_basic）：最新一行 + 自身历史 + 同行业同日截面。
+    ROE / 股息率按当时已公告的财报与分红算（app.services.pit）。"""
+    hist = db.execute(
+        select(DailyBasic.trade_date, DailyBasic.pe_ttm, DailyBasic.pb_mrq, DailyBasic.close, DailyBasic.total_mv)
+        .where(DailyBasic.code == code, DailyBasic.suspended.is_(False))
+        .order_by(DailyBasic.trade_date.desc())
+        .limit(HIST_LIMIT)
+    ).all()
     out: dict = {}
-    if latest is not None:
+    if hist:
+        day, pe, pb, close, mv = hist[0]
+        pit = PitFundamentals(db, day, day, codes=[code])
+        dy = pit.dividend_yield(code, day, close)
         out = {
-            "pe": latest.pe, "pb": latest.pb, "dividend_yield": latest.dividend_yield,
-            "market_cap": latest.market_cap, "price": latest.price, "as_of": latest.ts.strftime("%Y-%m-%d"),
+            "pe": pe, "pb": pb, "dividend_yield": dy, "market_cap": mv / 1e8 if mv else None, "price": close,
+            "as_of": day.isoformat(), "hist_source": "daily_basic", "hist_as_of": day.isoformat(),
+            "pe_hist": [v for _, v, *_ in hist if v is not None],
+            "pb_hist": [v for _, _, v, *_ in hist if v is not None],
         }
-    else:
+    else:  # 新股 / 每日指标还没写入：退回实时行情
         q = db.get(Quote, code)
         fnd = db.get(Fundamental, code)
         if q is not None:
@@ -50,57 +58,39 @@ def valuation_inputs(db: Session, code: str, industry: str) -> dict:
     if out.get("dividend_yield") is not None:
         out["dividend_yield"] = out["dividend_yield"] * 100
 
-    hist = db.execute(
-        select(FactorSnapshot.pe, FactorSnapshot.pb)
-        .where(FactorSnapshot.code == code)
-        .order_by(FactorSnapshot.ts.desc())
-        .limit(HIST_LIMIT)
-    ).all()
-    out["pe_hist"] = [pe for pe, _ in hist if pe is not None]
-    out["pb_hist"] = [pb for _, pb in hist if pb is not None]
-    out.update(_long_history(db, code))
-
     out["self_code"], out["industry"] = code, industry
     if industry and industry != "—":
-        last_ts = db.execute(select(func.max(FactorSnapshot.ts))).scalar()
-        if last_ts is not None:
-            rows = db.execute(
-                select(FactorSnapshot, StockInfo.name)
-                .join(StockInfo, StockInfo.code == FactorSnapshot.code, isouter=True)
-                .where(FactorSnapshot.ts == last_ts, FactorSnapshot.industry == industry)
-            ).all()
-            out["industry_pes"] = [f.pe for f, _ in rows if f.pe is not None]
-            # 同业对比截面；股息率库存小数，转百分数
-            out["industry_rows"] = [
-                {"code": f.code, "name": (name or f.code).replace(" ", ""), "market_cap": f.market_cap, "pe": f.pe,
-                 "pb": f.pb, "roe": f.roe,
-                 "dividend_yield": None if f.dividend_yield is None else f.dividend_yield * 100}
-                for f, name in rows
-            ]
-            out["industry_fin"] = _industry_fin(db, [f.code for f, _ in rows])
+        out.update(_industry_peers(db, code, industry))
     return out
 
 
-def _long_history(db: Session, code: str) -> dict:
-    """daily_basic（BaoStock，补到上市日）的 PE(TTM) / PB(MRQ) 长历史；不够新或不比快照长时返回空，沿用快照。"""
+def _industry_peers(db: Session, code: str, industry: str) -> dict:
+    """同行业在本股最近一个带行业的交易日的截面（trade_date 索引取当日约 5900 行再按行业筛）。"""
+    day = db.execute(
+        select(DailyBasic.trade_date).where(DailyBasic.code == code, DailyBasic.industry.is_not(None))
+        .order_by(DailyBasic.trade_date.desc()).limit(1)
+    ).scalar()
+    if day is None:
+        return {}
     rows = db.execute(
-        select(DailyBasic.trade_date, DailyBasic.pe_ttm, DailyBasic.pb_mrq)
-        .where(DailyBasic.code == code, DailyBasic.suspended.is_(False))
-        .order_by(DailyBasic.trade_date.desc())
-        .limit(LONG_HIST_LIMIT)
+        select(DailyBasic.code, DailyBasic.pe_ttm, DailyBasic.pb_mrq, DailyBasic.close, DailyBasic.total_mv,
+               StockInfo.name)
+        .join(StockInfo, StockInfo.code == DailyBasic.code, isouter=True)
+        .where(DailyBasic.trade_date == day, DailyBasic.industry == industry)
     ).all()
-    if len(rows) < HIST_LIMIT:
-        return {}
-    last = rows[0][0]
-    if (date.today() - last).days > LONG_HIST_MAX_LAG_DAYS:
-        return {}
+    codes = [r[0] for r in rows]
+    pit = PitFundamentals(db, day, day, codes=codes)
+    peers = []
+    for c, pe, pb, close, mv, name in rows:
+        dy = pit.dividend_yield(c, day, close)
+        peers.append({"code": c, "name": (name or c).replace(" ", ""), "market_cap": mv / 1e8 if mv else None,
+                      "pe": pe, "pb": pb, "roe": pit.roe(c, day),
+                      "dividend_yield": None if dy is None else dy * 100})  # 股息率转百分数
     return {
-        "hist_source": "daily_basic",
-        "hist_as_of": last.isoformat(),
-        "pe_hist": [pe for _, pe, _ in rows if pe is not None],
-        "pb_hist": [pb for _, _, pb in rows if pb is not None],
-        "pe_hist_current": rows[0][1],
-        "pb_hist_current": rows[0][2],
+        "peers_as_of": day.isoformat(),
+        "industry_pes": [p["pe"] for p in peers if p["pe"] is not None],
+        "industry_rows": peers,
+        "industry_fin": _industry_fin(db, codes),
     }
 
 

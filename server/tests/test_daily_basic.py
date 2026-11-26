@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from app.models.market import Kline, StockInfo
 from app.models.warehouse import DailyBasic
 from app.services import backtest
+from app.services.pit import PitFundamentals
 from kairos_data import sync
 from tests.conftest import add_stock, trading_days
 
@@ -191,7 +192,7 @@ class TestPitFundamentals:
 
     def test_roe_uses_only_announced_reports(self, db):
         self._reports(db)
-        pit = backtest._PitFundamentals(db, date(2026, 1, 1), date(2026, 11, 10))
+        pit = PitFundamentals(db, date(2026, 1, 1), date(2026, 11, 10))
         assert pit.roe("600519", date(2026, 3, 1)) == 15.0 * 12 / 9  # 年报未出，上年同期缺 → 年化
         assert pit.roe("600519", date(2026, 4, 1)) == 22.0  # 年报
         assert pit.roe("600519", date(2026, 5, 1)) == 6.0 * 12 / 3  # Q1 缺上年同期 → 年化
@@ -200,7 +201,7 @@ class TestPitFundamentals:
 
     def test_dividend_yield_trailing_year(self, db):
         self._reports(db)
-        pit = backtest._PitFundamentals(db, date(2026, 1, 1), date(2026, 11, 10))
+        pit = PitFundamentals(db, date(2026, 1, 1), date(2026, 11, 10))
         assert pit.dividend_yield("600519", date(2026, 6, 19), 100.0) == 0.099  # 只有 2025-06 那次
         assert pit.dividend_yield("600519", date(2026, 7, 1), 100.0) == 0.03
         assert pit.dividend_yield("000001", date(2026, 7, 1), 10.0) == 0.0
@@ -264,13 +265,83 @@ def test_backfill_shards_split_by_code(db, monkeypatch):
 def test_trade_day_stores_date_returns_midnight_datetime(db):
     from datetime import datetime
 
-    from app.models.market import FactorSnapshot
-
     db.add(Kline(code="600519", period="1d", ts=datetime(2026, 11, 9), open=1, high=1, low=1, close=1, volume=1))
-    db.add(FactorSnapshot(code="600519", ts=datetime(2026, 11, 9), pb=1, roe=1, turnover_rate=1, turnover=1,
-                          market_cap=1, change_pct=0, price=1))
     db.commit()
     db.expire_all()
     assert db.execute(select(Kline.ts)).scalar() == datetime(2026, 11, 9)
     assert db.execute(select(Kline.code).where(Kline.ts >= datetime(2026, 11, 9))).scalar() == "600519"
-    assert db.execute(select(func.max(FactorSnapshot.ts))).scalar() == datetime(2026, 11, 9)
+
+class TestMergedFactorHistory:
+    """factor_history 并入 daily_basic 后：北交所收盘写入、沪深补当天行业、回测用当天行业。"""
+
+    def _quote(self, db, code, price, volume, **kw):
+        from datetime import datetime, timezone
+
+        from app.models.market import Quote
+
+        db.add(Quote(code=code, ts=datetime(2026, 11, 25, 7, 0, tzinfo=timezone.utc), price=price,
+                     prev_close=kw.get("prev_close", price), open=price, high=price, low=price, volume=volume,
+                     turnover=kw.get("turnover", 0.5), turnover_rate=1.2, pe=kw.get("pe", 30.0), pb=3.0,
+                     market_cap=20.0, roe=5.0))
+
+    def test_bj_rows_written_once_after_close(self, db, monkeypatch):
+        from datetime import datetime
+
+        from app.jobs import collect
+        from app.models.market import Quote
+
+        db.add_all([
+            StockInfo(code="920001", name="*ST北", market="BJ", industry="软件开发"),
+            StockInfo(code="920002", name="北二", market="BJ", industry="—"),
+            StockInfo(code="600519", name="贵州茅台", market="SH", industry="白酒"),
+            Kline(code="600519", period="1d", ts=datetime(2026, 11, 25), open=1, high=1, low=1, close=1, volume=1),
+        ])
+        self._quote(db, "920001", 10.5, 1234, prev_close=10.0)
+        self._quote(db, "920002", 8.0, 0)
+        self._quote(db, "600519", 1474.84, 100)
+        db.commit()
+        monkeypatch.setattr(collect, "SessionLocal", lambda: db)
+        monkeypatch.setattr(collect, "in_trading_session", lambda: False)
+        collect.record_bj_daily_basic()
+        rows = {b.code: b for b in db.execute(select(DailyBasic)).scalars()}
+        assert set(rows) == {"920001", "920002"}  # 沪深归 BaoStock 写
+        b = rows["920001"]
+        assert (b.trade_date, b.close, b.preclose, b.volume, b.amount) == (date(2026, 11, 25), 10.5, 10.0, 123400, 5e7)
+        assert b.is_st and not b.suspended and b.industry == "软件开发" and b.total_mv == 2e9
+        assert rows["920002"].suspended and rows["920002"].industry is None
+
+        db.query(Quote).delete()
+        self._quote(db, "920001", 99.0, 1)
+        db.commit()
+        collect.record_bj_daily_basic()  # 当天已写过：首写为准
+        assert db.execute(select(DailyBasic.close).where(DailyBasic.code == "920001")).scalar() == 10.5
+
+    def test_fill_industry_only_recent_missing(self, db, monkeypatch):
+        db.add_all([
+            StockInfo(code="600519", name="贵州茅台", market="SH", industry="白酒"),
+            StockInfo(code="600000", name="浦发", market="SH", industry="—"),
+            _basic("600519", date(2026, 11, 25)),
+            _basic("600519", date(2026, 11, 24), industry="饮料"),  # 已有当天值不覆盖
+            _basic("600519", date(2026, 1, 5)),  # 超出回看窗口：历史行业未知，留空
+            _basic("600000", date(2026, 11, 25)),  # 当前行业未知
+        ])
+        db.commit()
+        monkeypatch.setattr(sync, "_today_cst", lambda: date(2026, 11, 26))
+        assert sync.fill_daily_basic_industry(db) == 1
+        got = dict(db.execute(select(DailyBasic.trade_date, DailyBasic.industry)
+                              .where(DailyBasic.code == "600519")).tuples().all())
+        assert got == {date(2026, 11, 25): "白酒", date(2026, 11, 24): "饮料", date(2026, 1, 5): None}
+
+    def test_backtest_uses_industry_of_the_day(self, db):
+        from datetime import datetime
+
+        db.add_all([
+            StockInfo(code="600519", name="贵州茅台", market="SH", industry="白酒"),
+            StockInfo(code="000001", name="平安银行", market="SZ", industry="股份制银行"),
+            _basic("600519", date(2025, 7, 1), industry="饮料"),
+            _basic("000001", date(2025, 7, 1)),
+        ])
+        db.commit()
+        pit = PitFundamentals(db, date(2025, 7, 1), date(2025, 7, 1))
+        rows = backtest._basic_rows(db, datetime(2025, 7, 1), [], {}, {}, {}, ({}, {}), pit)
+        assert {r["code"]: r["industry"] for r in rows} == {"600519": "饮料", "000001": "股份制银行"}

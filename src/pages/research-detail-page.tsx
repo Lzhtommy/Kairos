@@ -50,8 +50,8 @@ import { cn } from "@/lib/utils"
 const DISCLAIMER = "本报告由程序基于公开数据自动生成，仅供研究参考，不构成投资建议。"
 
 const SOURCE_FALLBACK: Record<string, string> = {
-  factor_history: "本地行情快照",
-  daily_basic: "BaoStock 每日指标（PE TTM / PB MRQ 长历史）",
+  factor_history: "本地行情快照",  // 2026-11 前生成的报告
+  daily_basic: "本地每日指标库（PE TTM / PB MRQ / 市值 / 行业）",
   fin_report: "东方财富 财报摘要（同业）",
 }
 
@@ -599,7 +599,7 @@ function PeersTable({ peers }: { peers: PeersBlock }) {
       <div className="border-b border-border px-4 py-2.5 text-sm font-medium">
         {peers.industry}行业市值相近公司
         <span className="ml-1.5 text-xs font-normal text-muted-foreground">
-          行业共 {peers.count} 家 · 行情快照 {peers.as_of ?? "—"}
+          行业共 {peers.count} 家 · 数据日 {peers.as_of ?? "—"}
         </span>
       </div>
       <div className="overflow-x-auto">
@@ -634,7 +634,7 @@ function PeersTable({ peers }: { peers: PeersBlock }) {
         </Table>
       </div>
       <p className="border-t border-border px-4 py-2 text-[11px] text-muted-foreground">
-        ROE 为行情快照的 TTM 口径，与「盈利能力」一节的年报 ROE 不同。
+        ROE 为 TTM 口径，与「盈利能力」一节的年报 ROE 不同。
       </p>
     </div>
   )
