@@ -17,6 +17,7 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { fetchSettings, updateSettings, testNotification, testNewsPush, type UserSettings } from "@/api/settings"
 import { changePassword } from "@/api/auth"
+import { ApiKeysCard } from "@/components/settings/api-keys-card"
 
 const CHANNEL_LABELS: Record<string, string> = {
   none: "关闭",
@@ -135,7 +136,7 @@ export function SettingsPage() {
     <div className="mx-auto max-w-2xl space-y-6 px-4 py-6 lg:px-6">
       <div>
         <h1 className="text-lg font-semibold text-foreground">设置</h1>
-        <p className="mt-0.5 text-sm text-muted-foreground">通知与账户偏好</p>
+        <p className="mt-0.5 text-sm text-muted-foreground">通知、数据 API 与账户偏好</p>
       </div>
 
       <section className="space-y-4 rounded-lg border border-border p-5">
@@ -363,6 +364,8 @@ export function SettingsPage() {
           )}
         </div>
       </section>
+
+      <ApiKeysCard />
     </div>
   )
 }

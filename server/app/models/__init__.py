@@ -1,5 +1,6 @@
 from app.models.agent import (AgentAccount, AgentEquity, AgentMemory, AgentOrder, AgentPlaybook,
                               AgentPosition, AgentSession)
+from app.models.api_key import ApiKey, ApiKeyUsage
 from app.models.market import Fundamental, HotRankDaily, IndexQuote, Kline, Quote, StockInfo
 from app.models.news import NewsEvent, NewsItem
 from app.models.research import ResearchRawCache, ResearchReport
@@ -14,6 +15,8 @@ from app.models.warehouse import (Announcement, Billboard, BlockTrade, Dividend,
 from app.models.watchlist import Watchlist, WatchlistImport, WatchlistImportItem, WatchlistItem
 
 __all__ = [
+    "ApiKey",
+    "ApiKeyUsage",
     "AgentAccount",
     "AgentPosition",
     "AgentOrder",

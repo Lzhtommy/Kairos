@@ -329,7 +329,11 @@ async def lifespan(_app: FastAPI):
         _scheduler.start()
         logger.info("Collector scheduled every %ds", settings.collect_interval_seconds)
 
-    yield
+    from app.mcp_server.server import mcp
+
+    # MCP 会话管理器的任务组要跑在宿主应用的 lifespan 里（挂载的子应用 lifespan 不会执行）
+    async with mcp.session_manager.run():
+        yield
 
     if _scheduler:
         _scheduler.shutdown(wait=False)
@@ -346,6 +350,14 @@ app.add_middleware(
 )
 
 app.include_router(api_router)
+
+# MCP 数据服务：精确路径挂 ASGI 端点（Mount 会把 /api/mcp 307 到 /api/mcp/，部分客户端 POST 不跟随）
+from starlette.routing import Route  # noqa: E402
+
+from app.mcp_server.server import app as mcp_app  # noqa: E402
+
+for _path in ("/api/mcp", "/api/mcp/"):
+    app.router.routes.append(Route(_path, endpoint=mcp_app, methods=["GET", "POST", "DELETE"]))
 
 
 @app.get("/")

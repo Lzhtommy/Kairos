@@ -3,7 +3,7 @@ fastapi==0.115.6
 uvicorn[standard]==0.34.0
 sqlalchemy==2.0.36
 alembic==1.14.0
-pydantic==2.10.4
+pydantic==2.11.10
 pydantic-settings==2.7.0
 python-jose[cryptography]==3.3.0
 bcrypt==4.2.1
@@ -12,3 +12,4 @@ apscheduler==3.11.0
 httpx==0.28.1
 pymysql==1.1.1  # DATABASE_URL=mysql+pymysql://...（生产 RDS）
 numpy==2.2.6  # expr 技术公式向量化求值
+mcp==1.30.0  # MCP 数据服务（app/mcp），挂在 /api/mcp

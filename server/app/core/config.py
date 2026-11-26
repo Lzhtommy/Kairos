@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 60 * 24 * 7
 
+    # MCP 数据服务（/api/mcp）：新建 Key 的默认每日调用上限、每分钟上限、每个用户最多几个有效 Key
+    mcp_daily_limit: int = 1000
+    mcp_per_minute: int = 60
+    mcp_max_keys: int = 5
+
     # Data provider: "auto" | "seed" | "akshare" | "tencent"
     provider: str = "auto"
 
