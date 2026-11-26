@@ -455,7 +455,7 @@ def build_facts(raw: dict[str, list[dict] | None], valuation: dict, name: str = 
     put("dividend_yield", valuation.get("dividend_yield"), "%", "股息率（近 12 个月）", "daily_basic",
         valuation.get("as_of"), "shareholder")
     put("market_cap", valuation.get("market_cap"), "亿元", "总市值", "daily_basic", valuation.get("as_of"), "valuation")
-    # 自身历史分位：daily_basic 的 PE(TTM) / PB(MRQ)，最多近 10 年（北交所 2025-06 起才有，
+    # 自身历史分位：daily_basic 的 PE(TTM) / PB(MRQ)，最多近 10 年（北交所 2026-07 起才有，
     # 不足 2 年时评分降权，文字不得写「历史高位 / 低位」）
     hist_src = valuation.get("hist_source") or "daily_basic"
     pe_hist = [v for v in valuation.get("pe_hist") or [] if v and v > 0]

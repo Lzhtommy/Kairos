@@ -8,8 +8,8 @@
 输出年化 / 回撤 / 夏普 / 胜率与基准对比曲线。
 
 涨跌停幅度按当日板块规则与当日 ST 状态（daily_basic）判定。组合模式逐期重选，
-时点因子取 daily_basic 每日指标（行业 2025-06-24 起是当天值，更早用当前值），当天没有记录时
-按价格重构近似；ROE / 股息率按当时已公告的财报与分红算（app.services.pit）。
+时点因子取 daily_basic 每日指标（行业用当前值，几乎不变），当天没有记录时按价格重构近似；
+ROE / 股息率按当时已公告的财报与分红算（app.services.pit）。
 已知简化（前端明示）：事件模式的标量条件按今日快照预筛，股票池不含已退市股票。
 所有参数服务端夹紧。
 """
@@ -712,9 +712,8 @@ def _basic_rows(
     """daily_basic 某日的真实因子行：ST、停牌、换手、成交额、PE(TTM)、PB(MRQ)、总市值、不复权价
     都是当天值，ROE / 股息率按当时已公告的财报与分红算；当天没有记录时返回 None。
 
-    停牌股不入选；之后退市的股票也在内（名称取 stock_info）。行业有当天值（2025-06-24 起）就用，
-    否则取当前值；某项当天缺值时用 _reconstructed_rows 的近似值；当天没有每日指标的股票
-    （2025-06-24 前的北交所）整行按近似补齐。
+    停牌股不入选；之后退市的股票也在内（名称行业取 stock_info 当前值）。某项当天缺值时用
+    _reconstructed_rows 的近似值；当天没有每日指标的股票（2026-07 前的北交所）整行按近似补齐。
     """
     basics = db.execute(select(DailyBasic).where(DailyBasic.trade_date == ts.date())).scalars().all()
     if not basics:
@@ -742,8 +741,6 @@ def _basic_rows(
             }
         row = {**base, "is_st": b.is_st, "price": b.close,
                "dividend_yield": pit.dividend_yield(b.code, b.trade_date, b.close)}
-        if b.industry:
-            row["industry"] = b.industry
         for key, v in (
             ("pe", b.pe_ttm),
             ("pb", b.pb_mrq),

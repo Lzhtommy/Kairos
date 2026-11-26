@@ -11,7 +11,7 @@ import time
 from bisect import bisect_right
 from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import delete, func, insert, select, update
+from sqlalchemy import delete, func, insert, select
 
 from kairos_data.schema import (STATEMENT_ITEMS, announcement, billboard, block_trade, daily_basic, dividend,
                                 fin_report, fin_report_revision, fin_statement, holder_count, index_bar, index_constituent,
@@ -1068,22 +1068,6 @@ def backfill_daily_basic(db, throttle: float = 0.05, shard: int = 0, shards: int
     return done, failed
 
 
-def fill_daily_basic_industry(db, lookback: int = 15) -> int:  # noqa: ANN001
-    """近 lookback 天里还没有行业的每日指标行填上当前申万行业（一条多表 UPDATE，走 trade_date 索引）。
-
-    行业得逐日留存：stock_info 只存当前值，事后无从还原。沪深行由 BaoStock 增量写入后在这里补；
-    北交所行写入时已带行业。"""
-    since = _today_cst() - timedelta(days=lookback)
-    res = db.execute(
-        update(daily_basic)
-        .where(daily_basic.c.code == stock_info.c.code, daily_basic.c.trade_date >= since,
-               daily_basic.c.industry.is_(None), stock_info.c.industry != "—")
-        .values(industry=stock_info.c.industry)
-    )
-    db.commit()
-    return res.rowcount
-
-
 def refresh_daily_basic(db, lookback: int = 10) -> int:
     """增量：在市沪深股票从库里最后一天的次日拉到今天；库里没有的只拉最近 lookback 天
     （全历史交给 backfill_daily_basic）。BaoStock 当日数据 17:30 后才入库，需在此之后跑。"""
@@ -1320,7 +1304,7 @@ def daily(db) -> None:
     """日更：财报与三大报表最近 2 个报告期、分红最近 4 个报告期、宏观各序列最新一页、指数成分当日名单、
     近 40 天的股本变动和股东户数、最近 2 期十大股东、近 30 天起的解禁（含未来计划）、
     近 7 天的两融 / 龙虎榜 / 大宗交易、主要指数日线与中证成分权重、ETF 与可转债清单和当日快照、
-    每日指标（ST / 停牌 / 换手 / 估值）及其当天行业。
+    每日指标（ST / 停牌 / 换手 / 估值）。
     需在收盘后（建议 18:00 后）跑，快照才是当日收盘。"""
     _run(db, "fin", lambda: refresh_financials(db, quarter_ends(2)))
     _run(db, "stmt", lambda: refresh_statements(db, quarter_ends(2)))
@@ -1341,7 +1325,6 @@ def daily(db) -> None:
     _run(db, "securities", lambda: refresh_securities(db))
     _run(db, "security snapshot", lambda: refresh_security_snapshot(db))
     _run(db, "daily basic", lambda: refresh_daily_basic(db))
-    _run(db, "daily basic industry", lambda: fill_daily_basic_industry(db))
 
 
 def backfill(db, parts: tuple[str, ...] = PARTS) -> None:

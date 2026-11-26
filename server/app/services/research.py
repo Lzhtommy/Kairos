@@ -59,24 +59,18 @@ def valuation_inputs(db: Session, code: str, industry: str) -> dict:
         out["dividend_yield"] = out["dividend_yield"] * 100
 
     out["self_code"], out["industry"] = code, industry
-    if industry and industry != "—":
-        out.update(_industry_peers(db, code, industry))
+    if hist and industry and industry != "—":
+        out.update(_industry_peers(db, hist[0][0], industry))
     return out
 
 
-def _industry_peers(db: Session, code: str, industry: str) -> dict:
-    """同行业在本股最近一个带行业的交易日的截面（trade_date 索引取当日约 5900 行再按行业筛）。"""
-    day = db.execute(
-        select(DailyBasic.trade_date).where(DailyBasic.code == code, DailyBasic.industry.is_not(None))
-        .order_by(DailyBasic.trade_date.desc()).limit(1)
-    ).scalar()
-    if day is None:
-        return {}
+def _industry_peers(db: Session, day: date, industry: str) -> dict:
+    """同行业（stock_info 当前行业）在本股最新交易日的截面：trade_date 索引取当日约 5900 行，再按行业筛。"""
     rows = db.execute(
         select(DailyBasic.code, DailyBasic.pe_ttm, DailyBasic.pb_mrq, DailyBasic.close, DailyBasic.total_mv,
                StockInfo.name)
-        .join(StockInfo, StockInfo.code == DailyBasic.code, isouter=True)
-        .where(DailyBasic.trade_date == day, DailyBasic.industry == industry)
+        .join(StockInfo, StockInfo.code == DailyBasic.code)
+        .where(DailyBasic.trade_date == day, StockInfo.industry == industry)
     ).all()
     codes = [r[0] for r in rows]
     pit = PitFundamentals(db, day, day, codes=codes)
@@ -85,7 +79,7 @@ def _industry_peers(db: Session, code: str, industry: str) -> dict:
         dy = pit.dividend_yield(c, day, close)
         peers.append({"code": c, "name": (name or c).replace(" ", ""), "market_cap": mv / 1e8 if mv else None,
                       "pe": pe, "pb": pb, "roe": pit.roe(c, day),
-                      "dividend_yield": None if dy is None else dy * 100})  # 股息率转百分数
+                      "dividend_yield": None if dy is None else round(dy * 100, 2)})  # 股息率转百分数
     return {
         "peers_as_of": day.isoformat(),
         "industry_pes": [p["pe"] for p in peers if p["pe"] is not None],

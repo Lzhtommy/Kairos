@@ -342,14 +342,12 @@ def test_run_report_end_to_end(db, stocks, monkeypatch):
     first = date(2025, 1, 1)
     for i in range(130):
         db.add(DailyBasic(code="600519", trade_date=first + timedelta(days=i), close=10, suspended=False,
-                          is_st=False, pe_ttm=15 + i * 0.1, pb_mrq=5, total_mv=100e8,
-                          industry="白酒" if i >= 100 else None))  # 行业只在近段才有
-    # 最新一行行业还没补上：同业截面退回本股最近一个带行业的交易日
+                          is_st=False, pe_ttm=15 + i * 0.1, pb_mrq=5, total_mv=100e8))
     last = first + timedelta(days=129)
-    db.add(DailyBasic(code="600519", trade_date=first + timedelta(days=130), close=10, suspended=True, is_st=False))
     for code, cap in (("000858", 300), ("600809", 80), ("000568", 50)):
+        db.add(StockInfo(code=code, name=code, market="SZ", industry="白酒"))
         db.add(DailyBasic(code=code, trade_date=last, close=10, suspended=False, is_st=False, pe_ttm=20, pb_mrq=4,
-                          total_mv=cap * 1e8, industry="白酒"))
+                          total_mv=cap * 1e8))
         db.add(Dividend(code=code, report_date=date(2024, 6, 30), ex_date=date(2025, 3, 1), cash_per10=3.0,
                         progress="实施分配", plan=""))
         db.add(FinReport(code=code, report_date=date(2024, 12, 31), notice_date=date(2025, 3, 20), roe=15.0))

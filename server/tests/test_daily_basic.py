@@ -271,8 +271,8 @@ def test_trade_day_stores_date_returns_midnight_datetime(db):
     assert db.execute(select(Kline.ts)).scalar() == datetime(2026, 11, 9)
     assert db.execute(select(Kline.code).where(Kline.ts >= datetime(2026, 11, 9))).scalar() == "600519"
 
-class TestMergedFactorHistory:
-    """factor_history 并入 daily_basic 后：北交所收盘写入、沪深补当天行业、回测用当天行业。"""
+class TestBjDailyBasic:
+    """北交所每日指标：收盘后由行情快照写入，当天 15:00 前（含午休）不写。"""
 
     def _quote(self, db, code, price, volume, **kw):
         from datetime import datetime, timezone
@@ -284,7 +284,19 @@ class TestMergedFactorHistory:
                      turnover=kw.get("turnover", 0.5), turnover_rate=1.2, pe=kw.get("pe", 30.0), pb=3.0,
                      market_cap=20.0, roe=5.0))
 
-    def test_bj_rows_written_once_after_close(self, db, monkeypatch):
+    def _run_at(self, monkeypatch, collect, hhmm):
+        from datetime import datetime, timezone
+
+        class _Now(datetime):
+            @classmethod
+            def now(cls, tz=None):  # noqa: ANN206
+                h, m = hhmm
+                return datetime(2026, 11, 25, h - 8, m, tzinfo=timezone.utc)
+
+        monkeypatch.setattr(collect, "datetime", _Now)
+        collect.record_bj_daily_basic()
+
+    def test_written_after_close_not_at_lunch(self, db, monkeypatch):
         from datetime import datetime
 
         from app.jobs import collect
@@ -301,47 +313,21 @@ class TestMergedFactorHistory:
         self._quote(db, "600519", 1474.84, 100)
         db.commit()
         monkeypatch.setattr(collect, "SessionLocal", lambda: db)
-        monkeypatch.setattr(collect, "in_trading_session", lambda: False)
-        collect.record_bj_daily_basic()
+        monkeypatch.setattr(collect, "in_trading_session", lambda *a: False)
+
+        self._run_at(monkeypatch, collect, (11, 40))  # 午休：不在交易时段但还没收盘
+        assert db.execute(select(func.count()).select_from(DailyBasic)).scalar() == 0
+
+        self._run_at(monkeypatch, collect, (15, 15))
         rows = {b.code: b for b in db.execute(select(DailyBasic)).scalars()}
         assert set(rows) == {"920001", "920002"}  # 沪深归 BaoStock 写
         b = rows["920001"]
         assert (b.trade_date, b.close, b.preclose, b.volume, b.amount) == (date(2026, 11, 25), 10.5, 10.0, 123400, 5e7)
-        assert b.is_st and not b.suspended and b.industry == "软件开发" and b.total_mv == 2e9
-        assert rows["920002"].suspended and rows["920002"].industry is None
+        assert b.is_st and not b.suspended and b.total_mv == 2e9
+        assert rows["920002"].suspended
 
         db.query(Quote).delete()
-        self._quote(db, "920001", 99.0, 1)
+        self._quote(db, "920001", 10.6, 1)
         db.commit()
-        collect.record_bj_daily_basic()  # 当天已写过：首写为准
-        assert db.execute(select(DailyBasic.close).where(DailyBasic.code == "920001")).scalar() == 10.5
-
-    def test_fill_industry_only_recent_missing(self, db, monkeypatch):
-        db.add_all([
-            StockInfo(code="600519", name="贵州茅台", market="SH", industry="白酒"),
-            StockInfo(code="600000", name="浦发", market="SH", industry="—"),
-            _basic("600519", date(2026, 11, 25)),
-            _basic("600519", date(2026, 11, 24), industry="饮料"),  # 已有当天值不覆盖
-            _basic("600519", date(2026, 1, 5)),  # 超出回看窗口：历史行业未知，留空
-            _basic("600000", date(2026, 11, 25)),  # 当前行业未知
-        ])
-        db.commit()
-        monkeypatch.setattr(sync, "_today_cst", lambda: date(2026, 11, 26))
-        assert sync.fill_daily_basic_industry(db) == 1
-        got = dict(db.execute(select(DailyBasic.trade_date, DailyBasic.industry)
-                              .where(DailyBasic.code == "600519")).tuples().all())
-        assert got == {date(2026, 11, 25): "白酒", date(2026, 11, 24): "饮料", date(2026, 1, 5): None}
-
-    def test_backtest_uses_industry_of_the_day(self, db):
-        from datetime import datetime
-
-        db.add_all([
-            StockInfo(code="600519", name="贵州茅台", market="SH", industry="白酒"),
-            StockInfo(code="000001", name="平安银行", market="SZ", industry="股份制银行"),
-            _basic("600519", date(2025, 7, 1), industry="饮料"),
-            _basic("000001", date(2025, 7, 1)),
-        ])
-        db.commit()
-        pit = PitFundamentals(db, date(2025, 7, 1), date(2025, 7, 1))
-        rows = backtest._basic_rows(db, datetime(2025, 7, 1), [], {}, {}, {}, ({}, {}), pit)
-        assert {r["code"]: r["industry"] for r in rows} == {"600519": "饮料", "000001": "股份制银行"}
+        self._run_at(monkeypatch, collect, (20, 0))  # 收盘后重跑：覆盖写
+        assert db.execute(select(DailyBasic.close).where(DailyBasic.code == "920001")).scalar() == 10.6

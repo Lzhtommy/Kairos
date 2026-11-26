@@ -461,25 +461,21 @@ def _deepen_kline_history(db, provider, cap: int = 3000) -> int:
 def record_bj_daily_basic() -> None:
     """收盘后把北交所当日的每日指标写入 daily_basic（BaoStock 没有北交所，沪深由数据仓库日更写）。
 
-    取自行情快照，只有收盘后的值才算数：以库里最新日 K 的日期为交易日，盘中不写；当天已写过即跳过
-    （首写为准，晚些时候的快照可能已被次日采集改动）。停机漏写的日子无法补（quotes 只有最新一份）。
+    取自行情快照，只有收盘后的值才算数：以库里最新日 K 的日期为交易日，盘中和当天 15:00 前（含午休）
+    都不写；之后每次都覆盖写（收盘后到次日开盘前快照不变，重跑结果相同）。
+    停机漏写的日子无法补（quotes 只有最新一份）。
     """
     db = SessionLocal()
     try:
         if in_trading_session():
             return
         day = db.execute(select(func.max(Kline.ts)).where(Kline.period == "1d")).scalar()
-        if day is None:
-            return
-        bj = select(StockInfo.code).where(StockInfo.market == "BJ")
-        exists = db.execute(
-            select(DailyBasic.code).where(DailyBasic.trade_date == day.date(), DailyBasic.code.in_(bj)).limit(1)
-        ).first()
-        if exists:
+        now_cst = datetime.now(timezone.utc) + timedelta(hours=_CST_OFFSET_HOURS)
+        if day is None or (day.date() == now_cst.date() and now_cst.time() < time(15, 0)):
             return
         rows = []
-        for q, name, industry in db.execute(
-            select(Quote, StockInfo.name, StockInfo.industry)
+        for q, name in db.execute(
+            select(Quote, StockInfo.name)
             .join(StockInfo, StockInfo.code == Quote.code)
             .where(StockInfo.market == "BJ")
         ).tuples():
@@ -491,7 +487,6 @@ def record_bj_daily_basic() -> None:
                 "amount": q.turnover * 1e8, "turn": q.turnover_rate,
                 "suspended": q.volume <= 0, "is_st": "ST" in (name or "").upper(),
                 "pe_ttm": q.pe, "pb_mrq": q.pb, "total_mv": q.market_cap * 1e8 if q.market_cap else None,
-                "industry": industry if industry and industry != "—" else None,
             })
         upsert_rows(db, DailyBasic, rows)
         db.commit()

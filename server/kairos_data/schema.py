@@ -342,9 +342,9 @@ security_bar = Table(
 # - 沪深：BaoStock 日线附带字段（sync.refresh_daily_basic / backfill_daily_basic，17:30 后入库）。
 #   价格不复权；估值按当日收盘价计；总市值 = 收盘价 × 当日适用的总股本（share_capital），无股本数据时为空。
 # - 北交所：BaoStock 没有，收盘后由行情快照写入（app.jobs.collect.record_bj_daily_basic），
-#   2025-06-24 起才有；ps_ttm / pcf_ttm 为空。
-# industry 是当天的申万行业（取当时 stock_info），2025-06-24 起才有，更早为空——stock_info 只存当前行业，
-# 历史行业只能逐日留存。ROE / 股息率不落库，读时按当时已公告的财报与分红算（app.services.pit）
+#   2026-07 起才有；ps_ttm / pcf_ttm 为空。
+# 行业取 stock_info 当前值（几乎不变：2025-07 ~ 2026-11 约 5900 只里只有 4 只改过），不逐日存。
+# ROE / 股息率不落库，读时按当时已公告的财报与分红算（app.services.pit）
 daily_basic = Table(
     "daily_basic", metadata,
     Column("code", String(16), primary_key=True),
@@ -361,7 +361,6 @@ daily_basic = Table(
     Column("ps_ttm", Float, nullable=True),
     Column("pcf_ttm", Float, nullable=True),  # 市现率（经营现金流 TTM）
     Column("total_mv", Float, nullable=True),  # 总市值（元）
-    Column("industry", String(64), nullable=True),
 )
 
 sync_state = Table(
