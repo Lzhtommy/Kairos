@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.api_key import ApiKey, ApiKeyUsage
+from app.models.user import User
 
 PREFIX = "kai_"
 _CST = timezone(timedelta(hours=8))
@@ -103,19 +104,28 @@ def _check_rate(key_id: int, now: float | None = None) -> None:
         win.append(now)
 
 
+def is_unlimited(db: Session, key: ApiKey) -> bool:
+    """管理员名下的 Key 不限每日 / 每分钟额度（按当前身份判断，撤销管理员即恢复限额）。"""
+    owner = db.get(User, key.user_id)
+    return bool(owner and owner.is_admin)
+
+
 def meter(db: Session, key_id: int) -> None:
     """记一次工具调用；超过每分钟或每日上限抛 QuotaExceeded（超限的那次不计入）。
+    管理员的 Key 不限额度，只计数。
 
     Key 在调用期间被吊销也在这里拦下（鉴权与调用之间可能隔着一个长连接）。
     """
     key = db.get(ApiKey, key_id)
     if key is None or key.revoked_at is not None:
         raise QuotaExceeded("API Key 已失效")
-    _check_rate(key_id)
+    unlimited = is_unlimited(db, key)
+    if not unlimited:
+        _check_rate(key_id)
     day = today_cst()
     row = db.get(ApiKeyUsage, (key_id, day))
     used = row.calls if row else 0
-    if used >= key.daily_limit:
+    if not unlimited and used >= key.daily_limit:
         raise QuotaExceeded(f"今日调用已达上限 {key.daily_limit} 次，北京时间零点重置")
     key.last_used_at = datetime.now(timezone.utc)
     if row is None:

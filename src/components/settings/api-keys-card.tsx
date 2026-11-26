@@ -180,17 +180,23 @@ export function ApiKeysCard() {
                   <span className="truncate text-sm font-medium text-foreground">{k.name}</span>
                   <code className="shrink-0 font-mono text-[11px] text-muted-foreground">{k.prefix}…</code>
                 </div>
-                <div className="mt-1.5 flex items-center gap-2">
-                  <div className="h-1.5 w-28 shrink-0 overflow-hidden rounded-full bg-muted">
-                    <div
-                      className={`h-full rounded-full ${k.usedToday >= k.dailyLimit ? "bg-destructive" : "bg-primary"}`}
-                      style={{ width: `${Math.min(100, (k.usedToday / Math.max(1, k.dailyLimit)) * 100)}%` }}
-                    />
+                {k.unlimited ? (
+                  <p className="mt-1.5 text-[11px] tabular-nums text-foreground">
+                    今日 {k.usedToday.toLocaleString()} 次 · 管理员不限额度
+                  </p>
+                ) : (
+                  <div className="mt-1.5 flex items-center gap-2">
+                    <div className="h-1.5 w-28 shrink-0 overflow-hidden rounded-full bg-muted">
+                      <div
+                        className={`h-full rounded-full ${k.usedToday >= k.dailyLimit ? "bg-destructive" : "bg-primary"}`}
+                        style={{ width: `${Math.min(100, (k.usedToday / Math.max(1, k.dailyLimit)) * 100)}%` }}
+                      />
+                    </div>
+                    <span className="text-[11px] tabular-nums text-foreground">
+                      今日 {k.usedToday.toLocaleString()} / {k.dailyLimit.toLocaleString()}
+                    </span>
                   </div>
-                  <span className="text-[11px] tabular-nums text-foreground">
-                    今日 {k.usedToday.toLocaleString()} / {k.dailyLimit.toLocaleString()}
-                  </span>
-                </div>
+                )}
                 <p className="mt-1 text-[11px] text-muted-foreground">
                   近 30 天 {k.used30d.toLocaleString()} 次 · 最近使用 {fmt(k.lastUsedAt)} · 创建于 {fmt(k.createdAt)}
                 </p>

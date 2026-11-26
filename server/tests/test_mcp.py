@@ -194,6 +194,15 @@ class TestMcpEndpoint:
         results = [_call(mcp_http, plain, "list_industries")["isError"] for _ in range(4)]
         assert results == [False, False, False, True]
 
+    def test_admin_keys_unlimited(self, wired, mcp_http, monkeypatch):
+        db = wired
+        key, plain = api_keys.create_key(db, _user(db, "root", admin=True).id, "admin")
+        key_id = key.id
+        _set_key(db, key_id, daily_limit=1)
+        monkeypatch.setattr(settings, "mcp_per_minute", 1)
+        assert [_call(mcp_http, plain, "list_industries")["isError"] for _ in range(3)] == [False] * 3
+        assert db.get(ApiKeyUsage, (key_id, api_keys.today_cst())).calls == 3  # 不限额但照样计数
+
     def test_revoked_key_stops_working(self, wired, mcp_http):
         db = wired
         key, plain = api_keys.create_key(db, _user(db).id, "agent")

@@ -83,7 +83,7 @@ export function ApiKeysPanel() {
                   {k.name} <code className="font-mono text-muted-foreground">{k.prefix}…</code>
                 </TableCell>
                 <TableCell className="font-mono text-xs tabular-nums">
-                  {k.usedToday} / {k.dailyLimit}
+                  {k.usedToday} / {k.unlimited ? "不限（管理员）" : k.dailyLimit}
                 </TableCell>
                 <TableCell className="text-xs text-muted-foreground">{fmt(k.lastUsedAt)}</TableCell>
                 <TableCell>
@@ -92,13 +92,15 @@ export function ApiKeysPanel() {
                 <TableCell className="text-right">
                   {!k.revokedAt && (
                     <div className="flex justify-end gap-1">
-                      <button
-                        onClick={() => editLimit(k)}
-                        className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-                        aria-label="调整每日上限"
-                      >
-                        <PencilSimple className="size-3.5" />
-                      </button>
+                      {!k.unlimited && (
+                        <button
+                          onClick={() => editLimit(k)}
+                          className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+                          aria-label="调整每日上限"
+                        >
+                          <PencilSimple className="size-3.5" />
+                        </button>
+                      )}
                       <button
                         onClick={() => revoke(k)}
                         className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive"

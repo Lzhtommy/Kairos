@@ -7,6 +7,8 @@ export type ApiKeyItem = {
   prefix: string
   dailyLimit: number
   usedToday: number
+  /** 管理员的 Key 不限额度 */
+  unlimited: boolean
   /** 近 30 天合计 */
   used30d: number
   createdAt: string | null

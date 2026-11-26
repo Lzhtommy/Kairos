@@ -30,9 +30,10 @@ def _iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt else None
 
 
-def _public(k: ApiKey, used: int, used_30d: int | None = None) -> dict:
+def _public(k: ApiKey, used: int, used_30d: int | None = None, unlimited: bool = False) -> dict:
     return {
         "id": k.id, "name": k.name, "prefix": k.prefix, "dailyLimit": k.daily_limit, "usedToday": used,
+        "unlimited": unlimited,  # 管理员的 Key 不限额度
         "used30d": used if used_30d is None else used_30d,
         "createdAt": _iso(k.created_at), "lastUsedAt": _iso(k.last_used_at), "revokedAt": _iso(k.revoked_at),
     }
@@ -46,7 +47,7 @@ def list_keys(user: User = Depends(get_current_user), db: Session = Depends(get_
     ids = [k.id for k in keys]
     used = api_keys.usage_today(db, ids)
     history, per_key = api_keys.usage_history(db, ids)
-    return {"keys": [_public(k, used.get(k.id, 0), per_key.get(k.id, 0)) for k in keys],
+    return {"keys": [_public(k, used.get(k.id, 0), per_key.get(k.id, 0), user.is_admin) for k in keys],
             "usage": history,  # 近 30 天每天合计（含已吊销的 Key）
             "maxKeys": settings.mcp_max_keys, "perMinute": settings.mcp_per_minute,
             "defaultDailyLimit": settings.mcp_daily_limit}
@@ -58,7 +59,7 @@ def create_key(body: KeyIn, user: User = Depends(get_current_user), db: Session 
         key, plain = api_keys.create_key(db, user.id, body.name.strip())
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
-    return {**_public(key, 0), "key": plain}
+    return {**_public(key, 0, unlimited=user.is_admin), "key": plain}
 
 
 def _revoke(db: Session, key: ApiKey | None) -> dict:
@@ -79,11 +80,11 @@ def revoke_key(key_id: int, user: User = Depends(get_current_user), db: Session 
 @admin_router.get("")
 def admin_list(_: User = Depends(require_admin), db: Session = Depends(get_db)):
     rows = db.execute(
-        select(ApiKey, User.username).join(User, User.id == ApiKey.user_id)
+        select(ApiKey, User.username, User.is_admin).join(User, User.id == ApiKey.user_id)
         .order_by(ApiKey.revoked_at.is_not(None), ApiKey.id.desc())
     ).all()
-    used = api_keys.usage_today(db, [k.id for k, _ in rows])
-    return [{**_public(k, used.get(k.id, 0)), "username": name} for k, name in rows]
+    used = api_keys.usage_today(db, [k.id for k, _, _ in rows])
+    return [{**_public(k, used.get(k.id, 0), unlimited=admin), "username": name} for k, name, admin in rows]
 
 
 @admin_router.patch("/{key_id}")
@@ -93,7 +94,7 @@ def admin_set_limit(key_id: int, body: LimitIn, _: User = Depends(require_admin)
         raise HTTPException(status.HTTP_404_NOT_FOUND, "API Key 不存在")
     key.daily_limit = body.dailyLimit
     db.commit()
-    return _public(key, api_keys.usage_today(db, [key.id]).get(key.id, 0))
+    return _public(key, api_keys.usage_today(db, [key.id]).get(key.id, 0), unlimited=api_keys.is_unlimited(db, key))
 
 
 @admin_router.delete("/{key_id}")
