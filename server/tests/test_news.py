@@ -276,9 +276,11 @@ def test_parse_keeps_only_a_share_stocks():
     (it,) = news.parse_ths({"data": {"list": [{
         "id": "1", "ctime": str(int(T0.timestamp())), "title": "t", "digest": "d", "url": "", "import": "0",
         "stock": [{"name": "周大福", "stockCode": "HK1929"}, {"name": "拓荆科技", "stockCode": "688072"},
-                  {"name": "英伟达", "stockCode": "NVDA"}],
+                  {"name": "英伟达", "stockCode": "NVDA"}, {"name": "科创50ETF汇添富", "stockCode": "588990"},
+                  {"name": "沪深300ETF", "stockCode": "159919"}, {"name": "某某转债", "stockCode": "113052"},
+                  {"name": "北交所", "stockCode": "920001"}],
     }]}})
-    assert it.stocks == [{"code": "688072", "name": "拓荆科技"}]
+    assert it.stocks == [{"code": "688072", "name": "拓荆科技"}, {"code": "920001", "name": "北交所"}]
     (c,) = news.parse_cls({"data": {"roll_data": [{
         "id": 1, "ctime": int(T0.timestamp()), "level": "C", "title": "t", "content": "c",
         "stock_list": [{"StockID": "sh600160", "name": "巨化股份"}, {"StockID": "hk00700", "name": "腾讯"}],

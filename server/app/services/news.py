@@ -102,6 +102,13 @@ def _item(source: str, sid, pub: datetime, title, content, url, imp: int,  # noq
 
 
 _A_CODE = re.compile(r"^(?:sh|sz|bj)?(\d{6})$", re.I)
+# 6 位代码里只认股票：沪 60 / 68，深 00 / 30，北交所 4 / 8 / 92。同花顺、财联社的关联标的里
+# 会混进 ETF / LOF（51、56、58、15、16）、可转债（11、12）、B 股（90、20），这些都丢掉
+_STOCK_PREFIX = ("60", "68", "00", "30", "4", "8", "92")
+
+
+def is_a_stock(code: str) -> bool:
+    return len(code) == 6 and code.isdigit() and code.startswith(_STOCK_PREFIX)
 
 
 def _a_stocks(pairs) -> list[dict]:  # noqa: ANN001
@@ -109,7 +116,7 @@ def _a_stocks(pairs) -> list[dict]:  # noqa: ANN001
     out: dict[str, str] = {}
     for code, name in pairs:
         m = _A_CODE.match(str(code or ""))
-        if m and name:
+        if m and name and is_a_stock(m.group(1)):
             out.setdefault(m.group(1), str(name)[:32])
     return [{"code": c, "name": n} for c, n in out.items()][:10]
 
@@ -485,7 +492,8 @@ def _build_event(items: list[NewsItem], ann: NewsEvent | None = None) -> dict:
     stocks: dict[str, str] = {}
     for r in items:
         for st in r.stocks or []:
-            stocks.setdefault(st["code"], st["name"])
+            if is_a_stock(st["code"]):  # 早期入库的行没过滤 ETF
+                stocks.setdefault(st["code"], st["name"])
     for st in (ann.ai_stocks if ann else None) or []:  # 要闻二次分析从正文认出、对上代码的
         stocks.setdefault(st["code"], st["name"])
     return {
