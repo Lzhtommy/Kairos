@@ -41,7 +41,8 @@ class NewsItem(Base):
 
 
 class NewsEvent(Base):
-    """事件级 LLM 标注（services/news_classify.py）：分类、1-5 重要度、相关申万行业。
+    """事件级 LLM 标注（services/news_classify.py）：分类、1-5 重要度、相关申万行业；
+    要闻另有二次分析（themes / ai_stocks / reason，见下）。
 
     事件第一次出现后一分钟内批量打标；后续加入的报道源不再重打。
     没有这一行 = 还没打标或 LLM 不可用，前端按源标记规则兜底。
@@ -62,4 +63,12 @@ class NewsEvent(Base):
     # 整串往往五家都报了
     thread_sources: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     pushed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)  # 已推送
+    # 要闻二次分析（services/news_analyze.py，只做 4 分以上的根事件）：细分方向、文中点名且能对上代码的
+    # A 股、一句传导逻辑。impact 存模型给的大盘 / 行业方向，只留档不展示——2026-11-26 离线核对，
+    # 方向对开盘跳空大体对、对全天不比抛硬币好，攒够数据再复测
+    themes: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    ai_stocks: Mapped[list | None] = mapped_column(JSON, nullable=True)  # [{"code", "name"}]
+    reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    impact: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    analyzed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

@@ -17,6 +17,11 @@ export type NewsEvent = {
   score: number | null
   category: string | null
   sectors: string[]
+  /** 要闻二次分析：更细的受影响方向（申万二级 / 概念），未分析为空 */
+  themes: string[]
+  /** 要闻二次分析：一句传导逻辑，未分析为 null */
+  reason: string | null
+  /** 源自带的关联 A 股 + 要闻二次分析从正文认出的 */
   stocks: { code: string; name: string }[]
   title: string
   content: string

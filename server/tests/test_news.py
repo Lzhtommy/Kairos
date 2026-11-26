@@ -597,3 +597,83 @@ def test_feishu_error_code_counts_as_failure(monkeypatch):
 
     monkeypatch.setattr(notify.httpx, "post", lambda *a, **k: R())
     assert notify.send("webhook", HOOK, "t", "x") is False
+
+
+# ---------------------------------------------------------------- 要闻二次分析
+
+from app.models.market import StockInfo  # noqa: E402
+from app.services import news_analyze  # noqa: E402
+
+
+def _analysis_seed(db):
+    ids = _seed(db)
+    db.add_all([
+        NewsEvent(event_id=ids["美国地质"], category="其他", score=5, sectors=[]),
+        NewsEvent(event_id=ids["德国10"], category="宏观数据", score=4, sectors=["电子"]),
+        NewsEvent(event_id=ids["斯里兰卡"], category="海外市场", score=3, sectors=[]),  # 不够分
+        NewsEvent(event_id=ids["ST联光"], category="公司个股", score=4, sectors=[], parent_id=ids["德国10"]),  # 后续
+    ])
+    for r in db.scalars(select(NewsEvent)):
+        r.created_at = T0 + timedelta(minutes=3)
+    db.add_all([
+        SectorInfo(code="801080", name="电子", source="sw"),
+        StockInfo(code="600100", name="同方股份", market="SH", industry="计算机"),
+        StockInfo(code="688347", name="华虹宏力", market="SH", industry="电子"),
+    ])
+    db.commit()
+    return ids
+
+
+def test_analyze_pending_only_featured_roots_and_sanitizes(db, monkeypatch):
+    ids = _analysis_seed(db)
+    # 批内按时间正序：0 PPI、1 地震；漏掉 1
+    calls = _fake_llm(monkeypatch, {"items": [
+        {"i": 0, "a": 1, "m": "-1", "sec": [{"n": "电子", "d": -1}, {"n": "不存在", "d": 1}, "电子"],
+         "sub": ["半导体设备", "", 3, "消费电子", "光模块", "多余"],
+         "stk": [{"n": "同方 股份", "d": 1}, {"n": "华虹公司", "d": 1}, {"n": "联想", "d": 1}],
+         "r": "德国通胀超预期" + "长" * 100},
+        {"i": 7, "r": "越界"},
+    ]})
+    now = T0 + timedelta(minutes=5)
+    assert news_analyze.analyze_pending(db, now) == 2
+    assert len(calls) == 1 and "德国10月PPI" in calls[0] and "斯里兰卡" not in calls[0] and "ST联光" not in calls[0]
+    assert "电子" in calls[0]
+
+    ppi = db.get(NewsEvent, ids["德国10"])
+    assert ppi.themes == ["半导体设备", "消费电子", "光模块"]
+    assert ppi.ai_stocks == [{"code": "600100", "name": "同方股份"}]  # 对不上名称的丢掉
+    assert ppi.reason.startswith("德国通胀超预期") and len(ppi.reason) == news_analyze.REASON_CHARS
+    assert ppi.impact["m"] == -1 and ppi.impact["sec"] == [{"n": "电子", "d": -1}, {"n": "电子", "d": 0}]
+    quake = db.get(NewsEvent, ids["美国地质"])  # 模型漏掉：写空结果，不再重试
+    assert (quake.themes, quake.ai_stocks, quake.reason, quake.analyzed_at is not None) == ([], [], None, True)
+    assert db.get(NewsEvent, ids["斯里兰卡"]).analyzed_at is None
+    assert news_analyze.analyze_pending(db, now) == 0 and len(calls) == 1
+
+    ev = next(e for e in news.list_events(db, view="all", limit=50, now=now) if e["id"] == ids["德国10"])
+    assert ev["themes"] == ["半导体设备", "消费电子", "光模块"] and ev["reason"].startswith("德国通胀")
+    assert {"code": "600100", "name": "同方股份"} in ev["stocks"]
+    ppi.impact = ppi.impact | {"a": 0}  # 模型认为对 A 股没有影响：理由不展示
+    db.commit()
+    ev = next(e for e in news.list_events(db, view="all", limit=50, now=now) if e["id"] == ids["德国10"])
+    assert ev["reason"] is None and ev["themes"]
+
+
+def test_analyze_failure_writes_nothing_and_retries(db, monkeypatch):
+    ids = _analysis_seed(db)
+    _fake_llm(monkeypatch, RuntimeError("boom"))
+    now = T0 + timedelta(minutes=5)
+    assert news_analyze.analyze_pending(db, now) == 0
+    assert db.get(NewsEvent, ids["德国10"]).analyzed_at is None
+    calls = _fake_llm(monkeypatch, {"items": []})
+    assert news_analyze.analyze_pending(db, T0 + timedelta(days=2)) == 0 and calls == []  # 超出回看窗口的不补
+    assert news_analyze.analyze_pending(db, now) == 2
+
+
+def test_push_message_includes_reason_and_related():
+    ev = {"pub_at": "2026-11-20T06:50:00Z", "title": "", "content": "美国拟重启关税攻势", "category": "地缘国际",
+          "sources": [{"source": "cls", "name": "财联社"}], "reason": "出口链风险上升",
+          "themes": ["出口链", "家电出口"], "stocks": [{"code": "000333", "name": "美的集团"}]}
+    _, text = news_push.format_message(ev, "top")
+    assert "影响：出口链风险上升" in text and "相关：出口链、家电出口、美的集团" in text
+    _, text = news_push.format_message(ev | {"reason": None, "themes": [], "stocks": []}, "top")
+    assert "影响" not in text and "相关" not in text

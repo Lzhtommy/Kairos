@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { Link } from "react-router-dom"
-import { ArrowSquareOut, MagnifyingGlass, X } from "@phosphor-icons/react"
+import { ArrowSquareOut, MagnifyingGlass, Sparkle, X } from "@phosphor-icons/react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -333,7 +333,14 @@ function EventRow({ event: e, fresh }: { event: NewsEvent; fresh: boolean }) {
           </p>
         )}
         {e.followups.length > 0 && <Followups items={e.followups} />}
+        {e.reason && (
+          <p className="mt-1.5 flex gap-1.5 text-xs leading-relaxed text-foreground/80">
+            <Sparkle weight="fill" className="mt-0.5 size-3 shrink-0 text-primary/70" aria-label="AI 解读" />
+            <span>{e.reason}</span>
+          </p>
+        )}
         <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+          {e.score != null && <ScoreBadge score={e.score} />}
           {e.category && <span className="rounded bg-muted px-1.5 py-px text-foreground/80">{e.category}</span>}
           {e.stocks.slice(0, 4).map((st) => (
             <Link
@@ -344,7 +351,10 @@ function EventRow({ event: e, fresh }: { event: NewsEvent; fresh: boolean }) {
               {st.name}
             </Link>
           ))}
-          {e.sectors.length > 0 && <span>{e.sectors.join(" · ")}</span>}
+          {/* 有细分方向就不再列一级行业，两者基本重复 */}
+          {(e.themes.length > 0 ? e.themes : e.sectors).length > 0 && (
+            <span>{(e.themes.length > 0 ? e.themes : e.sectors).join(" · ")}</span>
+          )}
           <span className="ml-auto flex flex-wrap items-center gap-x-2.5 gap-y-1">
             {e.sources.map((s) =>
               s.url ? (
@@ -367,6 +377,34 @@ function EventRow({ event: e, fresh }: { event: NewsEvent; fresh: boolean }) {
         </div>
       </div>
     </li>
+  )
+}
+
+const SCORE_LABELS = ["", "几乎无市场意义", "影响小", "一般市场信息", "对某个市场或行业有明确影响", "可能影响全市场"]
+
+/** AI 评估的重要度（1-5，对 A 股或全球主要市场的影响） */
+function ScoreBadge({ score }: { score: number }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <span
+            className={cn(
+              "inline-flex cursor-default items-center rounded px-1.5 py-px font-mono tabular-nums",
+              score >= 5
+                ? "bg-primary text-primary-foreground"
+                : score >= 4
+                  ? "bg-primary/10 text-primary"
+                  : "bg-muted text-muted-foreground",
+            )}
+          >
+            {score}
+            <span className="opacity-60">/5</span>
+          </span>
+        }
+      />
+      <TooltipContent>AI 重要度 {score} 分：{SCORE_LABELS[score] ?? ""}</TooltipContent>
+    </Tooltip>
   )
 }
 

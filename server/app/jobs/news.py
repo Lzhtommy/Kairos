@@ -23,6 +23,7 @@ def collect_news() -> None:
 
 
 def classify_news() -> None:
+    from app.services.news_analyze import analyze_pending  # noqa: PLC0415
     from app.services.news_classify import classify_pending  # noqa: PLC0415
     from app.services.news_push import push_pending  # noqa: PLC0415
 
@@ -31,6 +32,11 @@ def classify_news() -> None:
         classify_pending(db)
     except Exception:  # noqa: BLE001
         logger.exception("news classify failed")
+        db.rollback()
+    try:
+        analyze_pending(db)  # 推送前跑，消息能带上传导逻辑；失败不挡推送
+    except Exception:  # noqa: BLE001
+        logger.exception("news analyze failed")
         db.rollback()
     try:
         push_pending(db)  # 标注失败也照推：上一轮标好、报道家数刚凑够的事件

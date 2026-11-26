@@ -486,6 +486,8 @@ def _build_event(items: list[NewsItem], ann: NewsEvent | None = None) -> dict:
     for r in items:
         for st in r.stocks or []:
             stocks.setdefault(st["code"], st["name"])
+    for st in (ann.ai_stocks if ann else None) or []:  # 要闻二次分析从正文认出、对上代码的
+        stocks.setdefault(st["code"], st["name"])
     return {
         "id": items[0].event_id,
         "pub_at": _iso(items[0].pub_at),
@@ -493,6 +495,9 @@ def _build_event(items: list[NewsItem], ann: NewsEvent | None = None) -> dict:
         "score": score,
         "category": ann.category if ann else None,
         "sectors": list(ann.sectors or []) if ann else [],
+        "themes": list(ann.themes or []) if ann else [],
+        # 模型判断对 A 股没有可交易影响的（港股自身行情、盘中回顾），理由多是「无清晰传导」，不展示
+        "reason": ann.reason if ann and (ann.impact or {}).get("a") else None,
         "stocks": [{"code": c, "name": n} for c, n in stocks.items()],
         "title": title,
         "content": main.content,

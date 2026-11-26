@@ -56,6 +56,11 @@ def format_message(event: dict, level: str) -> tuple[str, str]:
     body = event["content"] if event["title"] else event["content"][60:]
     names = "、".join(dict.fromkeys(s["name"] for s in event["sources"]))
     lines = [body[:300].strip()] if body.strip() else []
+    if event.get("reason"):
+        lines.append(f"影响：{event['reason']}")
+    related = list(event.get("themes") or []) + [s["name"] for s in event.get("stocks") or []][:3]
+    if related:
+        lines.append("相关：" + "、".join(related))
     lines.append(f"{event['category'] or '未分类'} · {names}")
     lines.append(PAGE_URL)
     return title, "\n".join(lines)
