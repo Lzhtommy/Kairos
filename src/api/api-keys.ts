@@ -7,12 +7,21 @@ export type ApiKeyItem = {
   prefix: string
   dailyLimit: number
   usedToday: number
+  /** 近 30 天合计 */
+  used30d: number
   createdAt: string | null
   lastUsedAt: string | null
   revokedAt: string | null
 }
 
-export type ApiKeyList = { keys: ApiKeyItem[]; maxKeys: number; perMinute: number; defaultDailyLimit: number }
+export type ApiKeyList = {
+  keys: ApiKeyItem[]
+  /** 近 30 天每天的调用次数合计（含已吊销的 Key），按日期正序 */
+  usage: { day: string; calls: number }[]
+  maxKeys: number
+  perMinute: number
+  defaultDailyLimit: number
+}
 
 export const fetchApiKeys = () => api<ApiKeyList>("/me/api-keys")
 

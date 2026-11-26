@@ -64,6 +64,42 @@ function Snippets({ apiKey }: { apiKey: string }) {
   )
 }
 
+/** 近 30 天每日调用次数：单序列柱图，悬停看当天数值，默认显示今天 */
+function UsageChart({ usage }: { usage: ApiKeyList["usage"] }) {
+  const [hover, setHover] = useState<number | null>(null)
+  const max = Math.max(1, ...usage.map((d) => d.calls))
+  const shown = usage[hover ?? usage.length - 1]
+  const total = usage.reduce((s, d) => s + d.calls, 0)
+  return (
+    <div className="space-y-2">
+      <div className="flex items-baseline justify-between text-xs">
+        <span className="text-muted-foreground">近 30 天调用 · 合计 {total.toLocaleString()} 次</span>
+        {shown && (
+          <span className="tabular-nums text-foreground">
+            {shown.day.slice(5)}：{shown.calls.toLocaleString()} 次
+          </span>
+        )}
+      </div>
+      <div className="flex h-16 items-end gap-[2px]" onMouseLeave={() => setHover(null)} role="img"
+        aria-label={`近 30 天每日调用次数，合计 ${total} 次`}>
+        {usage.map((d, i) => (
+          <div key={d.day} className="flex h-full flex-1 items-end" onMouseEnter={() => setHover(i)}
+            title={`${d.day}：${d.calls} 次`}>
+            <div
+              className={`w-full rounded-t-[4px] ${hover === i ? "bg-primary" : "bg-primary/60"}`}
+              style={{ height: d.calls ? `${Math.max(4, (d.calls / max) * 100)}%` : "1px" }}
+            />
+          </div>
+        ))}
+      </div>
+      <div className="flex justify-between text-[10px] text-muted-foreground tabular-nums">
+        <span>{usage[0]?.day.slice(5)}</span>
+        <span>今天</span>
+      </div>
+    </div>
+  )
+}
+
 export function ApiKeysCard() {
   const [data, setData] = useState<ApiKeyList | null>(null)
   const [name, setName] = useState("")
@@ -144,8 +180,19 @@ export function ApiKeysCard() {
                   <span className="truncate text-sm font-medium text-foreground">{k.name}</span>
                   <code className="shrink-0 font-mono text-[11px] text-muted-foreground">{k.prefix}…</code>
                 </div>
-                <p className="mt-0.5 text-[11px] text-muted-foreground">
-                  今日 {k.usedToday} / {k.dailyLimit} 次 · 最近使用 {fmt(k.lastUsedAt)} · 创建于 {fmt(k.createdAt)}
+                <div className="mt-1.5 flex items-center gap-2">
+                  <div className="h-1.5 w-28 shrink-0 overflow-hidden rounded-full bg-muted">
+                    <div
+                      className={`h-full rounded-full ${k.usedToday >= k.dailyLimit ? "bg-destructive" : "bg-primary"}`}
+                      style={{ width: `${Math.min(100, (k.usedToday / Math.max(1, k.dailyLimit)) * 100)}%` }}
+                    />
+                  </div>
+                  <span className="text-[11px] tabular-nums text-foreground">
+                    今日 {k.usedToday.toLocaleString()} / {k.dailyLimit.toLocaleString()}
+                  </span>
+                </div>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  近 30 天 {k.used30d.toLocaleString()} 次 · 最近使用 {fmt(k.lastUsedAt)} · 创建于 {fmt(k.createdAt)}
                 </p>
               </div>
               <Button
@@ -162,6 +209,8 @@ export function ApiKeysCard() {
           ))}
         </div>
       )}
+
+      {data && data.keys.length > 0 && <UsageChart usage={data.usage} />}
 
       {data && active.length < data.maxKeys ? (
         <form onSubmit={create} className="flex gap-2">

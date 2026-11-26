@@ -71,6 +71,23 @@ def usage_today(db: Session, key_ids: list[int]) -> dict[int, int]:
     ).tuples().all())
 
 
+def usage_history(db: Session, key_ids: list[int], days: int = 30) -> tuple[list[dict], dict[int, int]]:
+    """近 days 天（含今天）每天的调用次数合计（无调用的日子补 0，按日期正序），以及每个 Key 的区间合计。"""
+    end = today_cst()
+    start = end - timedelta(days=days - 1)
+    per_day: dict[date, int] = {}
+    per_key: dict[int, int] = {}
+    if key_ids:
+        for kid, day, calls in db.execute(
+            select(ApiKeyUsage.key_id, ApiKeyUsage.day, ApiKeyUsage.calls)
+            .where(ApiKeyUsage.key_id.in_(key_ids), ApiKeyUsage.day >= start)
+        ).tuples():
+            per_day[day] = per_day.get(day, 0) + calls
+            per_key[kid] = per_key.get(kid, 0) + calls
+    series = [{"day": (d := start + timedelta(days=i)).isoformat(), "calls": per_day.get(d, 0)} for i in range(days)]
+    return series, per_key
+
+
 _windows: dict[int, deque[float]] = {}
 _lock = threading.Lock()
 

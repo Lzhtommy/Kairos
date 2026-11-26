@@ -133,7 +133,7 @@ export function SettingsPage() {
   }
 
   return (
-    <div className="mx-auto max-w-2xl space-y-6 px-4 py-6 lg:px-6">
+    <div className="mx-auto max-w-4xl space-y-6 px-4 py-6 lg:px-6">
       <div>
         <h1 className="text-lg font-semibold text-foreground">设置</h1>
         <p className="mt-0.5 text-sm text-muted-foreground">通知、数据 API 与账户偏好</p>
@@ -240,6 +240,8 @@ export function SettingsPage() {
           </form>
         </DialogContent>
       </Dialog>
+
+      <ApiKeysCard />
 
       <section className="space-y-5 rounded-lg border border-border p-5">
         <div className="flex items-center gap-2">
@@ -364,8 +366,6 @@ export function SettingsPage() {
           )}
         </div>
       </section>
-
-      <ApiKeysCard />
     </div>
   )
 }

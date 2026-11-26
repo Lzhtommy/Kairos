@@ -103,6 +103,24 @@ class TestKeyManagement:
         assert c.delete(f"/me/api-keys/{created['id']}").json() == {"ok": True}
         assert api_keys.lookup(db, created["key"]) is None
 
+    def test_usage_history(self, db, monkeypatch):
+        from datetime import timedelta
+
+        alice = _user(db)
+        k1, _ = api_keys.create_key(db, alice.id, "a")
+        k2, _ = api_keys.create_key(db, alice.id, "b")
+        today = date(2026, 11, 26)
+        monkeypatch.setattr(api_keys, "today_cst", lambda: today)
+        db.add_all([ApiKeyUsage(key_id=k1.id, day=today, calls=5), ApiKeyUsage(key_id=k2.id, day=today, calls=2),
+                    ApiKeyUsage(key_id=k1.id, day=today - timedelta(days=3), calls=7),
+                    ApiKeyUsage(key_id=k1.id, day=today - timedelta(days=40), calls=99)])  # 超出 30 天
+        db.commit()
+        body = _rest(db, alice).get("/me/api-keys").json()
+        assert len(body["usage"]) == 30 and body["usage"][-1] == {"day": "2026-11-26", "calls": 7}
+        assert body["usage"][-4]["calls"] == 7 and sum(d["calls"] for d in body["usage"]) == 14
+        by_name = {k["name"]: k for k in body["keys"]}
+        assert (by_name["a"]["usedToday"], by_name["a"]["used30d"]) == (5, 12)
+
     def test_max_active_keys(self, db, monkeypatch):
         monkeypatch.setattr(settings, "mcp_max_keys", 2)
         c = _rest(db, _user(db))
